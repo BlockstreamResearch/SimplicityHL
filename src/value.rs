@@ -362,7 +362,7 @@ pub trait ValueConstructible: Sized + From<bool> + From<UIntValue> {
     construct_int!(u256, U256, "a 256-bit");
 }
 
-/// The structure of a Simfony value.
+/// The structure of a SimplicityHL value.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ValueInner {
     /// Left value.
@@ -388,7 +388,7 @@ pub enum ValueInner {
     List(Arc<[Value]>, NonZeroPow2Usize),
 }
 
-/// A Simfony value.
+/// A SimplicityHL value.
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct Value {
     inner: ValueInner,
@@ -850,7 +850,7 @@ impl<'a> arbitrary::Arbitrary<'a> for Value {
     }
 }
 
-/// Structure of a Simfony value.
+/// Structure of a SimplicityHL value.
 /// 1:1 isomorphism to Simplicity.
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct StructuralValue(SimValue);
@@ -1065,31 +1065,31 @@ impl StructuralValue {
     }
 }
 
-/// An iterator over the contents of a Simplicity value in terms of a Simfony type.
+/// An iterator over the contents of a Simplicity value in terms of a SimplicityHL type.
 ///
 /// ## Examples
 ///
-/// A Simfony array is a nested Simplicity product.
+/// A SimplicityHL array is a nested Simplicity product.
 /// The destructor allows simple iteration over all array elements.
 ///
-/// A Simfony list is a nested Simplicity product _(partition)_
+/// A SimplicityHL list is a nested Simplicity product _(partition)_
 /// of options of more products _(blocks)_.
 /// The destructor allows simple iteration over all list elements.
 ///
 /// ## Lazy type checking
 ///
-/// The destructor creates a tree of Simplicity value-Simfony type pairs.
-/// The Simfony type dictates whether the node has children.
+/// The destructor creates a tree of Simplicity value-SimplicityHL type pairs.
+/// The SimplicityHL type dictates whether the node has children.
 /// Parent nodes are type-checked. Leaf nodes are not type-checked.
 ///
 /// The destructor tries to destruct the Simplicity value into child values.
 /// If destructing fails, then a single `Destructor::WrongType` leaf is created instead.
 /// This leaf signifies that the entire tree is ill-typed and that the original Simplicity value
-/// was not of the given Simfony type.`Destructor::WrongType` leaves, if there are any,
+/// was not of the given SimplicityHL type.`Destructor::WrongType` leaves, if there are any,
 /// should appear early during post-order iteration, enabling early termination.
 ///
 /// The leaf values (Boolean, unsigned integer, empty tuple, empty array) are not checked.
-/// Extraction of actual Simfony values (Boolean, unsigned integer, ...)
+/// Extraction of actual SimplicityHL values (Boolean, unsigned integer, ...)
 /// from the leaf Simplicity values may fail, in which case the entire tree is, again, ill-typed.
 #[derive(Clone, Debug)]
 enum Destructor<'a> {
@@ -1101,7 +1101,7 @@ enum Destructor<'a> {
 }
 
 impl<'a> Destructor<'a> {
-    /// Create a destructor for the given Simplicity `value` and the given Simfony type.
+    /// Create a destructor for the given Simplicity `value` and the given SimplicityHL type.
     pub const fn new(value: ValueRef<'a>, ty: &'a ResolvedType) -> Self {
         Self::Ok { value, ty }
     }
@@ -1163,7 +1163,7 @@ impl TreeLike for Destructor<'_> {
     }
 }
 
-/// Functions for destructing Simplicity values alongside Simfony types.
+/// Functions for destructing Simplicity values alongside SimplicityHL types.
 mod destruct {
     use super::*;
     use simplicity::ValueRef;

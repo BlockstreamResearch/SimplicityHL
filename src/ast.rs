@@ -830,7 +830,7 @@ impl Expression {
     /// ## Const evaluation
     ///
     /// The returned expression might not be evaluable at compile time.
-    /// The details depend on the current state of the Simfony compiler.
+    /// The details depend on the current state of the SimplicityHL compiler.
     pub fn analyze_const(from: &parse::Expression, ty: &ResolvedType) -> Result<Self, RichError> {
         let mut empty_scope = Scope::default();
         Self::analyze(from, ty, &mut empty_scope)

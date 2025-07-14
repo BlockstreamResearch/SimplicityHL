@@ -21,7 +21,7 @@ The whole match expression returns a value of type `u32`, from one of the two ar
 
 ## Explicit typing
 
-In Simfony, the type of variables inside match arms must **always** be written.
+In SimplicityHL, the type of variables inside match arms must **always** be written.
 This is different from Rust, which has better type inference.
 
 ## Pattern matching
@@ -29,7 +29,7 @@ This is different from Rust, which has better type inference.
 There is limited support for pattern matching inside match expressions.
 
 Boolean values can be matched.
-The Boolean match expression is the replacement for an "if-then-else" in Simfony.
+The Boolean match expression is the replacement for an "if-then-else" in SimplicityHL.
 
 ```rust
 let bit_flip: bool = match false {

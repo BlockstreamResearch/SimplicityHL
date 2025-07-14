@@ -12,13 +12,13 @@ All expressions inside an environment share the same source type A. We say the e
 ]
 ```
 
-We use environments to translate variables inside Simfony expressions to Simplicity.
+We use environments to translate variables inside SimplicityHL expressions to Simplicity.
 
 The environment tells us the Simplicity expression that returns the value of each variable.
 
-We translate a Simfony program "top to bottom". Each time a variable is defined, we update the environment to reflect this change.
+We translate a SimplicityHL program "top to bottom". Each time a variable is defined, we update the environment to reflect this change.
 
-During the translation, we can ignore the source type of Simplicity expressions (translated Simfony expressions) entirely. We can focus on producing a Simplicity value of the expected target type. Environments ensure that we get input values for each variable that is in scope.
+During the translation, we can ignore the source type of Simplicity expressions (translated SimplicityHL expressions) entirely. We can focus on producing a Simplicity value of the expected target type. Environments ensure that we get input values for each variable that is in scope.
 
 Target types are handled by contexts.
 
@@ -31,7 +31,7 @@ Ctx(Ξ)(`x`) = B if Ξ(`x`) = a: A → B
 
 Patterns occur in let statements `let p := s`.
 
-Pattern `p` binds the output of Simfony expression `s` to variables.
+Pattern `p` binds the output of SimplicityHL expression `s` to variables.
 
 As we translate `s` to Simplicity, we need an environment that maps the variables from `p` to Simplicity expressions.
 

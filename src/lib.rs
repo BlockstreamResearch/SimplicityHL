@@ -1,4 +1,4 @@
-//! Library for parsing and compiling simfony
+//! Library for parsing and compiling SimplicityHL
 
 pub type ProgNode = Arc<named::ConstructNode>;
 
@@ -36,7 +36,7 @@ pub use crate::types::ResolvedType;
 pub use crate::value::Value;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 
-/// The template of a Simfony program.
+/// The template of a SimplicityHL program.
 ///
 /// A template has parameterized values that need to be supplied with arguments.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,11 +46,11 @@ pub struct TemplateProgram {
 }
 
 impl TemplateProgram {
-    /// Parse the template of a Simfony program.
+    /// Parse the template of a SimplicityHL program.
     ///
     /// ## Errors
     ///
-    /// The string is not a valid Simfony program.
+    /// The string is not a valid SimplicityHL program.
     pub fn new<Str: Into<Arc<str>>>(s: Str) -> Result<Self, String> {
         let file = s.into();
         let parse_program = parse::Program::parse_from_str(&file)?;
@@ -91,7 +91,7 @@ impl TemplateProgram {
     }
 }
 
-/// A Simfony program, compiled to Simplicity.
+/// A SimplicityHL program, compiled to Simplicity.
 #[derive(Clone, Debug)]
 pub struct CompiledProgram {
     simplicity: ProgNode,
@@ -111,7 +111,7 @@ impl Default for CompiledProgram {
 }
 
 impl CompiledProgram {
-    /// Parse and compile a Simfony program from the given string.
+    /// Parse and compile a SimplicityHL program from the given string.
     ///
     /// ## See
     ///
@@ -133,25 +133,25 @@ impl CompiledProgram {
 
     /// Access the Simplicity target code, without witness data.
     pub fn commit(&self) -> Arc<CommitNode<Elements>> {
-        named::to_commit_node(&self.simplicity).expect("Compiled Simfony program has type 1 -> 1")
+        named::to_commit_node(&self.simplicity).expect("Compiled SimplicityHL program has type 1 -> 1")
     }
 
-    /// Satisfy the Simfony program with the given `witness_values`.
+    /// Satisfy the SimplicityHL program with the given `witness_values`.
     ///
     /// ## Errors
     ///
-    /// - Witness values have a different type than declared in the Simfony program.
+    /// - Witness values have a different type than declared in the SimplicityHL program.
     /// - There are missing witness values.
     pub fn satisfy(&self, witness_values: WitnessValues) -> Result<SatisfiedProgram, String> {
         self.satisfy_with_env(witness_values, None)
     }
 
-    /// Satisfy the Simfony program with the given `witness_values`.
+    /// Satisfy the SimplicityHL program with the given `witness_values`.
     /// If `env` is `None`, the program is not pruned, otherwise it is pruned with the given environment.
     ///
     /// ## Errors
     ///
-    /// - Witness values have a different type than declared in the Simfony program.
+    /// - Witness values have a different type than declared in the SimplicityHL program.
     /// - There are missing witness values.
     pub fn satisfy_with_env(
         &self,
@@ -173,7 +173,7 @@ impl CompiledProgram {
     }
 }
 
-/// A Simfony program, compiled to Simplicity and satisfied with witness data.
+/// A SimplicityHL program, compiled to Simplicity and satisfied with witness data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SatisfiedProgram {
     simplicity: Arc<RedeemNode<Elements>>,
@@ -181,7 +181,7 @@ pub struct SatisfiedProgram {
 }
 
 impl SatisfiedProgram {
-    /// Parse, compile and satisfy a Simfony program from the given string.
+    /// Parse, compile and satisfy a SimplicityHL program from the given string.
     ///
     /// ## See
     ///

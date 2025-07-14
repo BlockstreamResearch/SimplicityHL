@@ -1,6 +1,6 @@
 # Type Aliases
 
-Simfony currently doesn't support Rust-like `struct`s for organizing data.
+SimplicityHL currently doesn't support Rust-like `struct`s for organizing data.
 
 ```rust
 struct User {
@@ -10,7 +10,7 @@ struct User {
 }
 ```
 
-Simfony programmers have to handle long tuples of unlabeled data, which can get messy.
+SimplicityHL programmers have to handle long tuples of unlabeled data, which can get messy.
 
 ```rust
 (bool, u256, u64)

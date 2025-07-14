@@ -157,7 +157,7 @@ impl crate::ArbitraryRec for Pattern {
     }
 }
 
-/// Basic structure of a Simfony value for pattern matching.
+/// Basic structure of a SimplicityHL value for pattern matching.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum BasePattern {
     /// Ignore: Match any value.

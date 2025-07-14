@@ -9,7 +9,7 @@ use crate::array::{BTreeSlice, Partition};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::str::AliasName;
 
-/// Primitives of the Simfony type system, excluding type aliases.
+/// Primitives of the SimplicityHL type system, excluding type aliases.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 #[non_exhaustive]
 pub enum TypeInner<A> {
@@ -315,7 +315,7 @@ pub trait TypeDeconstructible: Sized {
     fn as_list(&self) -> Option<(&Self, NonZeroPow2Usize)>;
 }
 
-/// Simfony type without type aliases.
+/// SimplicityHL type without type aliases.
 #[derive(PartialEq, Eq, Hash, Clone)]
 pub struct ResolvedType(TypeInner<Arc<Self>>);
 
@@ -484,7 +484,7 @@ impl<'a> arbitrary::Arbitrary<'a> for ResolvedType {
     }
 }
 
-/// Simfony type with type aliases.
+/// SimplicityHL type with type aliases.
 #[derive(PartialEq, Eq, Hash, Clone)]
 pub struct AliasedType(AliasedInner);
 
@@ -911,7 +911,7 @@ impl FromStr for BuiltinAlias {
     }
 }
 
-/// Internal structure of a Simfony type.
+/// Internal structure of a SimplicityHL type.
 /// 1:1 isomorphism to Simplicity.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct StructuralType(Arc<Final>);

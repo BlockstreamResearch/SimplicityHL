@@ -3,4 +3,4 @@ authors = ["Christian Lewe"]
 language = "en"
 multilingual = false
 src = "src"
-title = "The Simfony Programming Language"
+title = "The SimplicityHL Programming Language"

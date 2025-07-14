@@ -2,7 +2,7 @@
 name = "codegen"
 version = "0.1.0"
 edition = "2021"
-description = "Generator of Rust code as interface between Simfony and Rust."
+description = "Generator of Rust code as interface between SimplicityHL and Rust."
 publish = false
 
 [dependencies]

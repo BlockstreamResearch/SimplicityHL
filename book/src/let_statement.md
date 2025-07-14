@@ -17,12 +17,12 @@ Variables can be assigned to the output value of any expression, such as functio
 
 ## Explicit typing
 
-In Simfony, the type of a defined variable **always** has to be written.
+In SimplicityHL, the type of a defined variable **always** has to be written.
 This is different from Rust, which has better type inference.
 
 ## Immutability
 
-Simfony variables are **always** immutable.
+SimplicityHL variables are **always** immutable.
 There are no mutable variables.
 
 ## Redefinition and scoping

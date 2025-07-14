@@ -98,7 +98,7 @@ pub fn to_commit_node(node: &ConstructNode) -> Result<Arc<CommitNode<Elements>>,
 ///
 /// It is the responsibility of the caller to ensure that the given witness `values` match the
 /// types in the construct `node`. This can be done by calling [`WitnessValues::is_consistent`]
-/// on the original Simfony program before it is compiled to Simplicity.
+/// on the original SimplicityHL program before it is compiled to Simplicity.
 pub fn to_witness_node(node: &ConstructNode, values: WitnessValues) -> Arc<WitnessNode<Elements>> {
     struct Populator {
         values: WitnessValues,
