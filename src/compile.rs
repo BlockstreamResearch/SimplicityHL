@@ -23,11 +23,11 @@ use crate::value::StructuralValue;
 use crate::witness::Arguments;
 use crate::{ProgNode, Value};
 
-/// Each Simfony expression expects an _input value_.
-/// A Simfony expression is translated into a Simplicity expression
+/// Each SimplicityHL expression expects an _input value_.
+/// A SimplicityHL expression is translated into a Simplicity expression
 /// that similarly expects an _input value_.
 ///
-/// Simfony variable names are translated into Simplicity expressions
+/// SimplicityHL variable names are translated into Simplicity expressions
 /// that extract the seeked value from the _input value_.
 ///
 /// Each (nested) block expression introduces a new scope.
@@ -64,7 +64,7 @@ struct Scope {
     ctx: simplicity::types::Context,
     /// Tracker of function calls.
     call_tracker: Arc<CallTracker>,
-    /// Values for parameters inside the Simfony program.
+    /// Values for parameters inside the SimplicityHL program.
     arguments: Arguments,
     include_debug_symbols: bool,
 }
@@ -247,7 +247,7 @@ fn compile_blk(
 }
 
 impl Program {
-    /// Compile the Simfony source code to Simplicity target code.
+    /// Compile the SimplicityHL source code to Simplicity target code.
     ///
     /// ## Precondition
     ///
@@ -402,9 +402,9 @@ impl Call {
             }
             CallName::TypeCast(..) => {
                 // A cast converts between two structurally equal types.
-                // Structural equality of Simfony types A and B means
+                // Structural equality of SimplicityHL types A and B means
                 // exact equality of the underlying Simplicity types of A and of B.
-                // Therefore, a Simfony cast is a NOP in Simplicity.
+                // Therefore, a SimplicityHL cast is a NOP in Simplicity.
                 Ok(args)
             }
             CallName::Custom(function) => {

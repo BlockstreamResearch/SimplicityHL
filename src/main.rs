@@ -19,8 +19,8 @@ fn run() -> Result<(), String> {
         Command::new(env!("CARGO_BIN_NAME"))
             .about(
                 "\
-                Compile the given Simfony program and print the resulting Simplicity base64 string.\n\
-                If a Simfony witness is provided, then use it to satisfy the program (requires \
+                Compile the given SimplicityHL program and print the resulting Simplicity base64 string.\n\
+                If a SimplicityHL witness is provided, then use it to satisfy the program (requires \
                 feature 'serde' to be enabled).\
                 ",
             )
@@ -29,7 +29,7 @@ fn run() -> Result<(), String> {
                     .required(true)
                     .value_name("PROGRAM_FILE")
                     .action(ArgAction::Set)
-                    .help("Simfony program file to build"),
+                    .help("SimplicityHL program file to build"),
             )
     };
 

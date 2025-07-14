@@ -6,7 +6,7 @@ use simfony::types::TypeDeconstructible;
 
 mod jet;
 
-/// Write a Simfony jet as a Rust function to the sink.
+/// Write a SimplicityHL jet as a Rust function to the sink.
 fn write_jet<W: io::Write>(jet: Elements, w: &mut W) -> io::Result<()> {
     for line in jet::documentation(jet).lines() {
         match line.is_empty() {

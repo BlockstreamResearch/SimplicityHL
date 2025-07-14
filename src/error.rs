@@ -301,8 +301,8 @@ pub enum Error {
     CannotParse(String),
     Grammar(String),
     IncompatibleMatchArms(MatchPattern, MatchPattern),
-    // TODO: Remove CompileError once Simfony has a type system
-    // The Simfony compiler should never produce ill-typed Simplicity code
+    // TODO: Remove CompileError once SimplicityHL has a type system
+    // The SimplicityHL compiler should never produce ill-typed Simplicity code
     // The compiler can only be this precise if it knows a type system at least as expressive as Simplicity's
     CannotCompile(String),
     JetDoesNotExist(JetName),

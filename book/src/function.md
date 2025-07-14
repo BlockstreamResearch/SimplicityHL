@@ -31,12 +31,12 @@ let z: u32 = add(40, 2);
 
 ## No early returns
 
-Simfony has no support for an early return via a "return" keyword.
+SimplicityHL has no support for an early return via a "return" keyword.
 The only branching that is available is via [match expressions](./match_expression.md).
 
 ## No recursion
 
-Simfony has no support for recursive function calls.
+SimplicityHL has no support for recursive function calls.
 A function can be called inside a function body if it has been defined before.
 This means that a function cannot call itself.
 Loops, where `f` calls `g` and `g` calls `f`, are also impossible.
@@ -75,7 +75,7 @@ fn g() -> u32 {
 
 ## Main function
 
-The `main` function is the entry point of each Simfony program.
+The `main` function is the entry point of each SimplicityHL program.
 Running a program means running its `main` function.
 Other functions are called from the `main` function.
 
@@ -86,7 +86,7 @@ fn main() {
 ```
 
 The `main` function is a reserved name and must exist in every program.
-Simfony programs are always "binaries".
+SimplicityHL programs are always "binaries".
 There is no support for "libraries".
 
 ## Jets

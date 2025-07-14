@@ -1,12 +1,12 @@
 {
   "name": "simfony-language",
-  "displayName": "Simfony Language Support",
-  "description": "Syntax highlighting and autocompletion for Simfony language",
+  "displayName": "SimplicityHL Language Support",
+  "description": "Syntax highlighting and autocompletion for SimplicityHL language",
   "version": "0.0.1",
   "publisher": "blockstream",
   "repository": {
     "type": "git",
-    "url": "https://github.com/BlockstreamResearch/simfony"
+    "url": "https://github.com/BlockstreamResearch/SimplicityHL"
   },
   "engines": {
     "vscode": "^1.85.0"

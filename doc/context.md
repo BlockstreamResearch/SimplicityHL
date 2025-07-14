@@ -6,7 +6,7 @@ A context Γ maps variable names to Simplicity types:
 
 We write Γ(`v`) = A to denote that variable `v` has type A in context Γ.
 
-We handle free variables inside Simfony expressions via contexts.
+We handle free variables inside SimplicityHL expressions via contexts.
 
 If all free variables are defined in a context, then the context assigns a type to the expression.
 
@@ -14,7 +14,7 @@ We write Γ ⊩ `a`: A to denote that expression `a` has type A in context Γ.
 
 Note that contexts handle only the **target type** of an expression!
 
-Source types are handled by environments and the translation of Simfony to Simplicity.
+Source types are handled by environments and the translation of SimplicityHL to Simplicity.
 
 We write Γ ⊎ Δ to denote the **disjoint union** of Γ and Δ.
 

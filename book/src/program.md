@@ -1,6 +1,6 @@
 # Programs
 
-A Simfony program consists of a `main` [function](./function.md).
+A SimplicityHL program consists of a `main` [function](./function.md).
 
 A program may also have [type aliases](./type_alias.md) or custom [function definitions](./function.md).
 The `main` function comes last in the program, because everything it calls must be defined before it.

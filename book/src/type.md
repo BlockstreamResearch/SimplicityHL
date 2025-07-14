@@ -1,6 +1,6 @@
 # Types and Values
 
-Simfony mostly uses a subset of Rust's types.
+SimplicityHL mostly uses a subset of Rust's types.
 It extends Rust in some ways to make it work better with Simplicity and with the blockchain.
 
 ## Boolean Type
@@ -27,7 +27,7 @@ Values of type `bool` are truth values, which are either `true` or `false`.
 
 Unsigned integers range from 1 bit to 256 bits.
 [`u8`](https://doc.rust-lang.org/std/primitive.u8.html) to [`u128`](https://doc.rust-lang.org/std/primitive.u128.html) are also supported in Rust.
-`u1`, `u2`, `u4` and `u256` are new to Simfony.
+`u1`, `u2`, `u4` and `u256` are new to SimplicityHL.
 Integer values can be written in decimal notation `123456`, binary notation[^bin] `0b10101010` or hexadecimal notation[^hex] `0xdeadbeef`.
 There are no signed integers.
 
@@ -103,8 +103,8 @@ Arrays are always of finite length.
 | `List<A,`2<sup>N</sup>`>` | <2<sup>N</sup>-list | `list![]`, …, `list![a1, …, a`(2<sup>N</sup> - 1)`]` |
 
 Lists hold a variable number of elements of the same type.
-This is similar to [Rust vectors](https://doc.rust-lang.org/std/vec/struct.Vec.html), but Simfony doesn't have a heap.
-In Simfony, lists exists on the stack, which is why the maximum list length is bounded.
+This is similar to [Rust vectors](https://doc.rust-lang.org/std/vec/struct.Vec.html), but SimplicityHL doesn't have a heap.
+In SimplicityHL, lists exists on the stack, which is why the maximum list length is bounded.
 
 <2-lists hold fewer than 2 elements, so zero or one element.
 <4-lists hold fewer than 4 elements, so zero to three elements.

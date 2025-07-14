@@ -9,13 +9,13 @@ use crate::error::Span;
 use crate::types::ResolvedType;
 use crate::value::{StructuralValue, Value};
 
-/// Tracker of Simfony call expressions inside Simplicity target code.
+/// Tracker of SimplicityHL call expressions inside Simplicity target code.
 ///
 /// Tracking happens via CMRs that are inserted into the Simplicity target code.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DebugSymbols(HashMap<Cmr, TrackedCall>);
 
-/// Intermediate representation of tracked Simfony call expressions
+/// Intermediate representation of tracked SimplicityHL call expressions
 /// that is mutable and that lacks information about the source file.
 ///
 /// The struct can be converted to [`DebugSymbols`] by providing the source file.
@@ -71,7 +71,7 @@ pub struct DebugValue {
 
 impl DebugSymbols {
     /// Insert a tracked call expression.
-    /// Use the Simfony source `file` to extract the Simfony text of the expression.
+    /// Use the SimplicityHL source `file` to extract the SimplicityHL text of the expression.
     pub(crate) fn insert(&mut self, span: Span, cmr: Cmr, name: TrackedCallName, file: &str) {
         let text = remove_excess_whitespace(span.to_slice(file).unwrap_or(""));
         let text = text
@@ -152,7 +152,7 @@ impl CallTracker {
 }
 
 impl TrackedCall {
-    /// Access the text of the Simfony call expression.
+    /// Access the text of the SimplicityHL call expression.
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -197,7 +197,7 @@ impl TrackedCall {
 }
 
 impl FallibleCall {
-    /// Access the Simfony text of the call expression.
+    /// Access the SimplicityHL text of the call expression.
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -209,7 +209,7 @@ impl FallibleCall {
 }
 
 impl DebugValue {
-    /// Access the Simfony text of the debug expression.
+    /// Access the SimplicityHL text of the debug expression.
     pub fn text(&self) -> &str {
         &self.text
     }

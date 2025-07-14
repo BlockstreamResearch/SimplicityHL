@@ -1,6 +1,6 @@
 # Casting
 
-A Simfony type can be cast into another Simfony type if both types share the same structure.
+A SimplicityHL type can be cast into another SimplicityHL type if both types share the same structure.
 The structure of a type has to do with how the type is implemented on the Simplicity "processor".
 I will spare you the boring details.
 
@@ -50,7 +50,7 @@ If type `A` can be cast into type `B` and type `B` can be cast into type `C`, th
 
 ## Casting Expression
 
-All casting in Simfony happens explicitly through a casting expression.
+All casting in SimplicityHL happens explicitly through a casting expression.
 
 ```rust
 <Input>::into(input)
@@ -59,7 +59,7 @@ All casting in Simfony happens explicitly through a casting expression.
 The above expression casts the value `input` of type `Input` into some output type.
 The input type of the cast is explict while the output type is implicit.
 
-In Simfony, the output type of every expression is known.
+In SimplicityHL, the output type of every expression is known.
 
 ```rust
 let x: u32 = 1;
@@ -69,7 +69,7 @@ In the above example, the meaning of the expression `1` is clear because of the 
 Here, `1` means a string of 31 zeroes and 1 one.
 _In other contexts, `1` could mean something different, like a string of 255 zeroes and 1 one._
 
-The Simfony compiler knows the type of the outermost expression, and it tries to infer the types of inner expressions based on that.
+The SimplicityHL compiler knows the type of the outermost expression, and it tries to infer the types of inner expressions based on that.
 When it comes to casting expressions, the compiler has no idea about the input type of the cast.
 The programmer needs to supply this information by annotating the cast with its input type.
 
