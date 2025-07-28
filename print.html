@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>The Simfony Programming Language</title>
+        <title>The SimplicityHL Programming Language</title>
         <meta name="robots" content="noindex">
 
 
@@ -142,7 +142,7 @@
                         </button>
                     </div>
 
-                    <h1 class="menu-title">The Simfony Programming Language</h1>
+                    <h1 class="menu-title">The SimplicityHL Programming Language</h1>
 
                     <div class="right-buttons">
                         <a href="print.html" title="Print this book" aria-label="Print this book">
@@ -175,12 +175,12 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
-<p>Simfony is a high-level language for writing Bitcoin smart contracts.
-In other words, Simfony is a language for expressing spending conditions of UTXOs on the Bitcoin blockchain.</p>
-<p>Simfony looks and feels like <a href="https://www.rust-lang.org/">Rust</a>.
-Developers write Simfony, Bitcoin full nodes run Simplicity.</p>
+<p>SimplicityHL is a high-level language for writing Bitcoin smart contracts.
+In other words, SimplicityHL is a language for expressing spending conditions of UTXOs on the Bitcoin blockchain.</p>
+<p>SimplicityHL looks and feels like <a href="https://www.rust-lang.org/">Rust</a>.
+Developers write SimplicityHL, Bitcoin full nodes run Simplicity.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="types-and-values"><a class="header" href="#types-and-values">Types and Values</a></h1>
-<p>Simfony mostly uses a subset of Rust's types.
+<p>SimplicityHL mostly uses a subset of Rust's types.
 It extends Rust in some ways to make it work better with Simplicity and with the blockchain.</p>
 <h2 id="boolean-type"><a class="header" href="#boolean-type">Boolean Type</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th><th>Values</th></tr></thead><tbody>
@@ -203,7 +203,7 @@ It extends Rust in some ways to make it work better with Simplicity and with the
 </div>
 <p>Unsigned integers range from 1 bit to 256 bits.
 <a href="https://doc.rust-lang.org/std/primitive.u8.html"><code>u8</code></a> to <a href="https://doc.rust-lang.org/std/primitive.u128.html"><code>u128</code></a> are also supported in Rust.
-<code>u1</code>, <code>u2</code>, <code>u4</code> and <code>u256</code> are new to Simfony.
+<code>u1</code>, <code>u2</code>, <code>u4</code> and <code>u256</code> are new to SimplicityHL.
 Integer values can be written in decimal notation <code>123456</code>, binary notation<sup class="footnote-reference"><a href="#bin">2</a></sup> <code>0b10101010</code> or hexadecimal notation<sup class="footnote-reference"><a href="#hex">3</a></sup> <code>0xdeadbeef</code>.
 There are no signed integers.</p>
 <div class="footnote-definition" id="u256max"><sup class="footnote-definition-label">1</sup>
@@ -275,8 +275,8 @@ Each element of a tuple can have a different type.</p>
 </tbody></table>
 </div>
 <p>Lists hold a variable number of elements of the same type.
-This is similar to <a href="https://doc.rust-lang.org/std/vec/struct.Vec.html">Rust vectors</a>, but Simfony doesn't have a heap.
-In Simfony, lists exists on the stack, which is why the maximum list length is bounded.</p>
+This is similar to <a href="https://doc.rust-lang.org/std/vec/struct.Vec.html">Rust vectors</a>, but SimplicityHL doesn't have a heap.
+In SimplicityHL, lists exists on the stack, which is why the maximum list length is bounded.</p>
 <p>&lt;2-lists hold fewer than 2 elements, so zero or one element.
 &lt;4-lists hold fewer than 4 elements, so zero to three elements.
 &lt;8-lists hold fewer than 8 elements, so zero to seven elements.
@@ -332,7 +332,7 @@ The value <code>Right(b)</code> contains an inner value <code>b</code> of type <
 }
 <span class="boring">}</span></code></pre></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="type-aliases"><a class="header" href="#type-aliases">Type Aliases</a></h1>
-<p>Simfony currently doesn't support Rust-like <code>struct</code>s for organizing data.</p>
+<p>SimplicityHL currently doesn't support Rust-like <code>struct</code>s for organizing data.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>struct User {
@@ -341,7 +341,7 @@ The value <code>Right(b)</code> contains an inner value <code>b</code> of type <
   sign_in_count: u64,
 }
 <span class="boring">}</span></code></pre></pre>
-<p>Simfony programmers have to handle long tuples of unlabeled data, which can get messy.</p>
+<p>SimplicityHL programmers have to handle long tuples of unlabeled data, which can get messy.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>(bool, u256, u64)
@@ -383,7 +383,7 @@ These aliases can be used without defining them.</p>
 <tr><td><code>TokenAmount1</code></td><td><code>Either&lt;(u1, u256), u64&gt;</code></td></tr>
 </tbody></table>
 </div><div style="break-before: page; page-break-before: always;"></div><h1 id="casting"><a class="header" href="#casting">Casting</a></h1>
-<p>A Simfony type can be cast into another Simfony type if both types share the same structure.
+<p>A SimplicityHL type can be cast into another SimplicityHL type if both types share the same structure.
 The structure of a type has to do with how the type is implemented on the Simplicity "processor".
 I will spare you the boring details.</p>
 <p>Below is a table of types that can be cast into each other.</p>
@@ -426,14 +426,14 @@ I will spare you the boring details.</p>
 <p>If type <code>A</code> can be cast into type <code>B</code>, then type <code>B</code> can be cast into type <code>A</code> (symmetry).</p>
 <p>If type <code>A</code> can be cast into type <code>B</code> and type <code>B</code> can be cast into type <code>C</code>, then type <code>A</code> can be cast into type <code>C</code> (transitivity).</p>
 <h2 id="casting-expression"><a class="header" href="#casting-expression">Casting Expression</a></h2>
-<p>All casting in Simfony happens explicitly through a casting expression.</p>
+<p>All casting in SimplicityHL happens explicitly through a casting expression.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>&lt;Input&gt;::into(input)
 <span class="boring">}</span></code></pre></pre>
 <p>The above expression casts the value <code>input</code> of type <code>Input</code> into some output type.
 The input type of the cast is explict while the output type is implicit.</p>
-<p>In Simfony, the output type of every expression is known.</p>
+<p>In SimplicityHL, the output type of every expression is known.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>let x: u32 = 1;
@@ -441,7 +441,7 @@ The input type of the cast is explict while the output type is implicit.</p>
 <p>In the above example, the meaning of the expression <code>1</code> is clear because of the type <code>u32</code> of variable <code>x</code>.
 Here, <code>1</code> means a string of 31 zeroes and 1 one.
 <em>In other contexts, <code>1</code> could mean something different, like a string of 255 zeroes and 1 one.</em></p>
-<p>The Simfony compiler knows the type of the outermost expression, and it tries to infer the types of inner expressions based on that.
+<p>The SimplicityHL compiler knows the type of the outermost expression, and it tries to infer the types of inner expressions based on that.
 When it comes to casting expressions, the compiler has no idea about the input type of the cast.
 The programmer needs to supply this information by annotating the cast with its input type.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -464,10 +464,10 @@ The variable is of type <code>u32</code> and it is assigned the value <code>1</c
 <span class="boring">}</span></code></pre></pre>
 <p>Variables can be assigned to the output value of any expression, such as function calls.</p>
 <h2 id="explicit-typing"><a class="header" href="#explicit-typing">Explicit typing</a></h2>
-<p>In Simfony, the type of a defined variable <strong>always</strong> has to be written.
+<p>In SimplicityHL, the type of a defined variable <strong>always</strong> has to be written.
 This is different from Rust, which has better type inference.</p>
 <h2 id="immutability"><a class="header" href="#immutability">Immutability</a></h2>
-<p>Simfony variables are <strong>always</strong> immutable.
+<p>SimplicityHL variables are <strong>always</strong> immutable.
 There are no mutable variables.</p>
 <h2 id="redefinition-and-scoping"><a class="header" href="#redefinition-and-scoping">Redefinition and scoping</a></h2>
 <p>The same variable can be defined twice in the same scope.
@@ -523,12 +523,12 @@ This arm extends the 16-bit number <code>x</code> to a 32-bit number by padding 
 Because of type constraints, the output of <code>f</code> must match one of these two patterns.
 The whole match expression returns a value of type <code>u32</code>, from one of the two arms.</p>
 <h2 id="explicit-typing-1"><a class="header" href="#explicit-typing-1">Explicit typing</a></h2>
-<p>In Simfony, the type of variables inside match arms must <strong>always</strong> be written.
+<p>In SimplicityHL, the type of variables inside match arms must <strong>always</strong> be written.
 This is different from Rust, which has better type inference.</p>
 <h2 id="pattern-matching-1"><a class="header" href="#pattern-matching-1">Pattern matching</a></h2>
 <p>There is limited support for pattern matching inside match expressions.</p>
 <p>Boolean values can be matched.
-The Boolean match expression is the replacement for an "if-then-else" in Simfony.</p>
+The Boolean match expression is the replacement for an "if-then-else" in SimplicityHL.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>let bit_flip: bool = match false {
@@ -614,10 +614,10 @@ Here, <code>x</code> is assigned the value <code>40</code> and <code>y</code> is
 </span>let z: u32 = add(40, 2);
 <span class="boring">}</span></code></pre></pre>
 <h2 id="no-early-returns"><a class="header" href="#no-early-returns">No early returns</a></h2>
-<p>Simfony has no support for an early return via a "return" keyword.
+<p>SimplicityHL has no support for an early return via a "return" keyword.
 The only branching that is available is via <a href="./match_expression.html">match expressions</a>.</p>
 <h2 id="no-recursion"><a class="header" href="#no-recursion">No recursion</a></h2>
-<p>Simfony has no support for recursive function calls.
+<p>SimplicityHL has no support for recursive function calls.
 A function can be called inside a function body if it has been defined before.
 This means that a function cannot call itself.
 Loops, where <code>f</code> calls <code>g</code> and <code>g</code> calls <code>f</code>, are also impossible.</p>
@@ -651,14 +651,14 @@ fn g() -&gt; u32 {
 }
 <span class="boring">}</span></code></pre></pre>
 <h2 id="main-function"><a class="header" href="#main-function">Main function</a></h2>
-<p>The <code>main</code> function is the entry point of each Simfony program.
+<p>The <code>main</code> function is the entry point of each SimplicityHL program.
 Running a program means running its <code>main</code> function.
 Other functions are called from the <code>main</code> function.</p>
 <pre><pre class="playground"><code class="language-rust">fn main() {
     // ...
 }</code></pre></pre>
 <p>The <code>main</code> function is a reserved name and must exist in every program.
-Simfony programs are always "binaries".
+SimplicityHL programs are always "binaries".
 There is no support for "libraries".</p>
 <h2 id="jets"><a class="header" href="#jets">Jets</a></h2>
 <p>Jets are predefined and optimized functions for common usecases.</p>
@@ -671,7 +671,7 @@ They can be called without defining them manually.</p>
 <p>It is usually more efficient to call a jet than to manually compute a value.</p>
 <p><a href="https://docs.rs/simfony-as-rust/latest/simfony_as_rust/jet/index.html">The jet documentation</a> lists each jet and explains what it does.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="programs"><a class="header" href="#programs">Programs</a></h1>
-<p>A Simfony program consists of a <code>main</code> <a href="./function.html">function</a>.</p>
+<p>A SimplicityHL program consists of a <code>main</code> <a href="./function.html">function</a>.</p>
 <p>A program may also have <a href="./type_alias.html">type aliases</a> or custom <a href="./function.html">function definitions</a>.
 The <code>main</code> function comes last in the program, because everything it calls must be defined before it.</p>
 <pre><pre class="playground"><code class="language-rust">type Furlong = u32;

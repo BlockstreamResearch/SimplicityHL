@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Functions - The Simfony Programming Language</title>
+        <title>Functions - The SimplicityHL Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -141,7 +141,7 @@
                         </button>
                     </div>
 
-                    <h1 class="menu-title">The Simfony Programming Language</h1>
+                    <h1 class="menu-title">The SimplicityHL Programming Language</h1>
 
                     <div class="right-buttons">
                         <a href="print.html" title="Print this book" aria-label="Print this book">
@@ -200,10 +200,10 @@ Here, <code>x</code> is assigned the value <code>40</code> and <code>y</code> is
 </span>let z: u32 = add(40, 2);
 <span class="boring">}</span></code></pre></pre>
 <h2 id="no-early-returns"><a class="header" href="#no-early-returns">No early returns</a></h2>
-<p>Simfony has no support for an early return via a "return" keyword.
+<p>SimplicityHL has no support for an early return via a "return" keyword.
 The only branching that is available is via <a href="./match_expression.html">match expressions</a>.</p>
 <h2 id="no-recursion"><a class="header" href="#no-recursion">No recursion</a></h2>
-<p>Simfony has no support for recursive function calls.
+<p>SimplicityHL has no support for recursive function calls.
 A function can be called inside a function body if it has been defined before.
 This means that a function cannot call itself.
 Loops, where <code>f</code> calls <code>g</code> and <code>g</code> calls <code>f</code>, are also impossible.</p>
@@ -237,14 +237,14 @@ fn g() -&gt; u32 {
 }
 <span class="boring">}</span></code></pre></pre>
 <h2 id="main-function"><a class="header" href="#main-function">Main function</a></h2>
-<p>The <code>main</code> function is the entry point of each Simfony program.
+<p>The <code>main</code> function is the entry point of each SimplicityHL program.
 Running a program means running its <code>main</code> function.
 Other functions are called from the <code>main</code> function.</p>
 <pre><pre class="playground"><code class="language-rust">fn main() {
     // ...
 }</code></pre></pre>
 <p>The <code>main</code> function is a reserved name and must exist in every program.
-Simfony programs are always "binaries".
+SimplicityHL programs are always "binaries".
 There is no support for "libraries".</p>
 <h2 id="jets"><a class="header" href="#jets">Jets</a></h2>
 <p>Jets are predefined and optimized functions for common usecases.</p>

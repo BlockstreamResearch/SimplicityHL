@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Match Expression - The Simfony Programming Language</title>
+        <title>Match Expression - The SimplicityHL Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -141,7 +141,7 @@
                         </button>
                     </div>
 
-                    <h1 class="menu-title">The Simfony Programming Language</h1>
+                    <h1 class="menu-title">The SimplicityHL Programming Language</h1>
 
                     <div class="right-buttons">
                         <a href="print.html" title="Print this book" aria-label="Print this book">
@@ -192,12 +192,12 @@ This arm extends the 16-bit number <code>x</code> to a 32-bit number by padding 
 Because of type constraints, the output of <code>f</code> must match one of these two patterns.
 The whole match expression returns a value of type <code>u32</code>, from one of the two arms.</p>
 <h2 id="explicit-typing"><a class="header" href="#explicit-typing">Explicit typing</a></h2>
-<p>In Simfony, the type of variables inside match arms must <strong>always</strong> be written.
+<p>In SimplicityHL, the type of variables inside match arms must <strong>always</strong> be written.
 This is different from Rust, which has better type inference.</p>
 <h2 id="pattern-matching"><a class="header" href="#pattern-matching">Pattern matching</a></h2>
 <p>There is limited support for pattern matching inside match expressions.</p>
 <p>Boolean values can be matched.
-The Boolean match expression is the replacement for an "if-then-else" in Simfony.</p>
+The Boolean match expression is the replacement for an "if-then-else" in SimplicityHL.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>let bit_flip: bool = match false {

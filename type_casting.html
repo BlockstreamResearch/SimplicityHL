@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Type Casting - The Simfony Programming Language</title>
+        <title>Type Casting - The SimplicityHL Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -141,7 +141,7 @@
                         </button>
                     </div>
 
-                    <h1 class="menu-title">The Simfony Programming Language</h1>
+                    <h1 class="menu-title">The SimplicityHL Programming Language</h1>
 
                     <div class="right-buttons">
                         <a href="print.html" title="Print this book" aria-label="Print this book">
@@ -174,7 +174,7 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="casting"><a class="header" href="#casting">Casting</a></h1>
-<p>A Simfony type can be cast into another Simfony type if both types share the same structure.
+<p>A SimplicityHL type can be cast into another SimplicityHL type if both types share the same structure.
 The structure of a type has to do with how the type is implemented on the Simplicity "processor".
 I will spare you the boring details.</p>
 <p>Below is a table of types that can be cast into each other.</p>
@@ -217,14 +217,14 @@ I will spare you the boring details.</p>
 <p>If type <code>A</code> can be cast into type <code>B</code>, then type <code>B</code> can be cast into type <code>A</code> (symmetry).</p>
 <p>If type <code>A</code> can be cast into type <code>B</code> and type <code>B</code> can be cast into type <code>C</code>, then type <code>A</code> can be cast into type <code>C</code> (transitivity).</p>
 <h2 id="casting-expression"><a class="header" href="#casting-expression">Casting Expression</a></h2>
-<p>All casting in Simfony happens explicitly through a casting expression.</p>
+<p>All casting in SimplicityHL happens explicitly through a casting expression.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>&lt;Input&gt;::into(input)
 <span class="boring">}</span></code></pre></pre>
 <p>The above expression casts the value <code>input</code> of type <code>Input</code> into some output type.
 The input type of the cast is explict while the output type is implicit.</p>
-<p>In Simfony, the output type of every expression is known.</p>
+<p>In SimplicityHL, the output type of every expression is known.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>let x: u32 = 1;
@@ -232,7 +232,7 @@ The input type of the cast is explict while the output type is implicit.</p>
 <p>In the above example, the meaning of the expression <code>1</code> is clear because of the type <code>u32</code> of variable <code>x</code>.
 Here, <code>1</code> means a string of 31 zeroes and 1 one.
 <em>In other contexts, <code>1</code> could mean something different, like a string of 255 zeroes and 1 one.</em></p>
-<p>The Simfony compiler knows the type of the outermost expression, and it tries to infer the types of inner expressions based on that.
+<p>The SimplicityHL compiler knows the type of the outermost expression, and it tries to infer the types of inner expressions based on that.
 When it comes to casting expressions, the compiler has no idea about the input type of the cast.
 The programmer needs to supply this information by annotating the cast with its input type.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]

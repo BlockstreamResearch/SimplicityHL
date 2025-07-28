@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Types and Values - The Simfony Programming Language</title>
+        <title>Types and Values - The SimplicityHL Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -141,7 +141,7 @@
                         </button>
                     </div>
 
-                    <h1 class="menu-title">The Simfony Programming Language</h1>
+                    <h1 class="menu-title">The SimplicityHL Programming Language</h1>
 
                     <div class="right-buttons">
                         <a href="print.html" title="Print this book" aria-label="Print this book">
@@ -174,7 +174,7 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="types-and-values"><a class="header" href="#types-and-values">Types and Values</a></h1>
-<p>Simfony mostly uses a subset of Rust's types.
+<p>SimplicityHL mostly uses a subset of Rust's types.
 It extends Rust in some ways to make it work better with Simplicity and with the blockchain.</p>
 <h2 id="boolean-type"><a class="header" href="#boolean-type">Boolean Type</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th><th>Values</th></tr></thead><tbody>
@@ -197,7 +197,7 @@ It extends Rust in some ways to make it work better with Simplicity and with the
 </div>
 <p>Unsigned integers range from 1 bit to 256 bits.
 <a href="https://doc.rust-lang.org/std/primitive.u8.html"><code>u8</code></a> to <a href="https://doc.rust-lang.org/std/primitive.u128.html"><code>u128</code></a> are also supported in Rust.
-<code>u1</code>, <code>u2</code>, <code>u4</code> and <code>u256</code> are new to Simfony.
+<code>u1</code>, <code>u2</code>, <code>u4</code> and <code>u256</code> are new to SimplicityHL.
 Integer values can be written in decimal notation <code>123456</code>, binary notation<sup class="footnote-reference"><a href="#bin">2</a></sup> <code>0b10101010</code> or hexadecimal notation<sup class="footnote-reference"><a href="#hex">3</a></sup> <code>0xdeadbeef</code>.
 There are no signed integers.</p>
 <div class="footnote-definition" id="u256max"><sup class="footnote-definition-label">1</sup>
@@ -269,8 +269,8 @@ Each element of a tuple can have a different type.</p>
 </tbody></table>
 </div>
 <p>Lists hold a variable number of elements of the same type.
-This is similar to <a href="https://doc.rust-lang.org/std/vec/struct.Vec.html">Rust vectors</a>, but Simfony doesn't have a heap.
-In Simfony, lists exists on the stack, which is why the maximum list length is bounded.</p>
+This is similar to <a href="https://doc.rust-lang.org/std/vec/struct.Vec.html">Rust vectors</a>, but SimplicityHL doesn't have a heap.
+In SimplicityHL, lists exists on the stack, which is why the maximum list length is bounded.</p>
 <p>&lt;2-lists hold fewer than 2 elements, so zero or one element.
 &lt;4-lists hold fewer than 4 elements, so zero to three elements.
 &lt;8-lists hold fewer than 8 elements, so zero to seven elements.
