@@ -54,7 +54,8 @@ fn run() -> Result<(), String> {
             .get_matches()
     };
 
-    let prog_file = matches.get_one::<String>("prog_file").unwrap();
+    let prog_file = matches.get_one::<String>("prog_file")
+        .ok_or("Program file argument is required")?;
     let prog_path = std::path::Path::new(prog_file);
     let prog_text = std::fs::read_to_string(prog_path).map_err(|e| e.to_string())?;
     let include_debug_symbols = matches.get_flag("debug");
@@ -69,7 +70,7 @@ fn run() -> Result<(), String> {
                 let wit_path = std::path::Path::new(wit_file);
                 let wit_text = std::fs::read_to_string(wit_path).map_err(|e| e.to_string())?;
                 let witness =
-                    serde_json::from_str::<simplicityhl::WitnessValues>(&wit_text).unwrap();
+                    serde_json::from_str::<simplicityhl::WitnessValues>(&wit_text).map_err(|e| e.to_string())?;
                 Ok(witness)
             })
             .transpose()?
