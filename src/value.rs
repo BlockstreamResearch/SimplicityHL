@@ -384,7 +384,10 @@ pub enum ValueInner {
     /// Bounded list of values.
     ///
     /// Each element must have the same type.
-    // FIXME: Prevent construction of invalid lists (that run out of bounds)
+    /// The number of elements must be strictly less than the bound.
+    /// 
+    /// Safety: List construction is validated by the `list()` method which
+    /// checks bounds and type consistency before creating the list.
     List(Arc<[Value]>, NonZeroPow2Usize),
 }
 

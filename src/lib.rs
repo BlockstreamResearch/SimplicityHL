@@ -292,15 +292,14 @@ mod tests {
 
     impl TestCase<TemplateProgram> {
         pub fn template_file<P: AsRef<Path>>(program_file_path: P) -> Self {
-            let program_text = std::fs::read_to_string(program_file_path).unwrap();
+            let program_text = std::fs::read_to_string(program_file_path)
+                .expect("Failed to read program file");
             Self::template_text(Cow::Owned(program_text))
         }
 
         pub fn template_text(program_text: Cow<str>) -> Self {
-            let program = match TemplateProgram::new(program_text.as_ref()) {
-                Ok(x) => x,
-                Err(error) => panic!("{error}"),
-            };
+            let program = TemplateProgram::new(program_text.as_ref())
+                .expect("Failed to parse program template");
             Self {
                 program,
                 lock_time: elements::LockTime::ZERO,
@@ -314,11 +313,10 @@ mod tests {
             self,
             arguments_file_path: P,
         ) -> TestCase<CompiledProgram> {
-            let arguments_text = std::fs::read_to_string(arguments_file_path).unwrap();
-            let arguments = match serde_json::from_str::<Arguments>(&arguments_text) {
-                Ok(x) => x,
-                Err(error) => panic!("{error}"),
-            };
+            let arguments_text = std::fs::read_to_string(arguments_file_path)
+                .expect("Failed to read arguments file");
+            let arguments = serde_json::from_str::<Arguments>(&arguments_text)
+                .expect("Failed to parse arguments JSON");
             self.with_arguments(arguments)
         }
 
@@ -352,11 +350,10 @@ mod tests {
             self,
             witness_file_path: P,
         ) -> TestCase<SatisfiedProgram> {
-            let witness_text = std::fs::read_to_string(witness_file_path).unwrap();
-            let witness_values = match serde_json::from_str::<WitnessValues>(&witness_text) {
-                Ok(x) => x,
-                Err(error) => panic!("{error}"),
-            };
+            let witness_text = std::fs::read_to_string(witness_file_path)
+                .expect("Failed to read witness file");
+            let witness_values = serde_json::from_str::<WitnessValues>(&witness_text)
+                .expect("Failed to parse witness JSON");
             self.with_witness_values(witness_values)
         }
 

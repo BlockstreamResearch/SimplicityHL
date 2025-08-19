@@ -22,7 +22,7 @@ The function then checks if the carry is true, signaling an overflow, in which c
 On the last line, the value of `sum` is returned.
 
 The above function is called by writing its name `add` followed by a list of arguments `(40, 2)`.
-Each parameter needs an argument, so the list of arguments is as long as the list of arguments.
+Each parameter needs an argument, so the list of arguments is as long as the list of parameters.
 Here, `x` is assigned the value `40` and `y` is assigned the value `2`.
 
 ```rust
@@ -54,7 +54,7 @@ fn level_1() -> u32 {
 }
 
 fn level_2() -> u32 {
-    let (_, next) = jet::increment_32(level_1));
+    let (_, next) = jet::increment_32(level_1());
     next
 }
 ```
@@ -91,7 +91,7 @@ There is no support for "libraries".
 
 ## Jets
 
-Jets are predefined and optimized functions for common usecases.
+Jets are predefined and optimized functions for common use cases.
 
 ```rust
 jet::add_32(40, 2)

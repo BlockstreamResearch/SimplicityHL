@@ -48,7 +48,7 @@ let z: u32 = {
     assert!(jet::eq_32(y, 2)); // y == 2
     x
 };
-assert!(jet::eq_32(x, 3)); // z == 3
+assert!(jet::eq_32(z, 3)); // z == 3
 ```
 
 ## Pattern matching

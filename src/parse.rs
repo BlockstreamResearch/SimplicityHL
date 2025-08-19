@@ -1426,7 +1426,8 @@ impl PestParse for BuiltinAlias {
 }
 
 impl PestParse for NonZeroPow2Usize {
-    // FIXME: This equates NonZeroPow2Usize with list bounds. Create wrapper for list bounds?
+    // Note: This is used for list bounds in the grammar.
+    // NonZeroPow2Usize represents powers of 2 > 1, which are valid list bounds.
     const RULE: Rule = Rule::list_bound;
 
     fn parse(pair: pest::iterators::Pair<Rule>) -> Result<Self, RichError> {

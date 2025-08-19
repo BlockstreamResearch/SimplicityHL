@@ -57,7 +57,7 @@ All casting in SimplicityHL happens explicitly through a casting expression.
 ```
 
 The above expression casts the value `input` of type `Input` into some output type.
-The input type of the cast is explict while the output type is implicit.
+The input type of the cast is explicit while the output type is implicit.
 
 In SimplicityHL, the output type of every expression is known.
 
@@ -78,4 +78,4 @@ let x: u32 = <(u16, u16)>::into((0, 1));
 ```
 
 In the above example, we cast the tuple `(0, 1)` of type `(u16, u16)` into type `u32`.
-Feel free to consult the table above to verify that this is valid cast.
+Feel free to consult the table above to verify that this is a valid cast.

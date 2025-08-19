@@ -22,7 +22,7 @@ During the translation, we can ignore the source type of Simplicity expressions 
 
 Target types are handled by contexts.
 
-We obtain context Ctx(Ξ) from environment Ξ by mapping each variable `a` from Ξ to the target type of Ξ(`x`):
+We obtain context Ctx(Ξ) from environment Ξ by mapping each variable `x` from Ξ to the target type of Ξ(`x`):
 
 Ctx(Ξ)(`x`) = B if Ξ(`x`) = a: A → B
 
@@ -37,7 +37,7 @@ As we translate `s` to Simplicity, we need an environment that maps the variable
 
 If `p` is just a variable `p = a`, then the environment is simply [`a` ↦ iden: A → A].
 
-If `p` is a product of two variables `p = (a, b)`, then the environment is [`a` ↦ take iden: A × B → A, `b` ↦ drop iden: A × B → B.
+If `p` is a product of two variables `p = (a, b)`, then the environment is [`a` ↦ take iden: A × B → A, `b` ↦ drop iden: A × B → B].
 
 "take" and "drop" are added as we go deeper in the product hierarchy. The pattern `_` is ignored.
 

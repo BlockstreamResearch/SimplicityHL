@@ -100,11 +100,11 @@ Arrays are always of finite length.
 | `List<A, 256>`            | <256-list           | `list![]`, …, `list![a1, …, a255]`                   |
 | `List<A, 512>`            | <512-list           | `list![]`, …, `list![a1, …, a511]`                   |
 | …                         | …                   | …                                                    |
-| `List<A,`2<sup>N</sup>`>` | <2<sup>N</sup>-list | `list![]`, …, `list![a1, …, a`(2<sup>N</sup> - 1)`]` |
+| `List<A, 2^N>`           | <2^N-list           | `list![]`, …, `list![a1, …, a_{2^N - 1}]`          |
 
 Lists hold a variable number of elements of the same type.
 This is similar to [Rust vectors](https://doc.rust-lang.org/std/vec/struct.Vec.html), but SimplicityHL doesn't have a heap.
-In SimplicityHL, lists exists on the stack, which is why the maximum list length is bounded.
+In SimplicityHL, lists exist on the stack, which is why the maximum list length is bounded.
 
 <2-lists hold fewer than 2 elements, so zero or one element.
 <4-lists hold fewer than 4 elements, so zero to three elements.
@@ -156,7 +156,7 @@ Sum types represent values that are of some "left" type in some cases and that a
 [They work just like in the either crate](https://docs.rs/either/latest/either/enum.Either.html).
 [The Result type from Rust is very similar, too](https://doc.rust-lang.org/std/result/index.html).
 
-A sum type type is generic over two types, `A` and `B`.
+A sum type is generic over two types, `A` and `B`.
 The value `Left(a)` contains an inner value `a` of type `A`.
 The value `Right(b)` contains an inner value `b` of type `B`.
 

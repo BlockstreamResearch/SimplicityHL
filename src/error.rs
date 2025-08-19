@@ -301,9 +301,15 @@ pub enum Error {
     CannotParse(String),
     Grammar(String),
     IncompatibleMatchArms(MatchPattern, MatchPattern),
-    // TODO: Remove CompileError once SimplicityHL has a type system
-    // The SimplicityHL compiler should never produce ill-typed Simplicity code
-    // The compiler can only be this precise if it knows a type system at least as expressive as Simplicity's
+    /// Simplicity's type system rejected the compiled code.
+    /// 
+    /// This indicates a mismatch between SimplicityHL's type checking and
+    /// Simplicity's more strict type system. This is expected during development
+    /// as SimplicityHL's type system continues to improve.
+    SimplicityTypeError(String),
+    /// General compilation failure that doesn't fit other error categories.
+    /// 
+    /// This is a fallback for unexpected compilation issues.
     CannotCompile(String),
     JetDoesNotExist(JetName),
     InvalidCast(ResolvedType, ResolvedType),
@@ -363,6 +369,10 @@ impl fmt::Display for Error {
             Error::IncompatibleMatchArms(pattern1, pattern2) => write!(
                 f,
                 "Match arm `{pattern1}` is incompatible with arm `{pattern2}`"
+            ),
+            Error::SimplicityTypeError(description) => write!(
+                f,
+                "Simplicity type system rejected this code: {description}"
             ),
             Error::CannotCompile(description) => write!(
                 f,
@@ -501,7 +511,7 @@ impl From<crate::num::ParseIntError> for Error {
 
 impl From<simplicity::types::Error> for Error {
     fn from(error: simplicity::types::Error) -> Self {
-        Self::CannotCompile(error.to_string())
+        Self::SimplicityTypeError(error.to_string())
     }
 }
 
