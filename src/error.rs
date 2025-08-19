@@ -374,6 +374,14 @@ impl fmt::Display for Error {
                 f,
                 "Simplicity type system rejected this code: {description}"
             ),
+            Error::TypeUnificationError(expected, found) => write!(
+                f,
+                "Cannot unify types: expected `{expected}`, found `{found}`"
+            ),
+            Error::ContextTypeMismatch(expected, found) => write!(
+                f,
+                "Context type mismatch: expected `{expected}`, found `{found}`"
+            ),
             Error::CannotCompile(description) => write!(
                 f,
                 "Failed to compile to Simplicity: {description}"
