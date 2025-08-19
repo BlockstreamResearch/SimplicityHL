@@ -84,8 +84,11 @@ impl NonZeroPow2Usize {
     pub const fn log2(self) -> NonZeroU32 {
         let n = self.0.trailing_zeros();
         debug_assert!(0 < n);
-        // Safety: 0 < n by definition of NonZeroPow2Usize
-        unsafe { NonZeroU32::new_unchecked(n) }
+        // Safety: Add runtime check for better robustness
+        match NonZeroU32::new(n) {
+            Some(non_zero) => non_zero,
+            None => panic!("log2 of NonZeroPow2Usize cannot be zero"),
+        }
     }
 
     /// Multiply the value by two.

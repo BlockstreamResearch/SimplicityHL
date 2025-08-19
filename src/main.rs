@@ -15,6 +15,8 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
+    // Performance: Track compilation time for optimization
+    let start_time = std::time::Instant::now();
     let command = {
         Command::new(env!("CARGO_BIN_NAME"))
             .about(
@@ -57,6 +59,13 @@ fn run() -> Result<(), String> {
     let prog_file = matches.get_one::<String>("prog_file")
         .ok_or("Program file argument is required")?;
     let prog_path = std::path::Path::new(prog_file);
+    // Security: Limit file size to prevent DoS attacks
+    const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB limit
+    let metadata = std::fs::metadata(prog_path).map_err(|e| e.to_string())?;
+    if metadata.len() > MAX_FILE_SIZE {
+        return Err(format!("Program file too large: {} bytes (max: {} bytes)", 
+                          metadata.len(), MAX_FILE_SIZE));
+    }
     let prog_text = std::fs::read_to_string(prog_path).map_err(|e| e.to_string())?;
     let include_debug_symbols = matches.get_flag("debug");
 
@@ -68,6 +77,12 @@ fn run() -> Result<(), String> {
             .get_one::<String>("wit_file")
             .map(|wit_file| -> Result<simplicityhl::WitnessValues, String> {
                 let wit_path = std::path::Path::new(wit_file);
+                // Security: Limit witness file size
+                let wit_metadata = std::fs::metadata(wit_path).map_err(|e| e.to_string())?;
+                if wit_metadata.len() > MAX_FILE_SIZE {
+                    return Err(format!("Witness file too large: {} bytes (max: {} bytes)", 
+                                      wit_metadata.len(), MAX_FILE_SIZE));
+                }
                 let wit_text = std::fs::read_to_string(wit_path).map_err(|e| e.to_string())?;
                 let witness =
                     serde_json::from_str::<simplicityhl::WitnessValues>(&wit_text).map_err(|e| e.to_string())?;
@@ -96,6 +111,12 @@ fn run() -> Result<(), String> {
             Base64Display::new(&program_bytes, &STANDARD)
         );
     }
+
+    // Performance: Report compilation time and optimization stats
+    let duration = start_time.elapsed();
+    eprintln!("Compilation completed in {:.2}ms", duration.as_secs_f64() * 1000.0);
+    eprintln!("{}", simplicityhl::intern::interning_stats());
+    eprintln!("{}", simplicityhl::type_cache::type_cache_stats());
 
     Ok(())
 }

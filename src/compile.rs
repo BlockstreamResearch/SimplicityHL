@@ -59,7 +59,8 @@ struct Scope {
     ///
     /// Inner scopes occur higher in the tree than outer scopes.
     /// Later assignments occur higher in the tree than earlier assignments.
-    /// ```
+    /// 
+    /// Performance: Pre-allocate with reasonable capacity to reduce allocations.
     variables: Vec<Vec<Pattern>>,
     ctx: simplicity::types::Context,
     /// Tracker of function calls.
@@ -84,7 +85,13 @@ impl Scope {
         include_debug_symbols: bool,
     ) -> Self {
         Self {
-            variables: vec![vec![Pattern::Ignore]],
+            // Performance: Pre-allocate with reasonable capacity
+            variables: {
+                let mut vars = Vec::with_capacity(8);
+                vars.push(Vec::with_capacity(4));
+                vars[0].push(Pattern::Ignore);
+                vars
+            },
             ctx: simplicity::types::Context::new(),
             call_tracker,
             arguments,
@@ -105,7 +112,8 @@ impl Scope {
 
     /// Push a new scope onto the stack.
     pub fn push_scope(&mut self) {
-        self.variables.push(Vec::new());
+        // Performance: Pre-allocate scope with reasonable capacity
+        self.variables.push(Vec::with_capacity(4));
     }
 
     /// Pop the current scope from the stack.

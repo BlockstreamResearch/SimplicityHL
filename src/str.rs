@@ -16,7 +16,8 @@ macro_rules! wrapped_string {
             #[doc = "## Panics\n\n"]
             #[doc = "Panics may occur down the line if the precondition is not satisfied."]
             pub fn from_str_unchecked(s: &str) -> Self {
-                Self(Arc::from(s))
+                // Performance: Use string interning for commonly used identifiers
+                Self(crate::intern::intern_string(s))
             }
 
             /// Access the inner string.

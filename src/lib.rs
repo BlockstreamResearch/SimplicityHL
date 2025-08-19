@@ -8,6 +8,7 @@ pub mod compile;
 pub mod debug;
 pub mod dummy_env;
 pub mod error;
+pub mod intern;
 pub mod jet;
 pub mod named;
 pub mod num;
@@ -16,6 +17,7 @@ pub mod pattern;
 #[cfg(feature = "serde")]
 mod serde;
 pub mod str;
+pub mod type_cache;
 pub mod types;
 pub mod value;
 mod witness;
@@ -48,9 +50,25 @@ pub struct TemplateProgram {
 impl TemplateProgram {
     /// Parse the template of a SimplicityHL program.
     ///
+    /// ## Example
+    ///
+    /// ```rust
+    /// use simplicityhl::TemplateProgram;
+    /// 
+    /// let program_code = r#"
+    ///     fn main() {
+    ///         assert!(jet::eq_32(42, 42));
+    ///     }
+    /// "#;
+    /// 
+    /// let template = TemplateProgram::new(program_code)?;
+    /// # Ok::<(), String>(())
+    /// ```
+    ///
     /// ## Errors
     ///
-    /// The string is not a valid SimplicityHL program.
+    /// Returns an error if the string is not a valid SimplicityHL program.
+    /// Common errors include syntax errors, undefined functions, or type mismatches.
     pub fn new<Str: Into<Arc<str>>>(s: Str) -> Result<Self, String> {
         let file = s.into();
         let parse_program = parse::Program::parse_from_str(&file)?;
@@ -67,6 +85,16 @@ impl TemplateProgram {
     }
 
     /// Instantiate the template program with the given `arguments`.
+    ///
+    /// ## Example
+    ///
+    /// ```rust
+    /// use simplicityhl::{TemplateProgram, Arguments};
+    /// 
+    /// let template = TemplateProgram::new("fn main() { assert!(true); }")?;
+    /// let compiled = template.instantiate(Arguments::default(), false)?;
+    /// # Ok::<(), String>(())
+    /// ```
     ///
     /// ## Errors
     ///

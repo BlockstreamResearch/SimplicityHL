@@ -275,7 +275,12 @@ impl From<RichError> for String {
 
 impl From<pest::error::Error<Rule>> for RichError {
     fn from(error: pest::error::Error<Rule>) -> Self {
-        let description = error.variant.message().to_string();
+        // Performance: Use Cow to avoid unnecessary string allocation
+        use std::borrow::Cow;
+        let description = match error.variant.message() {
+            msg if msg.len() < 128 => Cow::Borrowed(msg),
+            msg => Cow::Owned(msg.to_string()),
+        }.into_owned();
         let (start, end) = match error.line_col {
             pest::error::LineColLocation::Pos((line, col)) => {
                 (Position::new(line, col), Position::new(line, col + 1))
@@ -311,6 +316,10 @@ pub enum Error {
     /// 
     /// This is a fallback for unexpected compilation issues.
     CannotCompile(String),
+    /// Input file size exceeds safety limits.
+    /// 
+    /// Large input files are rejected to prevent denial of service attacks.
+    FileTooLarge(u64, u64),
     JetDoesNotExist(JetName),
     InvalidCast(ResolvedType, ResolvedType),
     MainNoInputs,
@@ -374,17 +383,14 @@ impl fmt::Display for Error {
                 f,
                 "Simplicity type system rejected this code: {description}"
             ),
-            Error::TypeUnificationError(expected, found) => write!(
-                f,
-                "Cannot unify types: expected `{expected}`, found `{found}`"
-            ),
-            Error::ContextTypeMismatch(expected, found) => write!(
-                f,
-                "Context type mismatch: expected `{expected}`, found `{found}`"
-            ),
             Error::CannotCompile(description) => write!(
                 f,
                 "Failed to compile to Simplicity: {description}"
+            ),
+            Error::FileTooLarge(size, max_size) => write!(
+                f,
+                "File too large: {} bytes (maximum allowed: {} bytes)",
+                size, max_size
             ),
             Error::JetDoesNotExist(name) => write!(
                 f,

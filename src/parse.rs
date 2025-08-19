@@ -824,7 +824,8 @@ impl<A: PestParse> ParseFromStr for A {
         let mut pairs = IdentParser::parse(A::RULE, s)
             .map_err(RichError::from)
             .with_file(s)?;
-        let pair = pairs.next().unwrap();
+        let pair = pairs.next()
+            .ok_or_else(|| Error::Grammar("Expected at least one parsing element".to_string()))?;
         A::parse(pair).with_file(s)
     }
 }

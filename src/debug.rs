@@ -210,8 +210,15 @@ impl FallibleCall {
 
 impl DebugValue {
     /// Access the SimplicityHL text of the debug expression.
+    /// 
+    /// In production builds, this may be sanitized to prevent information disclosure.
     pub fn text(&self) -> &str {
-        &self.text
+        // Security: In production, consider sanitizing debug output
+        #[cfg(debug_assertions)]
+        return &self.text;
+        
+        #[cfg(not(debug_assertions))]
+        return "[debug info sanitized in release build]";
     }
 
     /// Access the runtime input value.

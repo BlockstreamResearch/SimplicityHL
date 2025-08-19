@@ -694,27 +694,27 @@ impl Value {
                     let elements = output.split_off(output.len() - size);
                     debug_assert_eq!(elements.len(), size);
                     let ty = single.ty().as_array().expect("value is type-checked").0;
-                    output.push(Self::array(elements, ty.clone()));
+                    output.push(Self::array(elements, ty));
                 }
                 S::List(..) => {
                     let elements = output.split_off(output.len() - size);
                     debug_assert_eq!(elements.len(), size);
                     let (ty, bound) = single.ty().as_list().expect("value is type-checked");
-                    output.push(Self::list(elements, ty.clone(), bound));
+                    output.push(Self::list(elements, ty, bound));
                 }
                 S::Either(Either::Left(..)) => {
                     let left = output.pop().unwrap();
                     let right = single.ty().as_either().expect("value is type-checked").1;
-                    output.push(Self::left(left, right.clone()));
+                    output.push(Self::left(left, right));
                 }
                 S::Either(Either::Right(..)) => {
                     let left = single.ty().as_either().expect("value is type-checked").0;
                     let right = output.pop().unwrap();
-                    output.push(Self::right(left.clone(), right));
+                    output.push(Self::right(left, right));
                 }
                 S::Option(None) => {
                     let inner = single.ty().as_option().expect("value is type-checked");
-                    output.push(Self::none(inner.clone()));
+                    output.push(Self::none(inner));
                 }
                 S::Option(Some(..)) => {
                     let inner = output.pop().unwrap();
