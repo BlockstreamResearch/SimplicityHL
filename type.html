@@ -265,12 +265,12 @@ Each element of a tuple can have a different type.</p>
 <tr><td><code>List&lt;A, 256&gt;</code></td><td>&lt;256-list</td><td><code>list![]</code>, …, <code>list![a1, …, a255]</code></td></tr>
 <tr><td><code>List&lt;A, 512&gt;</code></td><td>&lt;512-list</td><td><code>list![]</code>, …, <code>list![a1, …, a511]</code></td></tr>
 <tr><td>…</td><td>…</td><td>…</td></tr>
-<tr><td><code>List&lt;A,</code>2<sup>N</sup><code>&gt;</code></td><td>&lt;2<sup>N</sup>-list</td><td><code>list![]</code>, …, <code>list![a1, …, a</code>(2<sup>N</sup> - 1)<code>]</code></td></tr>
+<tr><td><code>List&lt;A, 2^N&gt;</code></td><td>&lt;2^N-list</td><td><code>list![]</code>, …, <code>list![a1, …, a_{2^N - 1}]</code></td></tr>
 </tbody></table>
 </div>
 <p>Lists hold a variable number of elements of the same type.
 This is similar to <a href="https://doc.rust-lang.org/std/vec/struct.Vec.html">Rust vectors</a>, but SimplicityHL doesn't have a heap.
-In SimplicityHL, lists exists on the stack, which is why the maximum list length is bounded.</p>
+In SimplicityHL, lists exist on the stack, which is why the maximum list length is bounded.</p>
 <p>&lt;2-lists hold fewer than 2 elements, so zero or one element.
 &lt;4-lists hold fewer than 4 elements, so zero to three elements.
 &lt;8-lists hold fewer than 8 elements, so zero to seven elements.
@@ -314,7 +314,7 @@ The value <code>Some(a)</code> contains an inner value <code>a</code> of type <c
 <p>Sum types represent values that are of some "left" type in some cases and that are of another "right" type in other cases.
 <a href="https://docs.rs/either/latest/either/enum.Either.html">They work just like in the either crate</a>.
 <a href="https://doc.rust-lang.org/std/result/index.html">The Result type from Rust is very similar, too</a>.</p>
-<p>A sum type type is generic over two types, <code>A</code> and <code>B</code>.
+<p>A sum type is generic over two types, <code>A</code> and <code>B</code>.
 The value <code>Left(a)</code> contains an inner value <code>a</code> of type <code>A</code>.
 The value <code>Right(b)</code> contains an inner value <code>b</code> of type <code>B</code>.</p>
 <p>In Rust, we implement sum types as follows.</p>

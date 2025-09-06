@@ -193,7 +193,7 @@ In the above example, <code>x</code> and <code>y</code> are added via the <code>
 The function then checks if the carry is true, signaling an overflow, in which case it panics.
 On the last line, the value of <code>sum</code> is returned.</p>
 <p>The above function is called by writing its name <code>add</code> followed by a list of arguments <code>(40, 2)</code>.
-Each parameter needs an argument, so the list of arguments is as long as the list of arguments.
+Each parameter needs an argument, so the list of arguments is as long as the list of parameters.
 Here, <code>x</code> is assigned the value <code>40</code> and <code>y</code> is assigned the value <code>2</code>.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -220,7 +220,7 @@ fn level_1() -&gt; u32 {
 }
 
 fn level_2() -&gt; u32 {
-    let (_, next) = jet::increment_32(level_1));
+    let (_, next) = jet::increment_32(level_1());
     next
 }
 <span class="boring">}</span></code></pre></pre>
@@ -247,7 +247,7 @@ Other functions are called from the <code>main</code> function.</p>
 SimplicityHL programs are always "binaries".
 There is no support for "libraries".</p>
 <h2 id="jets"><a class="header" href="#jets">Jets</a></h2>
-<p>Jets are predefined and optimized functions for common usecases.</p>
+<p>Jets are predefined and optimized functions for common use cases.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>jet::add_32(40, 2)

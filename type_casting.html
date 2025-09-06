@@ -223,7 +223,7 @@ I will spare you the boring details.</p>
 </span>&lt;Input&gt;::into(input)
 <span class="boring">}</span></code></pre></pre>
 <p>The above expression casts the value <code>input</code> of type <code>Input</code> into some output type.
-The input type of the cast is explict while the output type is implicit.</p>
+The input type of the cast is explicit while the output type is implicit.</p>
 <p>In SimplicityHL, the output type of every expression is known.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -240,7 +240,7 @@ The programmer needs to supply this information by annotating the cast with its 
 </span>let x: u32 = &lt;(u16, u16)&gt;::into((0, 1));
 <span class="boring">}</span></code></pre></pre>
 <p>In the above example, we cast the tuple <code>(0, 1)</code> of type <code>(u16, u16)</code> into type <code>u32</code>.
-Feel free to consult the table above to verify that this is valid cast.</p>
+Feel free to consult the table above to verify that this is a valid cast.</p>
 
                     </main>
 

@@ -271,12 +271,12 @@ Each element of a tuple can have a different type.</p>
 <tr><td><code>List&lt;A, 256&gt;</code></td><td>&lt;256-list</td><td><code>list![]</code>, …, <code>list![a1, …, a255]</code></td></tr>
 <tr><td><code>List&lt;A, 512&gt;</code></td><td>&lt;512-list</td><td><code>list![]</code>, …, <code>list![a1, …, a511]</code></td></tr>
 <tr><td>…</td><td>…</td><td>…</td></tr>
-<tr><td><code>List&lt;A,</code>2<sup>N</sup><code>&gt;</code></td><td>&lt;2<sup>N</sup>-list</td><td><code>list![]</code>, …, <code>list![a1, …, a</code>(2<sup>N</sup> - 1)<code>]</code></td></tr>
+<tr><td><code>List&lt;A, 2^N&gt;</code></td><td>&lt;2^N-list</td><td><code>list![]</code>, …, <code>list![a1, …, a_{2^N - 1}]</code></td></tr>
 </tbody></table>
 </div>
 <p>Lists hold a variable number of elements of the same type.
 This is similar to <a href="https://doc.rust-lang.org/std/vec/struct.Vec.html">Rust vectors</a>, but SimplicityHL doesn't have a heap.
-In SimplicityHL, lists exists on the stack, which is why the maximum list length is bounded.</p>
+In SimplicityHL, lists exist on the stack, which is why the maximum list length is bounded.</p>
 <p>&lt;2-lists hold fewer than 2 elements, so zero or one element.
 &lt;4-lists hold fewer than 4 elements, so zero to three elements.
 &lt;8-lists hold fewer than 8 elements, so zero to seven elements.
@@ -320,7 +320,7 @@ The value <code>Some(a)</code> contains an inner value <code>a</code> of type <c
 <p>Sum types represent values that are of some "left" type in some cases and that are of another "right" type in other cases.
 <a href="https://docs.rs/either/latest/either/enum.Either.html">They work just like in the either crate</a>.
 <a href="https://doc.rust-lang.org/std/result/index.html">The Result type from Rust is very similar, too</a>.</p>
-<p>A sum type type is generic over two types, <code>A</code> and <code>B</code>.
+<p>A sum type is generic over two types, <code>A</code> and <code>B</code>.
 The value <code>Left(a)</code> contains an inner value <code>a</code> of type <code>A</code>.
 The value <code>Right(b)</code> contains an inner value <code>b</code> of type <code>B</code>.</p>
 <p>In Rust, we implement sum types as follows.</p>
@@ -432,7 +432,7 @@ I will spare you the boring details.</p>
 </span>&lt;Input&gt;::into(input)
 <span class="boring">}</span></code></pre></pre>
 <p>The above expression casts the value <code>input</code> of type <code>Input</code> into some output type.
-The input type of the cast is explict while the output type is implicit.</p>
+The input type of the cast is explicit while the output type is implicit.</p>
 <p>In SimplicityHL, the output type of every expression is known.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -449,7 +449,7 @@ The programmer needs to supply this information by annotating the cast with its 
 </span>let x: u32 = &lt;(u16, u16)&gt;::into((0, 1));
 <span class="boring">}</span></code></pre></pre>
 <p>In the above example, we cast the tuple <code>(0, 1)</code> of type <code>(u16, u16)</code> into type <code>u32</code>.
-Feel free to consult the table above to verify that this is valid cast.</p>
+Feel free to consult the table above to verify that this is a valid cast.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="let-statement"><a class="header" href="#let-statement">Let Statement</a></h1>
 <p>Variables are defined in let statements, <a href="https://doc.rust-lang.org/std/keyword.let.html">just like in Rust</a>.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -490,7 +490,7 @@ let z: u32 = {
     assert!(jet::eq_32(y, 2)); // y == 2
     x
 };
-assert!(jet::eq_32(x, 3)); // z == 3
+assert!(jet::eq_32(z, 3)); // z == 3
 <span class="boring">}</span></code></pre></pre>
 <h2 id="pattern-matching"><a class="header" href="#pattern-matching">Pattern matching</a></h2>
 <p>There is limited pattern matching support inside let statements.</p>
@@ -607,7 +607,7 @@ In the above example, <code>x</code> and <code>y</code> are added via the <code>
 The function then checks if the carry is true, signaling an overflow, in which case it panics.
 On the last line, the value of <code>sum</code> is returned.</p>
 <p>The above function is called by writing its name <code>add</code> followed by a list of arguments <code>(40, 2)</code>.
-Each parameter needs an argument, so the list of arguments is as long as the list of arguments.
+Each parameter needs an argument, so the list of arguments is as long as the list of parameters.
 Here, <code>x</code> is assigned the value <code>40</code> and <code>y</code> is assigned the value <code>2</code>.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -634,7 +634,7 @@ fn level_1() -&gt; u32 {
 }
 
 fn level_2() -&gt; u32 {
-    let (_, next) = jet::increment_32(level_1));
+    let (_, next) = jet::increment_32(level_1());
     next
 }
 <span class="boring">}</span></code></pre></pre>
@@ -661,7 +661,7 @@ Other functions are called from the <code>main</code> function.</p>
 SimplicityHL programs are always "binaries".
 There is no support for "libraries".</p>
 <h2 id="jets"><a class="header" href="#jets">Jets</a></h2>
-<p>Jets are predefined and optimized functions for common usecases.</p>
+<p>Jets are predefined and optimized functions for common use cases.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>jet::add_32(40, 2)
