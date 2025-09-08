@@ -1,3 +1,5 @@
 msrv = "1.78.0"
 # We have an error type, `RichError`, of size 144. This is pushing it but probably fine.
 large-error-threshold = 145
+
+doc-valid-idents = [ "SimplicityHL" ]

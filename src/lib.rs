@@ -405,7 +405,7 @@ mod tests {
     impl TestCase<SatisfiedProgram> {
         #[allow(dead_code)]
         pub fn print_encoding(self) -> Self {
-            let (program_bytes, witness_bytes) = self.program.redeem().encode_to_vec();
+            let (program_bytes, witness_bytes) = self.program.redeem().to_vec_with_witness();
             println!(
                 "Program:\n{}",
                 Base64Display::new(&program_bytes, &STANDARD)

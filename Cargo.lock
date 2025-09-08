@@ -110,7 +110,7 @@ dependencies = [
  "bitcoin-io",
  "bitcoin-units",
  "bitcoin_hashes",
- "hex-conservative 0.2.1",
+ "hex-conservative",
  "hex_lit",
  "secp256k1",
 ]
@@ -149,7 +149,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb18c03d0db0247e147a21a6faafd5a7eb851c743db062de72018b6b7e8e4d16"
 dependencies = [
  "bitcoin-io",
- "hex-conservative 0.2.1",
+ "hex-conservative",
 ]
 
 [[package]]
@@ -307,12 +307,6 @@ dependencies = [
  "wasi",
  "wasm-bindgen",
 ]
-
-[[package]]
-name = "hex-conservative"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30ed443af458ccb6d81c1e7e661545f94d3176752fb1df2f543b902a1e0f51e2"
 
 [[package]]
 name = "hex-conservative"
@@ -622,16 +616,16 @@ dependencies = [
 
 [[package]]
 name = "simplicity-lang"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "219a9eccc5f9841f0fea0bf57ce4ed7403405fd189bd39a212d13f1f19748570"
+checksum = "525879699aba1f7f75c0d97355475072adeb0ed0530df4e18f23235252475e68"
 dependencies = [
  "bitcoin",
  "bitcoin_hashes",
  "byteorder",
  "elements",
  "getrandom",
- "hex-conservative 0.1.1",
+ "hex-conservative",
  "miniscript",
  "santiago",
  "simplicity-sys",
@@ -639,9 +633,9 @@ dependencies = [
 
 [[package]]
 name = "simplicity-sys"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9c453a3edfff1ca89b03616a0028f5dc0da0ac5099665ee63357561edf1db71"
+checksum = "3abf9c7d64c5bf45bb2fb966f3b0637d8c13c8d5cdfbd7587900421cb7584c49"
 dependencies = [
  "bitcoin_hashes",
  "cc",
@@ -649,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "simplicityhl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arbitrary",
  "base64",

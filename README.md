@@ -29,11 +29,11 @@ Simplicity introduces a groundbreaking low-level programming language and machin
 The distinguishing aspects that set Simplicity apart from conventional programming languages are:
 
 - **Distinct Programming Paradigm**: Simplicity's programming model requires a paradigm shift from conventional programming. It hinges on reasoning about programs in a functional sense with a focus on combinators. This intricacy surpasses even popular functional languages like Haskell, with its own unique challenges.
-- **Exceptional Low-Level Nature**: Unlike high-level languages such as JavaScript or Python, Simplicity operates at an extremely low level, resembling assembly languages. This design choice enables easier reasoning about the formal semantics of programs, but is really work on directly.
+- **Exceptional Low-Level Nature**: Unlike high-level languages such as JavaScript or Python, Simplicity operates at an extremely low level, resembling assembly languages. This design choice enables easier reasoning about the formal semantics of programs, but is rarely worked on directly.
 
 ## SimplicityHL
 
-SimplicityHL is a high-level language that compiles to Simplicity. It maps programming concepts from Simplicity onto programming concepts that developers are more familar with. In particular, Rust is a popular language whose functional aspects fit Simplicity well. SimplicityHL aims to closely resemble Rust.
+SimplicityHL is a high-level language that compiles to Simplicity. It maps programming concepts from Simplicity onto programming concepts that developers are more familiar with. In particular, Rust is a popular language whose functional aspects fit Simplicity well. SimplicityHL aims to closely resemble Rust.
 
 Just how Rust is compiled to assembly language, SimplicityHL is compiled to Simplicity. Just how writing Rust doesn't necessarily produce the most efficient assembly, writing SimplicityHL doesn't necessarily produce the most efficient Simplicity code. The compilers try to optimize the target code they produce, but manually written target code can be more efficient. On the other hand, a compiled language is much easier to read, write and reason about. Assembly is meant to be consumed by machines while Rust is meant to be consumed by humans. Simplicity is meant to be consumed by Bitcoin full nodes while SimplicityHL is meant to be consumed by Bitcoin developers.
 

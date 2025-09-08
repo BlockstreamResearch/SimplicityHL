@@ -78,7 +78,7 @@ Then ⟦`b; c`⟧Ξ = comp (pair ⟦`b`⟧Ξ ⟦`c`⟧Ξ) (drop iden): A → C
 
 If Ctx(Ξ) ⊩ `b`: B
 
-If Product(PEnv(B, `p`), Ξ) ⊩ c: C
+If Product(PEnv(B, `p`), Ξ) ⊩ `c`: C
 
 Then ⟦`let p: B = b; c`⟧Ξ = comp (pair ⟦`b`⟧Ξ iden) ⟦`c`⟧Product(PEnv(B, `p`), Ξ): A → C
 
@@ -90,7 +90,7 @@ If Product(PEnv(B, `x`), Ξ) ⊩ `b`: D
 
 If Product(PEnv(C, `y`), Ξ) ⊩ `c`: D
 
-Then ⟦`match a { Left(x) => a, Right(y) => b, }`⟧Ξ = comp (pair ⟦a⟧Ξ iden) (case ⟦b⟧Product(PEnv(B, `x`), Ξ) ⟦c⟧Product(PEnv(C, `y`), Ξ)): A → D
+Then ⟦`match a { Left(x) => b, Right(y) => c, }`⟧Ξ = comp (pair ⟦`a`⟧Ξ iden) (case ⟦`b`⟧Product(PEnv(B, `x`), Ξ) ⟦`c`⟧Product(PEnv(C, `y`), Ξ)): A → D
 
 ## Left unwrap
 

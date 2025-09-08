@@ -79,7 +79,7 @@ fn run() -> Result<(), String> {
 
     if let Some(witness) = witness_opt {
         let satisfied = compiled.satisfy(witness)?;
-        let (program_bytes, witness_bytes) = satisfied.redeem().encode_to_vec();
+        let (program_bytes, witness_bytes) = satisfied.redeem().to_vec_with_witness();
         println!(
             "Program:\n{}",
             Base64Display::new(&program_bytes, &STANDARD)
@@ -89,7 +89,7 @@ fn run() -> Result<(), String> {
             Base64Display::new(&witness_bytes, &STANDARD)
         );
     } else {
-        let program_bytes = compiled.commit().encode_to_vec();
+        let program_bytes = compiled.commit().to_vec_without_witness();
         println!(
             "Program:\n{}",
             Base64Display::new(&program_bytes, &STANDARD)
