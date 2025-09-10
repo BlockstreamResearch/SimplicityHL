@@ -1,6 +1,6 @@
 //! Library for parsing and compiling SimplicityHL
 
-pub type ProgNode = Arc<named::ConstructNode>;
+pub type ProgNode = Arc<named::ConstructNode<Elements>>;
 
 pub mod array;
 pub mod ast;
@@ -122,7 +122,8 @@ impl CompiledProgram {
 
     /// Access the Simplicity target code, without witness data.
     pub fn commit(&self) -> Arc<CommitNode<Elements>> {
-        named::to_commit_node(&self.simplicity)
+        named::forget_names(&self.simplicity)
+            .finalize_types()
             .expect("Compiled SimplicityHL program has type 1 -> 1")
     }
 
@@ -151,7 +152,7 @@ impl CompiledProgram {
         witness_values
             .is_consistent(&self.witness_types)
             .map_err(|e| e.to_string())?;
-        let simplicity_witness = named::to_witness_node(&self.simplicity, witness_values);
+        let simplicity_witness = named::populate_witnesses(&self.simplicity, witness_values);
         let simplicity_redeem = match env {
             Some(env) => simplicity_witness.finalize_pruned(env),
             None => simplicity_witness.finalize_unpruned(),
