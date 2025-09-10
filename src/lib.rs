@@ -99,17 +99,6 @@ pub struct CompiledProgram {
     debug_symbols: DebugSymbols,
 }
 
-impl Default for CompiledProgram {
-    fn default() -> Self {
-        use simplicity::node::CoreConstructible;
-        Self {
-            simplicity: ProgNode::unit(&simplicity::types::Context::new()),
-            witness_types: WitnessTypes::default(),
-            debug_symbols: DebugSymbols::default(),
-        }
-    }
-}
-
 impl CompiledProgram {
     /// Parse and compile a SimplicityHL program from the given string.
     ///
