@@ -64,6 +64,74 @@ pub type ConstructNode<J> = Node<WithNames<node::Construct<J>>>;
 pub type CommitNode<J> = Node<WithNames<node::Commit<J>>>;
 
 // FIXME: The following methods cannot be implemented for simplicity::node::Node because that is a foreign type
+pub fn finalize_types<J: Jet>(
+    node: &Node<WithNames<node::Construct<J>>>,
+) -> Result<Arc<Node<WithNames<node::Commit<J>>>>, types::Error> {
+    // We finalize all types but don't bother to set the root source and target
+    // to unit. This is a bit annoying to do, and anyway these types will already
+    // be unit by construction.
+    translate(node, |node, inner| {
+        let inner = inner.map_witness(|_| &NoWitness);
+        node::CommitData::new(node.cached_data().arrow(), inner).map(Arc::new)
+    })
+}
+
+fn translate<M, N, F, E>(
+    node: &Node<WithNames<M>>,
+    translatefn: F,
+) -> Result<Arc<Node<WithNames<N>>>, E>
+where
+    M: node::Marker,
+    N: node::Marker<Jet = M::Jet>,
+    N::Witness: Nullable,
+    F: FnMut(
+        &Node<WithNames<M>>,
+        Inner<&N::CachedData, N::Jet, &NoDisconnect, &WitnessName>,
+    ) -> Result<N::CachedData, E>,
+{
+    struct Translator<F>(F);
+
+    impl<M, N, F, E> Converter<WithNames<M>, WithNames<N>> for Translator<F>
+    where
+        M: node::Marker,
+        N: node::Marker<Jet = M::Jet>,
+        N::Witness: Nullable,
+        F: FnMut(
+            &Node<WithNames<M>>,
+            Inner<&N::CachedData, N::Jet, &NoDisconnect, &WitnessName>,
+        ) -> Result<N::CachedData, E>,
+    {
+        type Error = E;
+
+        fn convert_witness(
+            &mut self,
+            _: &PostOrderIterItem<&Node<WithNames<M>>>,
+            wit: &WitnessName,
+        ) -> Result<WitnessName, Self::Error> {
+            Ok(wit.shallow_clone())
+        }
+
+        fn convert_disconnect(
+            &mut self,
+            _: &PostOrderIterItem<&Node<WithNames<M>>>,
+            _: Option<&Arc<Node<WithNames<N>>>>,
+            _: &NoDisconnect,
+        ) -> Result<NoDisconnect, Self::Error> {
+            Ok(NoDisconnect)
+        }
+
+        fn convert_data(
+            &mut self,
+            data: &PostOrderIterItem<&Node<WithNames<M>>>,
+            inner: Inner<&Arc<Node<WithNames<N>>>, N::Jet, &NoDisconnect, &WitnessName>,
+        ) -> Result<N::CachedData, Self::Error> {
+            let new_inner = inner.map(|node| node.cached_data());
+            self.0(data.node, new_inner)
+        }
+    }
+
+    node.convert::<InternalSharing, _, _>(&mut Translator(translatefn))
+}
 
 /// Convert [`ConstructNode`] into [`CommitNode`] by dropping the name of witness nodes.
 pub fn forget_names<M>(node: &Node<WithNames<M>>) -> Arc<Node<M>>
