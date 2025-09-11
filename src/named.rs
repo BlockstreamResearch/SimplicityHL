@@ -185,12 +185,9 @@ where
 /// Converts a named [`ConstructNode`] into a standard [`node::ConstructNode`], by populating
 /// witness nodes with their assigned values.
 ///
-/// Each witness node has a name. If there is no value assigned to this name,
-/// then the node is left empty.
-///
-/// When [`node::ConstructNode`] is finalized to [`node::RedeemNode`], there will be an error if any witness
-/// node on a used (unpruned) branch is empty. It is the responsibility of the caller to ensure that
-/// all used witness nodes have an assigned value.
+/// Each witness node has a name. If there is no value assigned to this name, an error is
+/// returned. This is true even if the witness node is ultimately unused in the final
+/// program.
 ///
 /// ## Soundness
 ///
@@ -198,57 +195,59 @@ where
 /// types in the construct `node`. This can be done by calling [`WitnessValues::is_consistent`]
 /// on the original SimplicityHL program before it is compiled to Simplicity.
 pub fn populate_witnesses<J: Jet>(
-    node: &ConstructNode<J>,
+    node: &CommitNode<J>,
     values: WitnessValues,
-) -> Arc<node::ConstructNode<J>> {
+) -> Result<Arc<node::RedeemNode<J>>, String> {
     struct Populator {
         values: WitnessValues,
     }
 
-    impl<J: Jet> Converter<WithNames<node::Construct<J>>, node::Construct<J>> for Populator {
-        type Error = core::convert::Infallible;
+    impl<J: Jet> Converter<WithNames<node::Commit<J>>, node::Redeem<J>> for Populator {
+        type Error = String;
 
         fn convert_witness(
             &mut self,
-            _: &PostOrderIterItem<&ConstructNode<J>>,
+            _: &PostOrderIterItem<&CommitNode<J>>,
             witness: &WitnessName,
-        ) -> Result<Option<simplicity::Value>, Self::Error> {
-            let maybe_value = self
-                .values
-                .get(witness)
-                .map(StructuralValue::from)
-                .map(simplicity::Value::from);
-            Ok(maybe_value)
+        ) -> Result<simplicity::Value, Self::Error> {
+            match self.values.get(witness) {
+                Some(val) => Ok(simplicity::Value::from(StructuralValue::from(val))),
+                None => Err(format!("missing witness for {witness}")),
+            }
         }
 
         fn convert_disconnect(
             &mut self,
-            _: &PostOrderIterItem<&ConstructNode<J>>,
-            _: Option<&Arc<node::ConstructNode<J>>>,
+            _: &PostOrderIterItem<&CommitNode<J>>,
+            _: Option<&Arc<node::RedeemNode<J>>>,
             _: &NoDisconnect,
-        ) -> Result<Option<Arc<node::ConstructNode<J>>>, Self::Error> {
-            Ok(None)
+        ) -> Result<Arc<node::RedeemNode<J>>, Self::Error> {
+            unreachable!("SimplicityHL does not use disconnect right now")
         }
 
         fn convert_data(
             &mut self,
-            data: &PostOrderIterItem<&ConstructNode<J>>,
-            _: Inner<
-                &Arc<node::ConstructNode<J>>,
+            data: &PostOrderIterItem<&CommitNode<J>>,
+            inner: Inner<
+                &Arc<node::RedeemNode<J>>,
                 J,
-                &Option<Arc<node::ConstructNode<J>>>,
-                &Option<simplicity::Value>,
+                &Arc<node::RedeemNode<J>>,
+                &simplicity::Value,
             >,
-        ) -> Result<node::ConstructData<J>, Self::Error> {
-            Ok(data.node.cached_data().clone())
+        ) -> Result<Arc<node::RedeemData<J>>, Self::Error> {
+            let inner = inner
+                .map(|node| node.cached_data())
+                .map_disconnect(|node| node.cached_data())
+                .map_witness(simplicity::Value::shallow_clone);
+            Ok(Arc::new(node::RedeemData::new(
+                data.node.cached_data().arrow().shallow_clone(),
+                inner,
+            )))
         }
     }
 
     let mut populator = Populator { values };
-    match node.convert::<InternalSharing, _, _>(&mut populator) {
-        Ok(ret) => ret,
-        Err(inf) => match inf {},
-    }
+    node.convert::<InternalSharing, _, _>(&mut populator)
 }
 
 // This awkward construction is required by rust-simplicity to implement WitnessConstructible

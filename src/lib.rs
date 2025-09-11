@@ -80,12 +80,16 @@ impl TemplateProgram {
         arguments
             .is_consistent(self.simfony.parameters())
             .map_err(|error| error.to_string())?;
+
+        let construct = self
+            .simfony
+            .compile(arguments, include_debug_symbols)
+            .with_file(Arc::clone(&self.file))?;
+        let commit = named::finalize_types(&construct).map_err(|e| e.to_string())?;
+
         Ok(CompiledProgram {
             debug_symbols: self.simfony.debug_symbols(self.file.as_ref()),
-            simplicity: self
-                .simfony
-                .compile(arguments, include_debug_symbols)
-                .with_file(Arc::clone(&self.file))?,
+            simplicity: commit,
             witness_types: self.simfony.witness_types().shallow_clone(),
         })
     }
@@ -94,7 +98,7 @@ impl TemplateProgram {
 /// A SimplicityHL program, compiled to Simplicity.
 #[derive(Clone, Debug)]
 pub struct CompiledProgram {
-    simplicity: ProgNode,
+    simplicity: Arc<named::CommitNode<Elements>>,
     witness_types: WitnessTypes,
     debug_symbols: DebugSymbols,
 }
@@ -123,8 +127,6 @@ impl CompiledProgram {
     /// Access the Simplicity target code, without witness data.
     pub fn commit(&self) -> Arc<CommitNode<Elements>> {
         named::forget_names(&self.simplicity)
-            .finalize_types()
-            .expect("Compiled SimplicityHL program has type 1 -> 1")
     }
 
     /// Satisfy the SimplicityHL program with the given `witness_values`.
@@ -152,13 +154,13 @@ impl CompiledProgram {
         witness_values
             .is_consistent(&self.witness_types)
             .map_err(|e| e.to_string())?;
-        let simplicity_witness = named::populate_witnesses(&self.simplicity, witness_values);
-        let simplicity_redeem = match env {
-            Some(env) => simplicity_witness.finalize_pruned(env),
-            None => simplicity_witness.finalize_unpruned(),
-        };
+
+        let mut simplicity_redeem = named::populate_witnesses(&self.simplicity, witness_values)?;
+        if let Some(env) = env {
+            simplicity_redeem = simplicity_redeem.prune(env).map_err(|e| e.to_string())?;
+        }
         Ok(SatisfiedProgram {
-            simplicity: simplicity_redeem.map_err(|e| e.to_string())?,
+            simplicity: simplicity_redeem,
             debug_symbols: self.debug_symbols.clone(),
         })
     }
