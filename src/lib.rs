@@ -1,7 +1,5 @@
 //! Library for parsing and compiling SimplicityHL
 
-pub type ProgNode = Arc<named::ConstructNode<Elements>>;
-
 pub mod array;
 pub mod ast;
 pub mod compile;

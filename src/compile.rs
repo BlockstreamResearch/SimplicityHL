@@ -21,7 +21,9 @@ use crate::str::WitnessName;
 use crate::types::{StructuralType, TypeDeconstructible};
 use crate::value::StructuralValue;
 use crate::witness::Arguments;
-use crate::{ProgNode, Value};
+use crate::Value;
+
+type ProgNode = Arc<named::ConstructNode<Elements>>;
 
 /// Each SimplicityHL expression expects an _input value_.
 /// A SimplicityHL expression is translated into a Simplicity expression
