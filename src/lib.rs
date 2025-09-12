@@ -81,11 +81,10 @@ impl TemplateProgram {
             .is_consistent(self.simfony.parameters())
             .map_err(|error| error.to_string())?;
 
-        let construct = self
+        let commit = self
             .simfony
             .compile(arguments, include_debug_symbols)
             .with_file(Arc::clone(&self.file))?;
-        let commit = named::finalize_types(&construct).map_err(|e| e.to_string())?;
 
         Ok(CompiledProgram {
             debug_symbols: self.simfony.debug_symbols(self.file.as_ref()),

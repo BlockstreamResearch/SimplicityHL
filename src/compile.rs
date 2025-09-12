@@ -14,7 +14,7 @@ use crate::ast::{
 };
 use crate::debug::CallTracker;
 use crate::error::{Error, RichError, Span, WithSpan};
-use crate::named::{CoreExt, PairBuilder};
+use crate::named::{self, CoreExt, PairBuilder};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::pattern::{BasePattern, Pattern};
 use crate::str::WitnessName;
@@ -257,13 +257,18 @@ impl Program {
         &self,
         arguments: Arguments,
         include_debug_symbols: bool,
-    ) -> Result<ProgNode, RichError> {
+    ) -> Result<Arc<named::CommitNode<Elements>>, RichError> {
         let mut scope = Scope::new(
             Arc::clone(self.call_tracker()),
             arguments,
             include_debug_symbols,
         );
-        self.main().compile(&mut scope).map(PairBuilder::build)
+
+        let main = self.main();
+        let construct = main.compile(&mut scope).map(PairBuilder::build)?;
+        // SimplicityHL types should be correct by construction. If not, assign the
+        // whole main function as the span for them, which is as sensible as anything.
+        named::finalize_types(&construct).with_span(main)
     }
 }
 
