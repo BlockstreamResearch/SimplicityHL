@@ -7,10 +7,9 @@ use miniscript::iter::{Tree, TreeLike};
 
 use crate::array::BTreeSlice;
 use crate::error::Error;
-use crate::named::{PairBuilder, SelectorBuilder};
+use crate::named::{CoreExt, PairBuilder, SelectorBuilder};
 use crate::str::Identifier;
 use crate::types::{ResolvedType, TypeInner};
-use crate::ProgNode;
 
 /// Pattern for binding values to variables.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -195,14 +194,15 @@ impl BasePattern {
 
     /// Check if the `identifier` is contained inside the pattern.
     pub fn contains(&self, identifier: &Identifier) -> bool {
-        self.get(identifier).is_some()
+        self.pre_order_iter()
+            .any(|node| matches!(node, BasePattern::Identifier(id) if id == identifier))
     }
 
     /// Compute a Simplicity expression that returns the value of the given `identifier`.
     /// The expression takes as input a value that matches the `self` pattern.
     ///
     /// The expression is a sequence of `take` and `drop` followed by `iden`.
-    fn get(&self, identifier: &Identifier) -> Option<SelectorBuilder<ProgNode>> {
+    fn get<P: CoreExt>(&self, identifier: &Identifier) -> Option<SelectorBuilder<P>> {
         let mut selector = SelectorBuilder::default();
 
         for data in self.verbose_pre_order_iter() {
@@ -302,11 +302,11 @@ impl BasePattern {
     /// This means there are infinitely many translating expressions from `self` to `to`.
     /// For instance, `iden`, `iden & iden`, `(iden & iden) & iden`, and so on.
     /// We enforce a unique translation by banning ignore from the `to` pattern.
-    pub fn translate(
+    pub fn translate<P: CoreExt>(
         &self,
         ctx: &simplicity::types::Context,
         to: &Self,
-    ) -> Option<PairBuilder<ProgNode>> {
+    ) -> Option<PairBuilder<P>> {
         #[derive(Debug, Clone)]
         enum Task<'a> {
             Translate(&'a BasePattern, &'a BasePattern),
@@ -439,6 +439,8 @@ impl From<&Pattern> for BasePattern {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::named;
+    use simplicity::jet::Elements;
 
     #[test]
     fn translate_pattern() {
@@ -462,7 +464,9 @@ mod tests {
 
         for (target, expected_expr) in target_expr {
             let ctx = simplicity::types::Context::new();
-            let expr = env.translate(&ctx, &target).unwrap();
+            let expr = env
+                .translate::<Arc<named::ConstructNode<Elements>>>(&ctx, &target)
+                .unwrap();
             assert_eq!(expected_expr, expr.as_ref().display_expr().to_string());
         }
     }
