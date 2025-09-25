@@ -89,7 +89,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded affix "><a href="introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Types and Values</li><li class="chapter-item expanded "><a href="type.html"><strong aria-hidden="true">1.</strong> Types and Values</a></li><li class="chapter-item expanded "><a href="type_alias.html"><strong aria-hidden="true">2.</strong> Type Aliases</a></li><li class="chapter-item expanded "><a href="type_casting.html"><strong aria-hidden="true">3.</strong> Type Casting</a></li><li class="chapter-item expanded affix "><li class="part-title">Writing a Program</li><li class="chapter-item expanded "><a href="let_statement.html"><strong aria-hidden="true">4.</strong> Let Statements</a></li><li class="chapter-item expanded "><a href="match_expression.html"><strong aria-hidden="true">5.</strong> Match Expression</a></li><li class="chapter-item expanded "><a href="function.html"><strong aria-hidden="true">6.</strong> Functions</a></li><li class="chapter-item expanded "><a href="program.html"><strong aria-hidden="true">7.</strong> Programs</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Types and Values</li><li class="chapter-item expanded "><a href="type.html"><strong aria-hidden="true">1.</strong> Types and Values</a></li><li class="chapter-item expanded "><a href="type_alias.html"><strong aria-hidden="true">2.</strong> Type Aliases</a></li><li class="chapter-item expanded "><a href="type_casting.html"><strong aria-hidden="true">3.</strong> Type Casting</a></li><li class="chapter-item expanded affix "><li class="part-title">Writing a Program</li><li class="chapter-item expanded "><a href="let_statement.html"><strong aria-hidden="true">4.</strong> Let Statements</a></li><li class="chapter-item expanded "><a href="match_expression.html"><strong aria-hidden="true">5.</strong> Match Expression</a></li><li class="chapter-item expanded "><a href="function.html"><strong aria-hidden="true">6.</strong> Functions</a></li><li class="chapter-item expanded "><a href="program.html"><strong aria-hidden="true">7.</strong> Programs</a></li><li class="chapter-item expanded "><a href="builtins.html"><strong aria-hidden="true">8.</strong> Builtins</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -689,6 +689,60 @@ fn main() {
     let one_mile: Either&lt;Furlong, Mile&gt; = Right(1);
     assert!(jet::eq_32(1, to_miles(eight_furlongs)));
     assert!(jet::eq_32(1, to_miles(one_mile)));
+}</code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="builtin-functions"><a class="header" href="#builtin-functions">Builtin functions</a></h1>
+<h2 id="bounded-loop"><a class="header" href="#bounded-loop">Bounded loop</a></h2>
+<p>Run a function repeatedly with a bounded counter. The loop stops early when the function returns a successful value.</p>
+<ul>
+<li>Signature: <code>for_while::&lt;f&gt;(initial_accumulator: A, readonly_context: C) -&gt; Either&lt;B, A&gt;</code></li>
+<li>Loop body: <code>fn f(acc: A, ctx: C, counter: uN) -&gt; Either&lt;B, A&gt;</code> where <code>N ∈ {1, 2, 4, 8, 16}</code></li>
+</ul>
+<p>Example: stop when <code>counter == 10</code>.</p>
+<pre><pre class="playground"><code class="language-rust">fn stop_at_10(acc: (), _: (), i: u8) -&gt; Either&lt;u8, ()&gt; {
+    match jet::eq_8(i, 10) {
+        true =&gt; Left(i),   // success → exit loop
+        false =&gt; Right(acc), // continue with same accumulator
+    }
+}
+
+fn main() {
+    let out: Either&lt;u8, ()&gt; = for_while::&lt;stop_at_10&gt;((), ());
+    assert!(jet::eq_8(10, unwrap_left::&lt;()&gt;(out)));
+}</code></pre></pre>
+<h2 id="list-folding"><a class="header" href="#list-folding">List folding</a></h2>
+<p>Fold a list of bounded length by repeatedly applying a function.</p>
+<ul>
+<li>Signature: <code>fold::&lt;f, N&gt;(list: List&lt;E, N&gt;, initial_accumulator: A) -&gt; A</code></li>
+<li>Fold step: <code>fn f(element: E, acc: A) -&gt; A</code></li>
+<li>Note: <code>N</code> is a power of two; lists hold fewer than <code>N</code> elements.</li>
+</ul>
+<p>Example: sum a list of 32-bit integers.</p>
+<pre><pre class="playground"><code class="language-rust">fn sum(elt: u32, acc: u32) -&gt; u32 {
+    let (_, acc): (bool, u32) = jet::add_32(elt, acc);
+    acc
+}
+
+fn main() {
+    let xs: List&lt;u32, 8&gt; = list![1, 2, 3];
+    let s: u32 = fold::&lt;sum, 8&gt;(xs, 0);
+    assert!(jet::eq_32(s, 6));
+}</code></pre></pre>
+<h2 id="array-folding"><a class="header" href="#array-folding">Array folding</a></h2>
+<p>Fold a fixed-size array by repeatedly applying a function.</p>
+<ul>
+<li>Signature: <code>array_fold::&lt;f, N&gt;(array: [E; N], initial_accumulator: A) -&gt; A</code></li>
+<li>Fold step: <code>fn f(element: E, acc: A) -&gt; A</code></li>
+</ul>
+<p>Example: sum an array of 7 elements.</p>
+<pre><pre class="playground"><code class="language-rust">fn sum(elt: u32, acc: u32) -&gt; u32 {
+    let (_, acc): (bool, u32) = jet::add_32(elt, acc);
+    acc
+}
+
+fn main() {
+    let arr: [u32; 7] = [1, 2, 3, 4, 5, 6, 7];
+    let sum: u32 = array_fold::&lt;sum, 7&gt;(arr, 0);
+    assert!(jet::eq_32(sum, 28));
 }</code></pre></pre>
 
                     </main>
