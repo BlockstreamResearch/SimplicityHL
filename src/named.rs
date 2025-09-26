@@ -1,71 +1,120 @@
 use std::sync::Arc;
 
 use simplicity::dag::{InternalSharing, PostOrderIterItem};
-use simplicity::jet::{Elements, Jet};
+use simplicity::jet::Jet;
 use simplicity::node::{
-    self, CommitData, ConstructData as WitnessData, Constructible, Converter, CoreConstructible,
-    Inner, JetConstructible, NoDisconnect, NoWitness, Node, WitnessConstructible,
+    self, Converter, CoreConstructible, Inner, NoDisconnect, NoWitness, Node, WitnessConstructible,
 };
-use simplicity::types::arrow::Arrow;
-use simplicity::{types, CommitNode, FailEntropy};
-use simplicity::{Cmr, ConstructNode as WitnessNode};
+use simplicity::Cmr;
+use simplicity::{types, FailEntropy};
 
 use crate::str::WitnessName;
 use crate::value::StructuralValue;
 use crate::witness::WitnessValues;
 
-/// Marker for [`ConstructNode`].
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
-pub struct Construct<N> {
-    /// Makes the type non-constructible.
-    never: std::convert::Infallible,
-    /// Required by Rust.
-    phantom: std::marker::PhantomData<N>,
+pub struct WithNames<T>(T);
+
+impl<M: node::Marker> node::Marker for WithNames<M> {
+    type CachedData = M::CachedData;
+    type Witness = WitnessName;
+    // It's quite difficult to wrap M::Disconnect because of Rust's lack of HKTs, and
+    // we don't use disconnect in this library right now, so punt on it for now.
+    type Disconnect = NoDisconnect;
+    type SharingId = M::SharingId;
+    type Jet = M::Jet;
+
+    fn compute_sharing_id(cmr: Cmr, cached_data: &Self::CachedData) -> Option<Self::SharingId> {
+        M::compute_sharing_id(cmr, cached_data)
+    }
 }
 
-/// Sharing ID of [`ConstructNode`].
-/// Cannot be constructed because there is no sharing.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
-pub enum ConstructId {}
+/// Helper trait so we can abstract over witness and disconnects of any type,
+/// as long as we can produce them from a no-witness no-disconnect object.
+pub trait Nullable {
+    fn none() -> Self;
+}
 
-impl<J: Jet> node::Marker for Construct<J> {
-    type CachedData = ConstructData<J>;
-    type Witness = WitnessName;
-    type Disconnect = NoDisconnect;
-    type SharingId = ConstructId;
-    type Jet = J;
-
-    fn compute_sharing_id(_: Cmr, _cached_data: &Self::CachedData) -> Option<Self::SharingId> {
+impl<T> Nullable for Option<T> {
+    fn none() -> Self {
         None
+    }
+}
+
+impl Nullable for NoWitness {
+    fn none() -> Self {
+        NoWitness
+    }
+}
+
+impl Nullable for NoDisconnect {
+    fn none() -> Self {
+        NoDisconnect
     }
 }
 
 /// [`simplicity::ConstructNode`] with named witness nodes.
 ///
 /// Nodes other than witness don't have names.
-pub type ConstructNode = Node<Construct<Elements>>;
+pub type ConstructNode<J> = Node<WithNames<node::Construct<J>>>;
+
+/// [`simplicity::CommitNode`] with named witness nodes.
+///
+/// Nodes other than witness don't have names.
+pub type CommitNode<J> = Node<WithNames<node::Commit<J>>>;
 
 // FIXME: The following methods cannot be implemented for simplicity::node::Node because that is a foreign type
+pub fn finalize_types<J: Jet>(
+    node: &Node<WithNames<node::Construct<J>>>,
+) -> Result<Arc<Node<WithNames<node::Commit<J>>>>, types::Error> {
+    // We finalize all types but don't bother to set the root source and target
+    // to unit. This is a bit annoying to do, and anyway these types will already
+    // be unit by construction.
+    translate(node, |node, inner| {
+        let inner = inner.map_witness(|_| &NoWitness);
+        node::CommitData::new(node.cached_data().arrow(), inner).map(Arc::new)
+    })
+}
 
-/// Convert [`ConstructNode`] into [`CommitNode`] by dropping the name of witness nodes.
-pub fn to_commit_node(node: &ConstructNode) -> Result<Arc<CommitNode<Elements>>, types::Error> {
-    struct Forgetter;
+fn translate<M, N, F, E>(
+    node: &Node<WithNames<M>>,
+    translatefn: F,
+) -> Result<Arc<Node<WithNames<N>>>, E>
+where
+    M: node::Marker,
+    N: node::Marker<Jet = M::Jet>,
+    N::Witness: Nullable,
+    F: FnMut(
+        &Node<WithNames<M>>,
+        Inner<&N::CachedData, N::Jet, &NoDisconnect, &WitnessName>,
+    ) -> Result<N::CachedData, E>,
+{
+    struct Translator<F>(F);
 
-    impl<J: Jet> Converter<Construct<J>, node::Commit<J>> for Forgetter {
-        type Error = types::Error;
+    impl<M, N, F, E> Converter<WithNames<M>, WithNames<N>> for Translator<F>
+    where
+        M: node::Marker,
+        N: node::Marker<Jet = M::Jet>,
+        N::Witness: Nullable,
+        F: FnMut(
+            &Node<WithNames<M>>,
+            Inner<&N::CachedData, N::Jet, &NoDisconnect, &WitnessName>,
+        ) -> Result<N::CachedData, E>,
+    {
+        type Error = E;
 
         fn convert_witness(
             &mut self,
-            _: &PostOrderIterItem<&Node<Construct<J>>>,
-            _: &WitnessName,
-        ) -> Result<NoWitness, Self::Error> {
-            Ok(NoWitness)
+            _: &PostOrderIterItem<&Node<WithNames<M>>>,
+            wit: &WitnessName,
+        ) -> Result<WitnessName, Self::Error> {
+            Ok(wit.shallow_clone())
         }
 
         fn convert_disconnect(
             &mut self,
-            _: &PostOrderIterItem<&Node<Construct<J>>>,
-            _: Option<&Arc<CommitNode<J>>>,
+            _: &PostOrderIterItem<&Node<WithNames<M>>>,
+            _: Option<&Arc<Node<WithNames<N>>>>,
             _: &NoDisconnect,
         ) -> Result<NoDisconnect, Self::Error> {
             Ok(NoDisconnect)
@@ -73,179 +122,140 @@ pub fn to_commit_node(node: &ConstructNode) -> Result<Arc<CommitNode<Elements>>,
 
         fn convert_data(
             &mut self,
-            data: &PostOrderIterItem<&Node<Construct<J>>>,
-            inner: Inner<&Arc<CommitNode<J>>, J, &NoDisconnect, &NoWitness>,
-        ) -> Result<Arc<CommitData<J>>, Self::Error> {
-            let arrow = data.node.cached_data().arrow();
-            let inner = inner.map(Arc::as_ref).map(CommitNode::<J>::cached_data);
-            CommitData::new(arrow, inner).map(Arc::new)
+            data: &PostOrderIterItem<&Node<WithNames<M>>>,
+            inner: Inner<&Arc<Node<WithNames<N>>>, N::Jet, &NoDisconnect, &WitnessName>,
+        ) -> Result<N::CachedData, Self::Error> {
+            let new_inner = inner.map(|node| node.cached_data());
+            self.0(data.node, new_inner)
         }
     }
 
-    node.convert::<InternalSharing, _, _>(&mut Forgetter)
+    node.convert::<InternalSharing, _, _>(&mut Translator(translatefn))
 }
 
-/// Convert [`ConstructNode`] into [`WitnessNode`] by populating witness nodes with their assigned values.
+/// Convert [`ConstructNode`] into [`CommitNode`] by dropping the name of witness nodes.
+pub fn forget_names<M>(node: &Node<WithNames<M>>) -> Arc<Node<M>>
+where
+    M: node::Marker,
+    M::Disconnect: Nullable,
+    M::Witness: Nullable,
+{
+    struct Forgetter;
+
+    impl<M> Converter<WithNames<M>, M> for Forgetter
+    where
+        M: node::Marker,
+        M::Disconnect: Nullable,
+        M::Witness: Nullable,
+    {
+        type Error = core::convert::Infallible;
+
+        fn convert_witness(
+            &mut self,
+            _: &PostOrderIterItem<&Node<WithNames<M>>>,
+            _: &WitnessName,
+        ) -> Result<M::Witness, Self::Error> {
+            Ok(M::Witness::none())
+        }
+
+        fn convert_disconnect(
+            &mut self,
+            _: &PostOrderIterItem<&Node<WithNames<M>>>,
+            _: Option<&Arc<Node<M>>>,
+            _: &NoDisconnect,
+        ) -> Result<M::Disconnect, Self::Error> {
+            Ok(M::Disconnect::none())
+        }
+
+        fn convert_data(
+            &mut self,
+            data: &PostOrderIterItem<&Node<WithNames<M>>>,
+            _: Inner<&Arc<Node<M>>, M::Jet, &M::Disconnect, &M::Witness>,
+        ) -> Result<M::CachedData, Self::Error> {
+            Ok(data.node.cached_data().clone())
+        }
+    }
+
+    match node.convert::<InternalSharing, _, _>(&mut Forgetter) {
+        Ok(ret) => ret,
+        Err(inf) => match inf {},
+    }
+}
+
+/// Converts a named [`ConstructNode`] into a standard [`node::ConstructNode`], by populating
+/// witness nodes with their assigned values.
 ///
-/// Each witness node has a name. If there is no value assigned to this name,
-/// then the node is left empty.
-///
-/// When [`WitnessNode`] is finalized to [`node::RedeemNode`], there will be an error if any witness
-/// node on a used (unpruned) branch is empty. It is the responsibility of the caller to ensure that
-/// all used witness nodes have an assigned value.
+/// Each witness node has a name. If there is no value assigned to this name, an error is
+/// returned. This is true even if the witness node is ultimately unused in the final
+/// program.
 ///
 /// ## Soundness
 ///
 /// It is the responsibility of the caller to ensure that the given witness `values` match the
 /// types in the construct `node`. This can be done by calling [`WitnessValues::is_consistent`]
 /// on the original SimplicityHL program before it is compiled to Simplicity.
-pub fn to_witness_node(node: &ConstructNode, values: WitnessValues) -> Arc<WitnessNode<Elements>> {
+pub fn populate_witnesses<J: Jet>(
+    node: &CommitNode<J>,
+    values: WitnessValues,
+) -> Result<Arc<node::RedeemNode<J>>, String> {
     struct Populator {
         values: WitnessValues,
-        inference_context: types::Context,
     }
 
-    impl<J: Jet> Converter<Construct<J>, node::Construct<J>> for Populator {
-        type Error = ();
+    impl<J: Jet> Converter<WithNames<node::Commit<J>>, node::Redeem<J>> for Populator {
+        type Error = String;
 
         fn convert_witness(
             &mut self,
-            _: &PostOrderIterItem<&Node<Construct<J>>>,
+            _: &PostOrderIterItem<&CommitNode<J>>,
             witness: &WitnessName,
-        ) -> Result<Option<simplicity::Value>, Self::Error> {
-            let maybe_value = self
-                .values
-                .get(witness)
-                .map(StructuralValue::from)
-                .map(simplicity::Value::from);
-            Ok(maybe_value)
+        ) -> Result<simplicity::Value, Self::Error> {
+            match self.values.get(witness) {
+                Some(val) => Ok(simplicity::Value::from(StructuralValue::from(val))),
+                None => Err(format!("missing witness for {witness}")),
+            }
         }
 
         fn convert_disconnect(
             &mut self,
-            _: &PostOrderIterItem<&Node<Construct<J>>>,
-            _: Option<&Arc<WitnessNode<J>>>,
+            _: &PostOrderIterItem<&CommitNode<J>>,
+            _: Option<&Arc<node::RedeemNode<J>>>,
             _: &NoDisconnect,
-        ) -> Result<Option<Arc<WitnessNode<J>>>, Self::Error> {
-            Ok(None)
+        ) -> Result<Arc<node::RedeemNode<J>>, Self::Error> {
+            unreachable!("SimplicityHL does not use disconnect right now")
         }
 
         fn convert_data(
             &mut self,
-            _: &PostOrderIterItem<&Node<Construct<J>>>,
+            data: &PostOrderIterItem<&CommitNode<J>>,
             inner: Inner<
-                &Arc<WitnessNode<J>>,
+                &Arc<node::RedeemNode<J>>,
                 J,
-                &Option<Arc<WitnessNode<J>>>,
-                &Option<simplicity::Value>,
+                &Arc<node::RedeemNode<J>>,
+                &simplicity::Value,
             >,
-        ) -> Result<WitnessData<J>, Self::Error> {
+        ) -> Result<Arc<node::RedeemData<J>>, Self::Error> {
             let inner = inner
-                .map(Arc::as_ref)
-                .map(WitnessNode::<J>::cached_data)
-                .map_witness(Option::<simplicity::Value>::clone);
-            Ok(WitnessData::from_inner(&self.inference_context, inner).unwrap())
+                .map(|node| node.cached_data())
+                .map_disconnect(|node| node.cached_data())
+                .map_witness(simplicity::Value::shallow_clone);
+            Ok(Arc::new(node::RedeemData::new(
+                data.node.cached_data().arrow().shallow_clone(),
+                inner,
+            )))
         }
     }
 
-    let mut populator = Populator {
-        inference_context: types::Context::new(),
-        values,
-    };
+    let mut populator = Populator { values };
     node.convert::<InternalSharing, _, _>(&mut populator)
-        .unwrap()
 }
 
-/// Copy of [`node::ConstructData`] with an implementation of [`WitnessConstructible<WitnessName>`].
-#[derive(Clone, Debug)]
-pub struct ConstructData<J> {
-    arrow: Arrow,
-    phantom: std::marker::PhantomData<J>,
-}
-
-impl<J> ConstructData<J> {
-    /// Access the arrow of the node.
-    pub fn arrow(&self) -> &Arrow {
-        &self.arrow
-    }
-}
-
-impl<J> From<Arrow> for ConstructData<J> {
-    fn from(arrow: Arrow) -> Self {
-        Self {
-            arrow,
-            phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<J> CoreConstructible for ConstructData<J> {
-    fn iden(inference_context: &types::Context) -> Self {
-        Arrow::iden(inference_context).into()
-    }
-
-    fn unit(inference_context: &types::Context) -> Self {
-        Arrow::unit(inference_context).into()
-    }
-
-    fn injl(child: &Self) -> Self {
-        Arrow::injl(&child.arrow).into()
-    }
-
-    fn injr(child: &Self) -> Self {
-        Arrow::injr(&child.arrow).into()
-    }
-
-    fn take(child: &Self) -> Self {
-        Arrow::take(&child.arrow).into()
-    }
-
-    fn drop_(child: &Self) -> Self {
-        Arrow::drop_(&child.arrow).into()
-    }
-
-    fn comp(left: &Self, right: &Self) -> Result<Self, types::Error> {
-        Arrow::comp(&left.arrow, &right.arrow).map(Self::from)
-    }
-
-    fn case(left: &Self, right: &Self) -> Result<Self, types::Error> {
-        Arrow::case(&left.arrow, &right.arrow).map(Self::from)
-    }
-
-    fn assertl(left: &Self, right: Cmr) -> Result<Self, types::Error> {
-        Arrow::assertl(&left.arrow, right).map(Self::from)
-    }
-
-    fn assertr(left: Cmr, right: &Self) -> Result<Self, types::Error> {
-        Arrow::assertr(left, &right.arrow).map(Self::from)
-    }
-
-    fn pair(left: &Self, right: &Self) -> Result<Self, types::Error> {
-        Arrow::pair(&left.arrow, &right.arrow).map(Self::from)
-    }
-
-    fn fail(inference_context: &types::Context, entropy: FailEntropy) -> Self {
-        Arrow::fail(inference_context, entropy).into()
-    }
-
-    fn const_word(inference_context: &types::Context, word: simplicity::Word) -> Self {
-        Arrow::const_word(inference_context, word).into()
-    }
-
-    fn inference_context(&self) -> &types::Context {
-        self.arrow.inference_context()
-    }
-}
-
-impl<J: Jet> JetConstructible<J> for ConstructData<J> {
-    fn jet(inference_context: &types::Context, jet: J) -> Self {
-        Arrow::jet(inference_context, jet).into()
-    }
-}
-
-impl<J> WitnessConstructible<WitnessName> for ConstructData<J> {
+// This awkward construction is required by rust-simplicity to implement WitnessConstructible
+// for Node<WithNames<Construct>>. See
+//     https://docs.rs/simplicity-lang/latest/simplicity/node/trait.WitnessConstructible.html#foreign-impls
+impl<J: Jet> WitnessConstructible<WitnessName> for node::ConstructData<J> {
     fn witness(inference_context: &types::Context, _: WitnessName) -> Self {
-        Arrow::witness(inference_context, ()).into()
+        WitnessConstructible::<Option<_>>::witness(inference_context, None)
     }
 }
 
