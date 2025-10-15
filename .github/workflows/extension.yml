@@ -1,0 +1,46 @@
+name: Deploy Extension on VSCode marketplace and Open VSX Registry
+on:
+  push:
+    tags:
+      - "simplicityhl-vscode-v*"
+jobs:
+  Extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+        working-directory: vscode
+
+      - name: Verify tag matches extension version
+        working-directory: vscode
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF##*/}"
+          VERSION_TAG="${TAG#simplicityhl-vscode-v}"
+
+          PACKAGE_VERSION=$(jq -r '.version' package.json)
+
+          echo "Tag version: $VERSION_TAG"
+          echo "Package version: $PACKAGE_VERSION"
+
+          if [ "$VERSION_TAG" != "$PACKAGE_VERSION" ]; then
+            echo "Tag version ($VERSION_TAG) does not match package.json version ($PACKAGE_VERSION)"
+            exit 1
+          fi
+
+      - name: Publish to Open VSX Registry
+        uses: HaaLeo/publish-vscode-extension@v2
+        with:
+          pat: ${{ secrets.OPEN_VSX_TOKEN }}
+          packagePath: vscode
+
+      - name: Publish to Visual Studio Marketplace
+        uses: HaaLeo/publish-vscode-extension@v2
+        with:
+          pat: ${{ secrets.VS_MARKETPLACE_TOKEN }}
+          registryUrl: https://marketplace.visualstudio.com
+          packagePath: vscode
