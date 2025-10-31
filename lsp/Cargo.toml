@@ -1,8 +1,8 @@
 [package]
 name = "simplicityhl-lsp"
 version = "0.1.4"
-edition = "2024"
-rust-version = "1.87"
+edition = "2021"
+rust-version = "1.79"
 description = "Language Server Protocol (LSP) server for SimplicityHL."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/BlockstreamResearch/SimplicityHL"
@@ -18,7 +18,7 @@ tower-lsp-server = "0.22.1"
 
 ropey = "1.6.1"
 miniscript = "12"
-simplicityhl = { version = "0.2.0", path = ".." }
+simplicityhl = { version = "0.2.0", git = "https://github.com/BlockstreamResearch/SimplicityHL.git", rev = "e68e1c6" }
 
 env_logger = "0.11.8"
 thiserror = "2.0.17"

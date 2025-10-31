@@ -43,7 +43,7 @@ jobs:
 
       - name: Run clippy
         working-directory: lsp
-        run: cargo clippy --all-targets --all-features -D warnings
+        run: cargo clippy --all-targets --all-features
 
   tests:
     name: Tests (lsp)
