@@ -1,8 +1,15 @@
 [package]
 name = "simplicityhl-lsp"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.87"
+description = "Language Server Protocol (LSP) server for SimplicityHL."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/BlockstreamResearch/SimplicityHL"
+homepage = "https://github.com/BlockstreamResearch/SimplicityHL/tree/master/lsp"
+readme = "README.md"
+documentation = "https://docs.rs/simplicityhl-lsp"
+keywords = ["simplicity", "liquid", "bitcoin", "elements", "lsp"]
 
 [dependencies]
 tokio = { version = "1.48.0", features = ["full"] }
@@ -11,7 +18,7 @@ tower-lsp-server = "0.22.1"
 
 ropey = "1.6.1"
 miniscript = "12"
-simplicityhl = { path = ".." }
+simplicityhl = { version = "0.2.0", path = ".." }
 
 env_logger = "0.11.8"
 thiserror = "2.0.17"
