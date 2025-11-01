@@ -1,0 +1,62 @@
+name: LSP CI
+
+on:
+  pull_request:
+    paths:
+      - 'lsp/**'
+      - '.github/workflows/lsp-ci.yml'
+  push:
+    branches:
+      - master
+    paths:
+      - 'lsp/**'
+      - '.github/workflows/lsp-ci.yml'
+
+jobs:
+  fmt:
+    name: Rustfmt (lsp)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        working-directory: lsp
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy (lsp)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Run clippy
+        working-directory: lsp
+        run: cargo clippy --all-targets --all-features
+
+  tests:
+    name: Tests (lsp)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        working-directory: lsp
+        run: cargo test --all-features -- --nocapture
+
+
