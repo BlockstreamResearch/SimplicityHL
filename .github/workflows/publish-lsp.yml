@@ -1,0 +1,95 @@
+name: Publish simplicityhl-lsp
+
+on:
+  push:
+    tags:
+      - 'simplicityhl-lsp-v*'
+  workflow_dispatch: {}
+  release:
+    types: [published]
+
+jobs:
+  lint:
+    name: Lint (lsp)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rustfmt check
+        working-directory: lsp
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        working-directory: lsp
+        run: cargo clippy --all-targets --all-features -D warnings
+
+  tests:
+    name: Tests (lsp)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        working-directory: lsp
+        run: cargo test --all-features -- --nocapture
+
+  publish:
+    name: Publish simplicityhl-lsp to crates.io
+    needs: [lint, tests]
+    runs-on: ubuntu-latest
+    environment: release
+    concurrency:
+      group: publish-lsp-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (stable)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Verify tag matches crate version
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF##*/}"
+          VERSION_TAG="${TAG#simplicityhl-lsp-v}"
+          CRATE_VERSION=$(cargo metadata --manifest-path lsp/Cargo.toml --no-deps --format-version=1 | jq -r '.packages[] | select(.name=="simplicityhl-lsp").version')
+          echo "Tag version: $VERSION_TAG"
+          echo "Crate version: $CRATE_VERSION"
+          if [ "$VERSION_TAG" != "$CRATE_VERSION" ]; then
+            echo "Tag version ($VERSION_TAG) does not match crate version ($CRATE_VERSION)"
+            exit 1
+          fi
+
+      - name: Check package
+        working-directory: lsp
+        run: cargo package
+
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        working-directory: lsp
+        run: cargo publish
+
+

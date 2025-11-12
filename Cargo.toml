@@ -7,7 +7,7 @@ homepage = "https://github.com/BlockstreamResearch/SimplicityHL"
 repository = "https://github.com/BlockstreamResearch/SimplicityHL"
 description = "Rust-like language that compiles to Simplicity bytecode."
 edition = "2021"
-rust-version = "1.78.0"
+rust-version = "1.79.0"
 
 [lib]
 name = "simplicityhl"
@@ -39,7 +39,7 @@ getrandom = { version = "0.2", features = ["js"] }
 
 [workspace]
 members = ["codegen", "fuzz"]
-exclude = ["bitcoind-tests"]
+exclude = ["bitcoind-tests", "lsp"]
 
 [lints.clippy]
 # Exclude lints we don't think are valuable.

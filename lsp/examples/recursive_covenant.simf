@@ -1,0 +1,25 @@
+mod witness {
+    const ALICE_SIGNATURE: [u8; 64] = 0x5824f67b5350aa37bb4419eaf5ae56c7ac40056d8f6954be0c3a0e942329c5e4b25876fb63c1a0e2b2b3c8c4056187ed7e4e8792e2d01c8747c50faae27e81a1;
+}
+
+mod param {
+    const ALICE_PUBLIC_KEY: u256 = 0x9bef8d556d80e43ae7e0becb3a7e6838b95defe45896ed6075bb9035d06c9964;
+}
+
+fn checksig(pk: Pubkey, sig: Signature) {
+    let msg: u256 = jet::sig_all_hash();
+    jet::bip_0340_verify((pk, msg), sig);
+}
+
+fn recursive_covenant(){
+    assert!(jet::eq_32(jet::num_outputs(), 2));
+    let this_script_hash: u256 = jet::current_script_hash();
+    let output_script_hash: u256 = unwrap(jet::output_script_hash(0));
+    assert!(jet::eq_256(this_script_hash, output_script_hash));
+    assert!(unwrap(jet::output_is_fee(1)));
+}
+
+fn main() {
+  checksig(param::ALICE_PUBLIC_KEY, witness::ALICE_SIGNATURE);
+  recursive_covenant();
+}
