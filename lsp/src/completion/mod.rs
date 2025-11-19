@@ -2,11 +2,16 @@ use simplicityhl::parse::Function;
 
 pub mod builtin;
 pub mod jet;
+pub mod tokens;
+pub mod type_cast;
 pub mod types;
 
 use tower_lsp_server::lsp_types::{
     CompletionItem, CompletionItemKind, Documentation, InsertTextFormat, MarkupContent, MarkupKind,
 };
+
+use tokens::lex_tokens;
+use tokens::Token;
 
 /// Build and provide [`CompletionItem`] for jets and builtin functions.
 #[derive(Debug)]
@@ -19,6 +24,9 @@ pub struct CompletionProvider {
 
     /// Modules completions.
     modules: Vec<CompletionItem>,
+
+    /// Default Type cast completions.
+    type_casts: Vec<CompletionItem>,
 }
 
 impl CompletionProvider {
@@ -41,26 +49,26 @@ impl CompletionProvider {
         .iter()
         .map(|(module, detail)| module_to_completion((*module).to_string(), (*detail).to_string()))
         .collect();
+
+        let type_casts_completion = type_cast::TYPE_CASTS
+            .iter()
+            .map(|(&to, &from)| CompletionItem {
+                label: format!("{to} <- {from}"),
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail: Some(format!("Cast into type `{to}`",)),
+                documentation: None,
+                insert_text: Some(format!("{from}>::into(${{1:{from}}})")),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+
         Self {
             jets: jets_completion,
             builtin: builtin_completion,
             modules: modules_completion,
+            type_casts: type_casts_completion,
         }
-    }
-
-    /// Return jets completions.
-    pub fn jets(&self) -> &[CompletionItem] {
-        &self.jets
-    }
-
-    /// Return builtin functions completions.
-    pub fn builtins(&self) -> &[CompletionItem] {
-        &self.builtin
-    }
-
-    /// Return builtin functions completions.
-    pub fn modules(&self) -> &[CompletionItem] {
-        &self.modules
     }
 
     /// Get generic functions completions.
@@ -72,6 +80,68 @@ impl CompletionProvider {
                 template_to_completion(&template)
             })
             .collect()
+    }
+
+    /// Return completions based on line and functions provided.
+    pub fn process_completions(
+        &self,
+        prefix: &str,
+        functions: &[(&Function, &str)],
+    ) -> Option<Vec<CompletionItem>> {
+        let tokens = match lex_tokens(prefix) {
+            Ok((_, mut t)) => {
+                t.reverse();
+                t
+            }
+            Err(_) => return None,
+        };
+
+        match tokens.as_slice() {
+            [Token::Jet, ..] => Some(self.jets.clone()),
+
+            // Case for ": type = <", so we can return completion for specific type, or generic one
+            // if it is not on default type casts.
+            [Token::OpenAngle, Token::EqualSign, Token::Identifier(type_name), Token::Colon, ..]
+            | [Token::Identifier(_) | Token::OpenBracket, Token::OpenAngle, Token::EqualSign, Token::Identifier(type_name), Token::Colon, ..] =>
+            {
+                let to = type_name.as_str();
+
+                if let Some(from) = type_cast::TYPE_CASTS.get(to) {
+                    return Some(vec![CompletionItem {
+                        label: format!("{to} <- {from}"),
+                        kind: Some(CompletionItemKind::FUNCTION),
+                        detail: Some(format!("Cast into type `{to}`",)),
+                        documentation: None,
+                        insert_text: Some(format!("{from}>::into(${{1:{from}}})")),
+                        insert_text_format: Some(InsertTextFormat::SNIPPET),
+                        ..Default::default()
+                    }]);
+                }
+                Some(self.type_casts.clone())
+            }
+
+            // Case for ">::" -- this structure is only present for into keyword.
+            [Token::DoubleColon, Token::CloseAngle, ..] => Some(vec![CompletionItem {
+                label: "into".to_string(),
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail: Some("Cast into type".to_string()),
+                documentation: None,
+                insert_text: Some("into(${1:type})".to_string()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                ..Default::default()
+            }]),
+
+            [Token::Colon | Token::OpenAngle, ..] => None,
+
+            _ => {
+                let mut completions = CompletionProvider::get_function_completions(functions);
+
+                completions.extend_from_slice(&self.builtin);
+                completions.extend_from_slice(&self.modules);
+
+                Some(completions)
+            }
+        }
     }
 }
 

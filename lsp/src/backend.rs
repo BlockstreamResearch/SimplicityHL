@@ -74,7 +74,7 @@ impl LanguageServer for Backend {
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
-                    trigger_characters: Some(vec![":".to_string()]),
+                    trigger_characters: Some(vec![":".to_string(), "<".to_string()]),
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                     all_commit_characters: None,
                     completion_item: None,
@@ -174,30 +174,12 @@ impl LanguageServer for Backend {
             "RopeSlice to str conversion failed".into(),
         ))?;
 
-        let trimmed_prefix = prefix.trim_end();
+        let completions = self
+            .completion_provider
+            .process_completions(prefix, &doc.functions.functions_and_docs())
+            .map(CompletionResponse::Array);
 
-        if let Some(last) = trimmed_prefix
-            .rsplit(|c: char| !c.is_alphanumeric() && c != ':')
-            .next()
-        {
-            if last.starts_with("jet:::") {
-                return Ok(Some(CompletionResponse::Array(vec![])));
-            } else if last == "jet::" || last.starts_with("jet::") {
-                return Ok(Some(CompletionResponse::Array(
-                    self.completion_provider.jets().to_vec(),
-                )));
-            }
-        // Completion after a colon is needed only for jets.
-        } else if trimmed_prefix.ends_with(':') {
-            return Ok(Some(CompletionResponse::Array(vec![])));
-        }
-
-        let mut completions =
-            CompletionProvider::get_function_completions(&doc.functions.functions_and_docs());
-        completions.extend_from_slice(self.completion_provider.builtins());
-        completions.extend_from_slice(self.completion_provider.modules());
-
-        Ok(Some(CompletionResponse::Array(completions)))
+        Ok(completions)
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
