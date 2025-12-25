@@ -6,66 +6,31 @@ use crate::value::Value;
 use crate::witness::{Arguments, WitnessTypes, WitnessValues};
 
 // ============================================================================
-// DEPRECATED: Old serde-based deserialization (type field in JSON)
+// Context-aware deserialization with optional description field
 // ============================================================================
 //
-// Previous implementation required users to specify types in JSON:
-// {
-//     "VAR_NAME": {
-//         "value": "Left(0x...)",
-//         "type": "Either<Signature, Signature>"
-//     }
-// }
-//
-// Issues with old approach:
-// 1. Type information is already known by the compiler from program analysis
-// 2. Users must manually annotate types they may not fully understand
-// 3. Redundant type information clutters the witness JSON format
-// 4. Prone to user errors with complex type syntax (Either, Signature, etc.)
-//
-// OLD CODE REFERENCE:
-// ---
-// struct WitnessMapVisitor;
-// impl<'de> de::Visitor<'de> for WitnessMapVisitor {
-//     type Value = HashMap<WitnessName, Value>;
-//     fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error> { ... }
-// }
-// impl<'de> Deserialize<'de> for WitnessValues { ... }
-// impl<'de> Deserialize<'de> for Arguments { ... }
-//
-// struct ValueMapVisitor;
-// impl<'de> de::Visitor<'de> for ValueMapVisitor {
-//     type Value = Value;
-//     fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error> {
-//         let mut value = None;
-//         let mut ty = None;
-//         while let Some(key) = access.next_key::<&str>()? {
-//             match key {
-//                 "value" => { value = Some(...) }
-//                 "type" => { ty = Some(...) }
-//                 _ => return Err(de::Error::unknown_field(...))
-//             }
-//         }
-//         let ty = ResolvedType::parse_from_str(ty.unwrap())?;
-//         Value::parse_from_str(value.unwrap(), &ty)?
-//     }
-// }
-// impl<'de> Deserialize<'de> for Value { ... }
-// ---
-
-// ============================================================================
-// NEW: Context-aware deserialization (type information from compiler)
-// ============================================================================
-//
-// Type information is provided by the compiler through WitnessTypes/Parameters.
-// Users only specify values in simplified JSON format without type annotations:
+// NEW FORMAT: Users can now add optional "description" fields
 // {
 //     "VAR_NAME": "Left(0x...)",
+//     "description": "Optional comment about this witness file",
 //     "ANOTHER_VAR": "0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
 // }
 //
-// The compiler automatically resolves types based on program analysis,
-// eliminating the need for users to manually specify type information.
+// Special keys that are ignored:
+// - "description" (top-level comment for the entire witness file)
+// - Any key starting with "_" (conventionally used for comments)
+// - "_<witness_name>" (can be used to provide hints about specific witnesses)
+//
+// Example with hints:
+// {
+//     "pubkey": "0x...",
+//     "_pubkey": "Bitcoin public key for multisig",
+//     "signature": "Left(0x...)",
+//     "_signature": "ECDSA signature of the transaction",
+//     "description": "Witness data for Bitcoin transaction #12345"
+// }
+//
+// The compiler automatically ignores these comment fields.
 
 impl WitnessValues {
     /// Deserialize witness values from JSON with compiler-provided type context.
@@ -73,6 +38,11 @@ impl WitnessValues {
     /// This method simplifies the witness JSON format by eliminating redundant
     /// type field annotations. The compiler provides type information through 
     /// WitnessTypes, allowing users to specify only the values they need to provide.
+    ///
+    /// Special features:
+    /// - "description" field: Top-level comment for the witness file (ignored)
+    /// - "_<name>" fields: Comments/hints for specific witnesses (ignored)
+    /// - Any field starting with "_" is treated as a comment (ignored)
     ///
     /// # Arguments
     ///
@@ -83,9 +53,11 @@ impl WitnessValues {
     ///
     /// ```json
     /// {
-    ///     "WITNESS_VAR": "0x1234",
-    ///     "SIGNATURE": "Left(0x...)",
-    ///     "AMOUNT": "42"
+    ///     "pubkey": "0x1234",
+    ///     "_pubkey": "Bitcoin public key (32 bytes)",
+    ///     "signature": "Left(0x...)",
+    ///     "_signature": "ECDSA signature",
+    ///     "description": "Witness data for transaction ABC"
     /// }
     /// ```
     ///
@@ -109,6 +81,20 @@ impl WitnessValues {
         let mut map = HashMap::new();
 
         for (name_str, value_json) in json_value.iter() {
+            // Skip special fields that are allowed for documentation/comments
+            if name_str == "description" {
+                // Top-level description for the entire witness file
+                // Users can add comments here
+                continue;
+            }
+            
+            if name_str.starts_with("_") {
+                // Convention: fields starting with _ are comments/hints
+                // Examples: "_pubkey", "_signature", "_note"
+                // These are completely ignored by the compiler
+                continue;
+            }
+
             let name = WitnessName::from_str_unchecked(name_str);
 
             // Retrieve type from compiler-provided context (WitnessTypes)
@@ -157,6 +143,10 @@ impl Arguments {
     /// Similar to WitnessValues::from_json_with_types, but for function parameters.
     /// Types are resolved from the compiled program through Parameters, not from JSON.
     ///
+    /// Supports the same special fields as WitnessValues:
+    /// - "description": Top-level comment for the arguments file (ignored)
+    /// - "_<name>": Comments/hints for specific parameters (ignored)
+    ///
     /// # Arguments
     ///
     /// * `json` - JSON string with argument values in simple string format
@@ -166,8 +156,11 @@ impl Arguments {
     ///
     /// ```json
     /// {
-    ///     "PARAM_A": "42",
-    ///     "PARAM_B": "0xabcd"
+    ///     "param_a": "42",
+    ///     "_param_a": "Initial seed value",
+    ///     "param_b": "0xabcd",
+    ///     "_param_b": "Configuration flags",
+    ///     "description": "Program arguments for initialization"
     /// }
     /// ```
     ///
@@ -189,6 +182,17 @@ impl Arguments {
         let mut map = HashMap::new();
 
         for (name_str, value_json) in json_value.iter() {
+            // Skip special fields that are allowed for documentation/comments
+            if name_str == "description" {
+                // Top-level description for the entire arguments file
+                continue;
+            }
+            
+            if name_str.starts_with("_") {
+                // Convention: fields starting with _ are comments/hints
+                continue;
+            }
+
             let name = WitnessName::from_str_unchecked(name_str);
 
             // Retrieve type from compiler-provided context (Parameters)
@@ -242,5 +246,18 @@ mod tests {
     //     let witness_types = /* create WitnessTypes with A: u32, B: u32 */;
     //     let witness = WitnessValues::from_json_with_types(json, &witness_types).unwrap();
     //     assert_eq!(witness.get(&WitnessName::from_str_unchecked("A")).unwrap().ty(), u32_type);
+    // }
+    //
+    // #[test]
+    // fn witness_with_description_and_hints() {
+    //     let json = r#"{
+    //         "A": "42",
+    //         "_A": "Important seed value",
+    //         "description": "Test witness with comments"
+    //     }"#;
+    //     let witness_types = /* create WitnessTypes with A: u32 */;
+    //     let witness = WitnessValues::from_json_with_types(json, &witness_types).unwrap();
+    //     // Description and _A should be ignored, only A should be in witness
+    //     assert_eq!(witness.iter().count(), 1);
     // }
 }
