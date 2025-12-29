@@ -344,7 +344,6 @@ pub enum Error {
     UndefinedParameter(WitnessName),
     WitnessMultipleAssignments(WitnessName),
     ArgumentMultipleAssignments(WitnessName),
-
 }
 
 #[rustfmt::skip]

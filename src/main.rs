@@ -81,11 +81,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Parse witness file - tries JSON first, then YAML as fallback
             // Both formats use compiler-provided type information
-            simplicityhl::WitnessValues::from_file_with_types(
-                &wit_text,
-                &compiled.witness_types(),
-            )
-            .map_err(|e| e.to_string())
+            simplicityhl::WitnessValues::from_file_with_types(&wit_text, &compiled.witness_types())
+                .map_err(|e| e.to_string())
         })
         .transpose()?;
 

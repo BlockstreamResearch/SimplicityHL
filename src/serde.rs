@@ -11,12 +11,9 @@ use crate::witness::{Arguments, WitnessTypes, WitnessValues};
 
 #[deprecated(since = "0.5.0", note = "Use from_file_with_types instead")]
 impl WitnessValues {
-    pub fn from_json_with_types(
-        _json: &str,
-        _witness_types: &WitnessTypes,
-    ) -> Result<Self, Error> {
+    pub fn from_json_with_types(_json: &str, _witness_types: &WitnessTypes) -> Result<Self, Error> {
         Err(Error::InvalidJsonFormat(
-            "from_json_with_types is deprecated. Use from_file_with_types instead".to_string()
+            "from_json_with_types is deprecated. Use from_file_with_types instead".to_string(),
         ))
     }
 }
@@ -28,17 +25,12 @@ impl WitnessValues {
 impl WitnessValues {
     /// Parse witness data from JSON format (internal helper).
     /// Supports both old nested format (with type field) and new flat format.
-    /// 
+    ///
     /// Old format: { "x": { "value": "0x0001", "type": "u32" } }
     /// New format: { "x": "0x0001" }
-    fn parse_json(
-        json: &str,
-        witness_types: &WitnessTypes,
-    ) -> Result<Self, Error> {
-        let json_value: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(json).map_err(|e| {
-                Error::InvalidJsonFormat(format!("Failed to parse as JSON: {}", e))
-            })?;
+    fn parse_json(json: &str, witness_types: &WitnessTypes) -> Result<Self, Error> {
+        let json_value: serde_json::Map<String, serde_json::Value> = serde_json::from_str(json)
+            .map_err(|e| Error::InvalidJsonFormat(format!("Failed to parse as JSON: {}", e)))?;
 
         let mut map = HashMap::new();
 
@@ -53,26 +45,24 @@ impl WitnessValues {
             let value_str: String = match value_json {
                 // New flat format: direct string value
                 serde_json::Value::String(s) => s.clone(),
-                
+
                 // Old nested format: object with "value" field
-                serde_json::Value::Object(obj) => {
-                    match obj.get("value") {
-                        Some(serde_json::Value::String(s)) => s.clone(),
-                        Some(_) => {
-                            return Err(Error::InvalidJsonFormat(format!(
-                                "Witness `{}` value must be a string",
-                                name
-                            )))
-                        }
-                        None => {
-                            return Err(Error::InvalidJsonFormat(format!(
-                                "Witness `{}` must have a 'value' field in nested format",
-                                name
-                            )))
-                        }
+                serde_json::Value::Object(obj) => match obj.get("value") {
+                    Some(serde_json::Value::String(s)) => s.clone(),
+                    Some(_) => {
+                        return Err(Error::InvalidJsonFormat(format!(
+                            "Witness `{}` value must be a string",
+                            name
+                        )))
                     }
-                }
-                
+                    None => {
+                        return Err(Error::InvalidJsonFormat(format!(
+                            "Witness `{}` must have a 'value' field in nested format",
+                            name
+                        )))
+                    }
+                },
+
                 _ => {
                     return Err(Error::InvalidJsonFormat(format!(
                         "Witness `{}` must be a string (flat) or object (nested)",
@@ -118,14 +108,10 @@ impl WitnessValues {
     ///
     /// The "witness:" section contains the actual witness values.
     /// Types are inferred from compiler context (no type definitions needed).
-    pub fn from_yaml_with_types(
-        yaml: &str,
-        witness_types: &WitnessTypes,
-    ) -> Result<Self, Error> {
+    pub fn from_yaml_with_types(yaml: &str, witness_types: &WitnessTypes) -> Result<Self, Error> {
         // Parse YAML
-        let yaml_value: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| {
-            Error::InvalidJsonFormat(format!("Failed to parse as YAML: {}", e))
-        })?;
+        let yaml_value: serde_yaml::Value = serde_yaml::from_str(yaml)
+            .map_err(|e| Error::InvalidJsonFormat(format!("Failed to parse as YAML: {}", e)))?;
 
         // Extract "witness" section (required)
         let witness_section = yaml_value.get("witness").ok_or_else(|| {
@@ -235,9 +221,8 @@ impl Arguments {
         yaml: &str,
         parameters: &crate::witness::Parameters,
     ) -> Result<Self, Error> {
-        let yaml_value: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| {
-            Error::InvalidJsonFormat(format!("Failed to parse as YAML: {}", e))
-        })?;
+        let yaml_value: serde_yaml::Value = serde_yaml::from_str(yaml)
+            .map_err(|e| Error::InvalidJsonFormat(format!("Failed to parse as YAML: {}", e)))?;
 
         let arguments_section = yaml_value.get("arguments").ok_or_else(|| {
             Error::InvalidJsonFormat("Missing 'arguments:' section in YAML".to_string())
@@ -315,14 +300,9 @@ impl Arguments {
         }
     }
 
-    fn parse_json(
-        json: &str,
-        parameters: &crate::witness::Parameters,
-    ) -> Result<Self, Error> {
-        let json_value: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(json).map_err(|e| {
-                Error::InvalidJsonFormat(format!("Failed to parse as JSON: {}", e))
-            })?;
+    fn parse_json(json: &str, parameters: &crate::witness::Parameters) -> Result<Self, Error> {
+        let json_value: serde_json::Map<String, serde_json::Value> = serde_json::from_str(json)
+            .map_err(|e| Error::InvalidJsonFormat(format!("Failed to parse as JSON: {}", e)))?;
 
         let mut map = HashMap::new();
 
@@ -337,26 +317,24 @@ impl Arguments {
             let value_str: String = match value_json {
                 // New flat format: direct string value
                 serde_json::Value::String(s) => s.clone(),
-                
+
                 // Old nested format: object with "value" field
-                serde_json::Value::Object(obj) => {
-                    match obj.get("value") {
-                        Some(serde_json::Value::String(s)) => s.clone(),
-                        Some(_) => {
-                            return Err(Error::InvalidJsonFormat(format!(
-                                "Parameter `{}` value must be a string",
-                                name
-                            )))
-                        }
-                        None => {
-                            return Err(Error::InvalidJsonFormat(format!(
-                                "Parameter `{}` must have a 'value' field in nested format",
-                                name
-                            )))
-                        }
+                serde_json::Value::Object(obj) => match obj.get("value") {
+                    Some(serde_json::Value::String(s)) => s.clone(),
+                    Some(_) => {
+                        return Err(Error::InvalidJsonFormat(format!(
+                            "Parameter `{}` value must be a string",
+                            name
+                        )))
                     }
-                }
-                
+                    None => {
+                        return Err(Error::InvalidJsonFormat(format!(
+                            "Parameter `{}` must have a 'value' field in nested format",
+                            name
+                        )))
+                    }
+                },
+
                 _ => {
                     return Err(Error::InvalidJsonFormat(format!(
                         "Parameter `{}` must be a string (flat) or object (nested)",
@@ -377,8 +355,7 @@ impl Arguments {
 }
 
 #[cfg(test)]
-mod tests {
-}
+mod tests {}
 
 // Note: The tests module above is empty because integration tests in lib.rs
 // provide the comprehensive validation. However, here are inline tests
@@ -402,10 +379,10 @@ witness:
         let result: Result<serde_yaml::Value, _> = serde_yaml::from_str(yaml);
         assert!(result.is_ok());
         let value = result.unwrap();
-        
+
         // witness: section should exist
         assert!(value.get("witness").is_some());
-        
+
         // Should be a mapping
         assert!(value.get("witness").unwrap().as_mapping().is_some());
     }
@@ -427,11 +404,11 @@ metadata:
         let result: Result<serde_yaml::Value, _> = serde_yaml::from_str(yaml);
         assert!(result.is_ok());
         let value = result.unwrap();
-        
+
         // witness: section should exist and be a mapping
         let witness = value.get("witness").unwrap();
         assert!(witness.as_mapping().is_some());
-        
+
         // metadata should be ignored but still present in YAML
         assert!(value.get("metadata").is_some());
     }
@@ -446,7 +423,7 @@ metadata:
         let result: Result<serde_yaml::Value, _> = serde_yaml::from_str(yaml);
         assert!(result.is_ok());
         let value = result.unwrap();
-        
+
         // witness: section should NOT exist
         assert!(value.get("witness").is_none());
     }
@@ -473,10 +450,10 @@ notes:
         let result: Result<serde_yaml::Value, _> = serde_yaml::from_str(yaml);
         assert!(result.is_ok());
         let value = result.unwrap();
-        
+
         // witness: should exist
         assert!(value.get("witness").is_some());
-        
+
         // All other sections should exist in YAML but are ignored during parsing
         assert!(value.get("metadata").is_some());
         assert!(value.get("documentation").is_some());
@@ -495,9 +472,9 @@ witness:
         let result: Result<serde_yaml::Value, _> = serde_yaml::from_str(yaml);
         assert!(result.is_ok());
         let value = result.unwrap();
-        
+
         let witness = value.get("witness").unwrap();
-        
+
         // witness should be a sequence (array), not a mapping
         assert!(witness.as_sequence().is_some());
         // Not a mapping
@@ -515,10 +492,10 @@ arguments:
         let result: Result<serde_yaml::Value, _> = serde_yaml::from_str(yaml);
         assert!(result.is_ok());
         let value = result.unwrap();
-        
+
         // arguments: section should exist
         assert!(value.get("arguments").is_some());
-        
+
         // Should be a mapping
         assert!(value.get("arguments").unwrap().as_mapping().is_some());
     }
@@ -539,7 +516,7 @@ metadata:
         let result: Result<serde_yaml::Value, _> = serde_yaml::from_str(yaml);
         assert!(result.is_ok());
         let value = result.unwrap();
-        
+
         // arguments: should exist and be a mapping
         let arguments = value.get("arguments").unwrap();
         assert!(arguments.as_mapping().is_some());
@@ -553,9 +530,9 @@ metadata:
     #[test]
     fn format_detection_json_is_json() {
         let json = r#"{ "x": "0x0001" }"#;
-        
+
         // JSON parsing should succeed
-        let result: Result<serde_json::Map<String, serde_json::Value>, _> = 
+        let result: Result<serde_json::Map<String, serde_json::Value>, _> =
             serde_json::from_str(json);
         assert!(result.is_ok());
     }
@@ -567,7 +544,7 @@ metadata:
 witness:
   x: "0x0001"
 "#;
-        
+
         // YAML should fail JSON parsing
         let result: Result<serde_json::Value, _> = serde_json::from_str(yaml);
         assert!(result.is_err());
@@ -578,11 +555,11 @@ witness:
     fn format_detection_garbage_is_neither() {
         // Use data with unclosed bracket - invalid for both JSON and YAML
         let garbage = r#"{test: [invalid yaml with unclosed bracket}"#;
-        
+
         // JSON should fail (invalid JSON structure)
         let json_result: Result<serde_json::Value, _> = serde_json::from_str(garbage);
         assert!(json_result.is_err(), "JSON should fail on unclosed bracket");
-        
+
         // YAML should also fail (unclosed bracket is invalid YAML syntax)
         let yaml_result: Result<serde_yaml::Value, _> = serde_yaml::from_str(garbage);
         assert!(yaml_result.is_err(), "YAML should fail on unclosed bracket");
