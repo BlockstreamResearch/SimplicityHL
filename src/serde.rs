@@ -34,7 +34,7 @@ impl WitnessValues {
 
         let mut map = HashMap::new();
 
-        for (name_str, value_json) in json_value.iter() {
+        for (name_str, value_json) in &json_value {
             let name = WitnessName::from_str_unchecked(name_str);
 
             let ty = witness_types
@@ -185,24 +185,18 @@ impl WitnessValues {
     ) -> Result<Self, Error> {
         // Step 1: Try to parse as JSON
         match Self::parse_json(content, witness_types) {
-            Ok(result) => {
-                // JSON parsing succeeded - use the JSON deserialization
-                return Ok(result);
-            }
+            // JSON parsing succeeded - use the JSON deserialization
+            Ok(result) => Ok(result),
             Err(_json_error) => {
                 // JSON parsing failed - proceed to Step 2
-            }
-        }
 
-        // Step 2: Try to parse as YAML
-        match Self::from_yaml_with_types(content, witness_types) {
-            Ok(result) => {
-                // YAML parsing succeeded - use the YAML deserialization
-                return Ok(result);
-            }
-            Err(yaml_error) => {
-                // YAML parsing failed - return error
-                return Err(yaml_error);
+                // Step 2: Try to parse as YAML
+                match Self::from_yaml_with_types(content, witness_types) {
+                    // YAML parsing succeeded - use the YAML deserialization
+                    Ok(result) => Ok(result),
+                    // YAML parsing failed - return error
+                    Err(yaml_error) => Err(yaml_error),
+                }
             }
         }
     }
@@ -285,17 +279,15 @@ impl Arguments {
     ) -> Result<Self, Error> {
         // Step 1: Try JSON
         match Self::parse_json(content, parameters) {
-            Ok(result) => return Ok(result),
+            Ok(result) => Ok(result),
             Err(_) => {
                 // Continue to Step 2
-            }
-        }
 
-        // Step 2: Try YAML
-        match Self::from_yaml_with_types(content, parameters) {
-            Ok(result) => return Ok(result),
-            Err(yaml_error) => {
-                return Err(yaml_error);
+                // Step 2: Try YAML
+                match Self::from_yaml_with_types(content, parameters) {
+                    Ok(result) => Ok(result),
+                    Err(yaml_error) => Err(yaml_error),
+                }
             }
         }
     }
@@ -306,7 +298,7 @@ impl Arguments {
 
         let mut map = HashMap::new();
 
-        for (name_str, value_json) in json_value.iter() {
+        for (name_str, value_json) in &json_value {
             let name = WitnessName::from_str_unchecked(name_str);
 
             let ty = parameters
