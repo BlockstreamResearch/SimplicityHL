@@ -79,10 +79,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let wit_path = std::path::Path::new(wit_file);
             let wit_text = std::fs::read_to_string(wit_path).map_err(|e| e.to_string())?;
 
-            // Use new context-aware deserialization with intelligent format detection
-            // Supports both YAML (preferred) and JSON (fallback) formats
-            // Type information is provided by the compiled program (witness_types)
-            // Users only need to specify values in simplified format
+            // Parse witness file - tries JSON first, then YAML as fallback
+            // Both formats use compiler-provided type information
             simplicityhl::WitnessValues::from_file_with_types(
                 &wit_text,
                 &compiled.witness_types(),
