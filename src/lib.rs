@@ -7,6 +7,7 @@ pub mod debug;
 pub mod dummy_env;
 pub mod error;
 pub mod jet;
+pub mod lexer;
 pub mod named;
 pub mod num;
 pub mod parse;
