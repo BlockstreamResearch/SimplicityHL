@@ -339,6 +339,12 @@ pub enum Error {
     ModuleRedefined(ModuleName),
     ArgumentMissing(WitnessName),
     ArgumentTypeMismatch(WitnessName, ResolvedType, ResolvedType),
+    InvalidJsonFormat(String),
+    UndefinedWitness(WitnessName),
+    UndefinedParameter(WitnessName),
+    WitnessMultipleAssignments(WitnessName),
+    ArgumentMultipleAssignments(WitnessName),
+
 }
 
 #[rustfmt::skip]
@@ -480,6 +486,26 @@ impl fmt::Display for Error {
             Error::ArgumentTypeMismatch(name, declared, assigned) => write!(
                 f,
                 "Parameter `{name}` was declared with type `{declared}` but its assigned argument is of type `{assigned}`"
+            ),
+            Error::InvalidJsonFormat(msg) => write!(
+                f,
+                "Invalid JSON format: {msg}"
+            ),
+            Error::UndefinedWitness(name) => write!(
+                f,
+                "Witness `{name}` is not defined in the compiled program"
+            ),
+            Error::UndefinedParameter(name) => write!(
+                f,
+                "Parameter `{name}` is not defined in the program parameters"
+            ),
+            Error::WitnessMultipleAssignments(name) => write!(
+                f,
+                "Witness `{name}` is assigned multiple times"
+            ),
+            Error::ArgumentMultipleAssignments(name) => write!(
+                f,
+                "Parameter `{name}` is assigned multiple times"
             ),
         }
     }

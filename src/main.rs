@@ -77,8 +77,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|wit_file| -> Result<simplicityhl::WitnessValues, String> {
             let wit_path = std::path::Path::new(wit_file);
             let wit_text = std::fs::read_to_string(wit_path).map_err(|e| e.to_string())?;
-            let witness = serde_json::from_str::<simplicityhl::WitnessValues>(&wit_text).unwrap();
-            Ok(witness)
+
+            // Use new context-aware deserialization method
+            // Type information is provided by the compiled program (witness_types)
+            // Users only need to specify values in simplified JSON format
+            simplicityhl::WitnessValues::from_json_with_types(
+                &wit_text,
+                &compiled.witness_types(),
+            )
+            .map_err(|e| e.to_string())
         })
         .transpose()?;
     #[cfg(not(feature = "serde"))]

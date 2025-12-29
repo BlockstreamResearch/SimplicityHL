@@ -122,6 +122,12 @@ impl CompiledProgram {
         &self.debug_symbols
     }
 
+    /// Access the witness types declared in the SimplicityHL program.
+    pub fn witness_types(&self) -> &WitnessTypes {
+        &self.witness_types
+    }
+
+
     /// Access the Simplicity target code, without witness data.
     pub fn commit(&self) -> Arc<CommitNode<Elements>> {
         named::forget_names(&self.simplicity)
@@ -305,10 +311,11 @@ pub(crate) mod tests {
             arguments_file_path: P,
         ) -> TestCase<CompiledProgram> {
             let arguments_text = std::fs::read_to_string(arguments_file_path).unwrap();
-            let arguments = match serde_json::from_str::<Arguments>(&arguments_text) {
-                Ok(x) => x,
-                Err(error) => panic!("{error}"),
-            };
+            let arguments = Arguments::from_json_with_types(
+                &arguments_text,
+                self.program.parameters(),
+            )
+            .expect("Failed to parse arguments from JSON with types");
             self.with_arguments(arguments)
         }
 
@@ -343,10 +350,11 @@ pub(crate) mod tests {
             witness_file_path: P,
         ) -> TestCase<SatisfiedProgram> {
             let witness_text = std::fs::read_to_string(witness_file_path).unwrap();
-            let witness_values = match serde_json::from_str::<WitnessValues>(&witness_text) {
-                Ok(x) => x,
-                Err(error) => panic!("{error}"),
-            };
+            let witness_values = WitnessValues::from_json_with_types(
+                &witness_text,
+                self.program.witness_types(),
+            )
+            .expect("Failed to parse witness values from JSON with types");
             self.with_witness_values(witness_values)
         }
 

@@ -1442,24 +1442,26 @@ fn analyze_named_module(
         ModuleItem::Module(module) if module.name == name => Some(module),
         _ => None,
     });
-    let witness_module = iter
-        .next()
-        .ok_or(Error::ModuleRequired(name.shallow_clone()))
-        .with_span(from)?;
+
+    // witness file
+    let witness_module = iter.next();
     if iter.next().is_some() {
         return Err(Error::ModuleRedefined(name)).with_span(from);
     }
     let mut map = HashMap::new();
-    for assignment in witness_module.assignments() {
-        if map.contains_key(assignment.name()) {
-            return Err(Error::WitnessReassigned(assignment.name().shallow_clone()))
-                .with_span(assignment);
+    if let Some(witness_module) = witness_module {
+        for assignment in witness_module.assignments() {
+            if map.contains_key(assignment.name()) {
+                return Err(Error::WitnessReassigned(assignment.name().shallow_clone()))
+                    .with_span(assignment);
+            }
+            map.insert(
+                assignment.name().shallow_clone(),
+                assignment.value().clone(),
+            );
         }
-        map.insert(
-            assignment.name().shallow_clone(),
-            assignment.value().clone(),
-        );
     }
+
     Ok(map)
 }
 
