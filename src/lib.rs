@@ -311,7 +311,7 @@ pub(crate) mod tests {
             arguments_file_path: P,
         ) -> TestCase<CompiledProgram> {
             let arguments_text = std::fs::read_to_string(arguments_file_path).unwrap();
-            let arguments = Arguments::from_json_with_types(
+            let arguments = Arguments::from_file_with_types(
                 &arguments_text,
                 self.program.parameters(),
             )
@@ -350,7 +350,7 @@ pub(crate) mod tests {
             witness_file_path: P,
         ) -> TestCase<SatisfiedProgram> {
             let witness_text = std::fs::read_to_string(witness_file_path).unwrap();
-            let witness_values = WitnessValues::from_json_with_types(
+            let witness_values = WitnessValues::from_file_with_types(
                 &witness_text,
                 self.program.witness_types(),
             )

@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Arg::new("wit_file")
                     .value_name("WITNESS_FILE")
                     .action(ArgAction::Set)
-                    .help("File containing the witness data"),
+                    .help("File containing the witness data (YAML or JSON format)"),
             )
             .arg(
                 Arg::new("debug")
@@ -71,6 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let compiled = CompiledProgram::new(prog_text, Arguments::default(), include_debug_symbols)?;
 
+    // Process witness file if provided
     #[cfg(feature = "serde")]
     let witness_opt = matches
         .get_one::<String>("wit_file")
@@ -78,16 +79,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let wit_path = std::path::Path::new(wit_file);
             let wit_text = std::fs::read_to_string(wit_path).map_err(|e| e.to_string())?;
 
-            // Use new context-aware deserialization method
+            // Use new context-aware deserialization with intelligent format detection
+            // Supports both YAML (preferred) and JSON (fallback) formats
             // Type information is provided by the compiled program (witness_types)
-            // Users only need to specify values in simplified JSON format
-            simplicityhl::WitnessValues::from_json_with_types(
+            // Users only need to specify values in simplified format
+            simplicityhl::WitnessValues::from_file_with_types(
                 &wit_text,
                 &compiled.witness_types(),
             )
             .map_err(|e| e.to_string())
         })
         .transpose()?;
+
     #[cfg(not(feature = "serde"))]
     let witness_opt = if matches.contains_id("wit_file") {
         return Err(
@@ -116,12 +119,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if output_json {
-        #[cfg(not(feature = "serde"))]
-        return Err(
-            "Program was compiled without the 'serde' feature and cannot output JSON.".into(),
-        );
         #[cfg(feature = "serde")]
-        println!("{}", serde_json::to_string(&output)?);
+        {
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        #[cfg(not(feature = "serde"))]
+        {
+            return Err("JSON output requires 'serde' feature".into());
+        }
     } else {
         println!("{}", output);
     }
