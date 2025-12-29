@@ -117,9 +117,16 @@ impl CompiledProgram {
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
-    /// Access the debug symbols for the Simplicity target code.
+       /// Access the debug symbols for the Simplicity target code.
     pub fn debug_symbols(&self) -> &DebugSymbols {
         &self.debug_symbols
+    }
+
+    /// Access the witness types declared in the SimplicityHL program.
+    ///
+    /// [NEW METHOD - INSERT HERE]
+    pub fn witness_types(&self) -> &WitnessTypes {
+        &self.witness_types
     }
 
     /// Access the Simplicity target code, without witness data.

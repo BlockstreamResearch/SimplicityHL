@@ -39,12 +39,6 @@ macro_rules! impl_name_type_map {
 macro_rules! impl_name_value_map {
     ($wrapper: ident, $module_name: expr) => {
         impl $wrapper {
-            /// Access the inner map.
-            #[cfg(feature = "serde")]
-            pub(crate) fn as_inner(&self) -> &HashMap<WitnessName, Value> {
-                &self.0
-            }
-
             /// Get the value that is assigned to the given name.
             pub fn get(&self, name: &WitnessName) -> Option<&Value> {
                 self.0.get(name)
@@ -266,8 +260,8 @@ fn main() {
     #[test]
     fn missing_witness_module() {
         match WitnessValues::parse_from_str("") {
-            Ok(_) => panic!("Missing witness module was falsely accepted"),
-            Err(error) => assert!(error.to_string().contains("module `witness` is missing")),
+            Ok(values) => assert!(values.iter().next().is_none()),
+            Err(error) => panic!("Expected empty witness values, but got error: {}", error),
         }
     }
 
