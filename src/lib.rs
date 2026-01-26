@@ -89,6 +89,14 @@ impl TemplateProgram {
             debug_symbols: self.simfony.debug_symbols(self.file.as_ref()),
             simplicity: commit,
             witness_types: self.simfony.witness_types().shallow_clone(),
+            parameter_types: self.simfony.parameters().shallow_clone(),
+        })
+    }
+
+    pub fn generate_abi_meta(&self) -> Result<AbiMeta, String> {
+        Ok(AbiMeta {
+            witness_types: self.simfony.witness_types().shallow_clone(),
+            param_types: self.parameters().shallow_clone(),
         })
     }
 }
@@ -99,6 +107,7 @@ pub struct CompiledProgram {
     simplicity: Arc<named::CommitNode<Elements>>,
     witness_types: WitnessTypes,
     debug_symbols: DebugSymbols,
+    parameter_types: Parameters,
 }
 
 impl CompiledProgram {
@@ -162,6 +171,19 @@ impl CompiledProgram {
             debug_symbols: self.debug_symbols.clone(),
         })
     }
+
+    pub fn generate_abi_meta(&self) -> Result<AbiMeta, String> {
+        Ok(AbiMeta {
+            witness_types: self.witness_types.shallow_clone(),
+            param_types: self.parameter_types.shallow_clone(),
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AbiMeta {
+    pub witness_types: WitnessTypes,
+    pub param_types: Parameters,
 }
 
 /// A SimplicityHL program, compiled to Simplicity and satisfied with witness data.

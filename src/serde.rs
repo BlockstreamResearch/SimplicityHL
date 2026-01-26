@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use serde::{de, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
-
 use crate::parse::ParseFromStr;
 use crate::str::WitnessName;
 use crate::types::ResolvedType;
 use crate::value::Value;
 use crate::witness::{Arguments, WitnessValues};
+use crate::AbiMeta;
+use serde::{de, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 
 struct WitnessMapVisitor;
 
@@ -40,6 +40,32 @@ impl<'de> Deserialize<'de> for WitnessValues {
         deserializer
             .deserialize_map(WitnessMapVisitor)
             .map(Self::from)
+    }
+}
+
+impl Serialize for AbiMeta {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: ::serde::Serializer,
+    {
+        use ::serde::ser::SerializeStruct;
+        use std::collections::HashMap;
+
+        let mut state = serializer.serialize_struct("AbiMeta", 2)?;
+
+        let witness_types_converted = self
+            .witness_types
+            .iter()
+            .map(|(w_name, w_type)| (w_name.to_string(), w_type.to_string()))
+            .collect::<HashMap<_, _>>();
+        state.serialize_field("witness_types", &witness_types_converted)?;
+        let witness_types_converted = self
+            .param_types
+            .iter()
+            .map(|(w_name, w_type)| (w_name.to_string(), w_type.to_string()))
+            .collect::<HashMap<_, _>>();
+        state.serialize_field("parameter_types", &witness_types_converted)?;
+        state.end()
     }
 }
 
