@@ -39,7 +39,7 @@ getrandom = { version = "0.2", features = ["js"] }
 
 [workspace]
 members = ["codegen", "fuzz"]
-exclude = ["bitcoind-tests", "lsp"]
+exclude = ["bitcoind-tests", "lsp", "macros"]
 
 [lints.clippy]
 # Exclude lints we don't think are valuable.
