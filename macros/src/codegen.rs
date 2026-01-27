@@ -1,9 +1,9 @@
 use crate::convert_error_to_syn;
 use crate::parse::SimfContent;
 use proc_macro2::TokenStream;
+use quote::{ToTokens, format_ident, quote};
 use simplicityhl::{AbiMeta, TemplateProgram};
 use std::error::Error;
-use quote::{format_ident, quote, ToTokens};
 
 pub fn compile_program(content: &SimfContent) -> syn::Result<AbiMeta> {
     compile_program_inner(content).map_err(|e| convert_error_to_syn(e))
@@ -22,7 +22,8 @@ fn gen_helpers_inner(contract_name: &str, meta: AbiMeta) -> Result<TokenStream, 
             pub const #mod_ident: &'static str = #contract_name;
             pub const #name2: &'static str = #str;
             }
-    }.into_token_stream())
+    }
+    .into_token_stream())
 }
 
 fn compile_program_inner(content: &SimfContent) -> Result<AbiMeta, Box<dyn Error>> {

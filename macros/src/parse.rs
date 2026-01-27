@@ -23,26 +23,46 @@ pub fn eval_path_expr(expr: Expr) -> syn::Result<SimfContent> {
     extract_content_from_path(&path).map_err(|e| convert_error_to_syn(e))
 }
 
-pub fn eval_const_expr(const_value: ItemConst) -> syn::Result<SimfContent> {
-    let ItemConst {
-        ident,
-        expr,
-        ..
-    } = const_value;
+// TODO: come up with an idea of how to parse constant values and evaluate constant values that are passed inside
+//  pub const OPTION_SOURCE: &str = include_str!("source_simf/options.simf");
+//  include_simf_source!(OPTION_SOURCE);
+// pub fn eval_const_expr(const_value: ItemConst) -> syn::Result<SimfContent> {
+//     let ItemConst {
+//         ident,
+//         expr,
+//         ..
+//     } = const_value;
+//
+//     let expr = expr.as_ref();
+//     let content = match expr {
+//         Expr::Lit(ExprLit {
+//             lit: Lit::Str(s), ..
+//         }) => s.value(),
+//         _ => return Err(syn::Error::new(expr.span(), "Expected string literal or include_str! macro")),
+//     };
+//
+//     let contract_name = prepare_contract_name(&ident.to_string());
+//
+//     Ok(SimfContent {
+//         content,
+//         contract_name,
+//     })
+// }
+
+pub fn eval_macro_expr(const_value: ItemConst) -> syn::Result<SimfContent> {
+    let ItemConst { ident, expr, .. } = const_value;
 
     let expr = expr.as_ref();
     let content = match expr {
         Expr::Lit(ExprLit {
             lit: Lit::Str(s), ..
         }) => s.value(),
-        // Expr::Macro(m) if m.mac.path.is_ident("include_str") => {
-        //     let lit = m.mac.parse_body::<LitStr>()?;
-        //     let mut content = String::new();
-        //     let mut file = File::open(lit.value()).map_err(|e| convert_error_to_syn(e))?;
-        //     file.read_to_string(&mut content).map_err(|e| convert_error_to_syn(e))?;
-        //     content
-        // }
-        _ => return Err(syn::Error::new(expr.span(), "Expected string literal or include_str! macro")),
+        _ => {
+            return Err(syn::Error::new(
+                expr.span(),
+                "Expected string literal or include_str! macro",
+            ));
+        }
     };
 
     let contract_name = prepare_contract_name(&ident.to_string());
