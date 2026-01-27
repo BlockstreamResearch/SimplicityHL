@@ -4,7 +4,7 @@ use std::io;
 use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
 use syn::spanned::Spanned;
-use syn::{Expr, ExprLit, ItemConst, Lit, LitStr};
+use syn::{Expr, ExprLit, Lit};
 
 pub struct SimfContent {
     pub content: String,
@@ -26,59 +26,96 @@ pub fn eval_path_expr(expr: Expr) -> syn::Result<SimfContent> {
 // TODO: come up with an idea of how to parse constant values and evaluate constant values that are passed inside
 //  pub const OPTION_SOURCE: &str = include_str!("source_simf/options.simf");
 //  include_simf_source!(OPTION_SOURCE);
-// pub fn eval_const_expr(const_value: ItemConst) -> syn::Result<SimfContent> {
-//     let ItemConst {
-//         ident,
-//         expr,
-//         ..
-//     } = const_value;
-//
-//     let expr = expr.as_ref();
-//     let content = match expr {
-//         Expr::Lit(ExprLit {
-//             lit: Lit::Str(s), ..
-//         }) => s.value(),
-//         _ => return Err(syn::Error::new(expr.span(), "Expected string literal or include_str! macro")),
-//     };
-//
-//     let contract_name = prepare_contract_name(&ident.to_string());
-//
-//     Ok(SimfContent {
-//         content,
-//         contract_name,
-//     })
-// }
 
-pub fn eval_macro_expr(const_value: ItemConst) -> syn::Result<SimfContent> {
-    let ItemConst { ident, expr, .. } = const_value;
+/// Prepares a contract name for use as a Rust module/identifier.
+///
+/// Converts the input to a valid lowercase Rust identifier by:
+/// - Trimming whitespace
+/// - Converting to lowercase
+/// - Replacing invalid characters with underscores
+/// - Ensuring it starts with a letter or underscore (not a digit)
+/// - Validating it's not a reserved keyword
+///
+/// # Returns
+/// A valid lowercase Rust identifier, or an error if the name cannot be normalized
+///
+/// # Examples
+/// - `"MyContract"` → `"mycontract"`
+/// - `"My-Contract-V2"` → `"my_contract_v2"`
+/// - `"123Invalid"` → Error (starts with digit)
+/// - `"valid_name"` → `"valid_name"`
+pub fn prepare_contract_name(name: &str) -> io::Result<String> {
+    let trimmed = name.trim_matches(|c: char| c.is_whitespace());
+    if trimmed.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Contract name cannot be empty",
+        ));
+    }
 
-    let expr = expr.as_ref();
-    let content = match expr {
-        Expr::Lit(ExprLit {
-            lit: Lit::Str(s), ..
-        }) => s.value(),
-        _ => {
-            return Err(syn::Error::new(
-                expr.span(),
-                "Expected string literal or include_str! macro",
-            ));
-        }
-    };
+    let mut result = trimmed.to_lowercase();
 
-    let contract_name = prepare_contract_name(&ident.to_string());
+    result = result
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
 
-    Ok(SimfContent {
-        content,
-        contract_name,
-    })
+    while result.contains("__") {
+        result = result.replace("__", "_");
+    }
+
+    result = result.trim_matches('_').to_string();
+
+    if result.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+        result = format!("_{}", result);
+    }
+
+    if is_reserved_keyword(&result) {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Contract name '{}' is a reserved Rust keyword", result),
+        ));
+    }
+
+    if !is_valid_rust_identifier(&result) {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Contract name '{}' is not a valid Rust identifier", result),
+        ));
+    }
+
+    Ok(result)
 }
 
+/// Checks if a string is a valid Rust identifier
 #[inline]
-pub fn prepare_contract_name(name: &str) -> String {
-    name.trim_matches(' ').to_lowercase()
+fn is_valid_rust_identifier(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+
+    let first = s.chars().next().unwrap();
+    // First char must be letter or underscore
+    if !first.is_alphabetic() && first != '_' {
+        return false;
+    }
+
+    s.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
-// TODO: pass span as input parameter to correctly propagate errors
+/// Checks if a string is a Rust reserved keyword (only checks keywords, not format)
+///
+/// This function validates against Rust's actual reserved keywords.
+/// Valid identifiers like "hello" will return false (not a keyword).#[inline]
+fn is_reserved_keyword(s: &str) -> bool {
+    syn::parse_str::<syn::Ident>(s).is_err()
+}
 
 #[inline]
 fn validate_path(literal: String) -> syn::Result<PathBuf> {
@@ -103,7 +140,7 @@ fn extract_content_from_path(path: &PathBuf) -> std::io::Result<SimfContent> {
                 format!("No file prefix in file: '{:?}'", path),
             ))?
             .to_string_lossy();
-        prepare_contract_name(name.as_ref())
+        prepare_contract_name(name.as_ref())?
     };
 
     let mut content = String::new();

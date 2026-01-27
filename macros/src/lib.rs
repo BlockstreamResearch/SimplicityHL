@@ -1,9 +1,8 @@
 extern crate proc_macro;
 
-use proc_macro2::Ident;
 use quote::__private::Span;
 use std::fmt::Display;
-use syn::{Expr, ItemConst};
+use syn::Expr;
 
 mod codegen;
 mod parse;
@@ -26,9 +25,10 @@ pub fn include_simf(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 fn include_simf_impl(input: proc_macro2::TokenStream) -> syn::Result<proc_macro2::TokenStream> {
     let input = syn::parse2::<Expr>(input)?;
+
     let simf_content = parse::eval_path_expr(input)?;
     let abi_meta = codegen::compile_program(&simf_content)?;
-    let generated = codegen::gen_helpers(&simf_content, abi_meta)?;
+    let generated = codegen::gen_helpers(&simf_content, &abi_meta)?;
 
     Ok(generated)
 }
