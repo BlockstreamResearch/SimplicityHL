@@ -5,6 +5,9 @@ use simplicityhl::str::WitnessName;
 use simplicityhl::{AbiMeta, Parameters, ResolvedType, TemplateProgram, WitnessTypes};
 use std::error::Error;
 
+// TODO(Illia): add bincode generation feature (i.e. require bincode dependencies)
+// TODO(Illia): add conditional compilation for simplicity-core to e included automatically
+
 pub fn compile_program(content: &SimfContent) -> syn::Result<AbiMeta> {
     compile_program_inner(content).map_err(|e| convert_error_to_syn(e))
 }
@@ -15,20 +18,55 @@ fn compile_program_inner(content: &SimfContent) -> Result<AbiMeta, Box<dyn Error
 }
 
 pub fn gen_helpers(
-    simf_content: &SimfContent,
-    meta: &AbiMeta,
+    simf_content: SimfContent,
+    meta: AbiMeta,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    gen_helpers_inner(&simf_content, meta).map_err(|e| convert_error_to_syn(e))
+    gen_helpers_inner(simf_content, meta).map_err(|e| convert_error_to_syn(e))
+}
+
+struct DerivedMeta {
+    contract_source_const_name: proc_macro2::Ident,
+    args_struct: ConvertedMeta,
+    witness_struct: ConvertedMeta,
+    simf_content: SimfContent,
+    abi_meta: AbiMeta,
+}
+
+impl DerivedMeta {
+    fn try_from(simf_content: SimfContent, abi_meta: AbiMeta) -> syn::Result<Self> {
+        let args_struct = ConvertedMeta::generate_args_struct(
+            &simf_content.contract_name,
+            &abi_meta.param_types,
+        )?;
+        let witness_struct = ConvertedMeta::generate_witness_struct(
+            &simf_content.contract_name,
+            &abi_meta.witness_types,
+        )?;
+        let contract_source_const_name = format_ident!(
+            "{}_CONTRACT_SOURCE",
+            simf_content.contract_name.to_uppercase()
+        );
+        Ok(DerivedMeta {
+            contract_source_const_name,
+            args_struct,
+            witness_struct,
+            simf_content,
+            abi_meta,
+        })
+    }
 }
 
 fn gen_helpers_inner(
-    simf_content: &SimfContent,
-    meta: &AbiMeta,
+    simf_content: SimfContent,
+    meta: AbiMeta,
 ) -> Result<proc_macro2::TokenStream, Box<dyn Error>> {
-    let mod_ident = format_ident!("{}", simf_content.contract_name);
-    let program_helpers = construct_program_helpers(simf_content, meta);
-    let witness_helpers = construct_witness_helpers(simf_content, meta)?;
-    let arguments_helpers = construct_argument_helpers(simf_content, meta)?;
+    let mod_ident = format_ident!("derived_{}", simf_content.contract_name);
+
+    let derived_meta = DerivedMeta::try_from(simf_content, meta)?;
+
+    let program_helpers = construct_program_helpers(&derived_meta);
+    let witness_helpers = construct_witness_helpers(&derived_meta)?;
+    let arguments_helpers = construct_argument_helpers(&derived_meta)?;
 
     Ok(quote! {
         pub mod #mod_ident{
@@ -41,26 +79,72 @@ fn gen_helpers_inner(
     })
 }
 
-fn construct_program_helpers(
-    simf_content: &SimfContent,
-    _meta: &AbiMeta,
-) -> proc_macro2::TokenStream {
-    let contract_content = &simf_content.content;
+fn construct_program_helpers(derived_meta: &DerivedMeta) -> proc_macro2::TokenStream {
+    let contract_content = &derived_meta.simf_content.content;
     let error_msg = format!(
         "INTERNAL: expected '{}' Program to compile successfully.",
-        simf_content.contract_name
+        derived_meta.simf_content.contract_name
     );
+    let contract_source_name = &derived_meta.contract_source_const_name;
+    let contract_arguments_struct_name = &derived_meta.args_struct.struct_name;
 
     quote! {
-        pub const CONTRACT_SOURCE: &str = #contract_content;
+        use simplicityhl::elements::Address;
+        use simplicityhl::simplicity::bitcoin::XOnlyPublicKey;
+        use simplicityhl_core::{create_p2tr_address, load_program, ProgramError, SimplicityNetwork};
+        use simplicityhl::CompiledProgram;
+
+        pub const #contract_source_name: &str = #contract_content;
 
         /// Get the options template program for instantiation.
         ///
         /// # Panics
         /// - if the embedded source fails to compile (should never happen).
         #[must_use]
-        pub fn get_options_template_program() -> ::simplicityhl::TemplateProgram {
-            ::simplicityhl::TemplateProgram::new(CONTRACT_SOURCE).expect(#error_msg)
+        pub fn get_template_program() -> ::simplicityhl::TemplateProgram {
+            ::simplicityhl::TemplateProgram::new(#contract_source_name).expect(#error_msg)
+        }
+
+        /// Derive P2TR address for an option offer contract.
+        ///
+        /// # Errors
+        ///
+        /// Returns error if program compilation fails.
+        pub fn get_option_offer_address(
+            x_only_public_key: &XOnlyPublicKey,
+            arguments: &#contract_arguments_struct_name,
+            network: SimplicityNetwork,
+        ) -> Result<Address, ProgramError> {
+            Ok(create_p2tr_address(
+                get_loaded_program(arguments)?.commit().cmr(),
+                x_only_public_key,
+                network.address_params(),
+            ))
+        }
+
+        /// Compile option offer program with the given arguments.
+        ///
+        /// # Errors
+        ///
+        /// Returns error if compilation fails.
+        pub fn get_loaded_program(
+            arguments: &#contract_arguments_struct_name,
+        ) -> Result<CompiledProgram, ProgramError> {
+            load_program(#contract_source_name, arguments.build_arguments())
+        }
+
+        /// Get compiled option offer program, panicking on failure.
+        ///
+        /// # Panics
+        ///
+        /// Panics if program instantiation fails.
+        #[must_use]
+        pub fn get_compiled_program(arguments: &#contract_arguments_struct_name) -> CompiledProgram {
+            let program = get_template_program();
+
+            program
+                .instantiate(arguments.build_arguments(), true)
+                .unwrap()
         }
     }
 }
@@ -89,7 +173,6 @@ enum RustType {
 }
 
 impl RustType {
-    /// Convert a Simplicity ResolvedType to a Rust type representation
     fn from_resolved_type(ty: &ResolvedType) -> syn::Result<Self> {
         use simplicityhl::types::{TypeInner, UIntType};
 
@@ -317,9 +400,6 @@ impl RustType {
         }
     }
 
-    /// Generate code to extract a Rust value from Arguments/WitnessValues
-    /// `args_expr` is the expression that produces the Arguments/WitnessValues reference
-    /// `witness_name` is the name of the witness value to extract
     fn generate_from_value_extraction(
         &self,
         args_expr: proc_macro2::Ident,
@@ -530,7 +610,6 @@ impl RustType {
         }
     }
 
-    /// Generate inline extraction code for array elements
     fn generate_inline_array_element_extraction(
         &self,
         arr_expr: proc_macro2::TokenStream,
@@ -585,7 +664,6 @@ impl RustType {
         }
     }
 
-    /// Generate inline extraction code for tuple elements
     fn generate_inline_tuple_element_extraction(
         &self,
         tuple_expr: proc_macro2::TokenStream,
@@ -685,7 +763,6 @@ impl RustType {
         }
     }
 
-    /// Generate inline extraction code for either branches
     fn generate_inline_either_extraction(
         &self,
         val_expr: proc_macro2::TokenStream,
@@ -813,21 +890,16 @@ impl WitnessField {
     }
 }
 
-fn construct_witness_helpers(
-    simf_content: &SimfContent,
-    meta: &AbiMeta,
-) -> syn::Result<proc_macro2::TokenStream> {
-    let args_struct =
-        ConvertedMeta::generate_witness_struct(&simf_content.contract_name, &meta.witness_types)?;
-
+fn construct_witness_helpers(derived_meta: &DerivedMeta) -> syn::Result<proc_macro2::TokenStream> {
     let GeneratedWitnessTokens {
         imports,
         struct_token_stream,
         struct_impl,
-    } = args_struct.generate_witness_impl()?;
+    } = derived_meta.witness_struct.generate_witness_impl()?;
 
     Ok(quote! {
-        pub mod build_witness {
+        pub use build_witness::*;
+        mod build_witness {
             #imports
 
             #struct_token_stream
@@ -837,21 +909,16 @@ fn construct_witness_helpers(
     })
 }
 
-fn construct_argument_helpers(
-    simf_content: &SimfContent,
-    meta: &AbiMeta,
-) -> syn::Result<proc_macro2::TokenStream> {
-    let args_struct =
-        ConvertedMeta::generate_args_struct(&simf_content.contract_name, &meta.param_types)?;
-
+fn construct_argument_helpers(derived_meta: &DerivedMeta) -> syn::Result<proc_macro2::TokenStream> {
     let GeneratedArgumentsTokens {
         imports,
         struct_token_stream,
         struct_impl,
-    } = args_struct.generate_arguments_impl()?;
+    } = derived_meta.args_struct.generate_arguments_impl()?;
 
     Ok(quote! {
-        pub mod build_arguments {
+        pub use build_arguments::*;
+        mod build_arguments {
             #imports
 
             #struct_token_stream
@@ -923,6 +990,7 @@ impl ConvertedMeta {
                     use simplicityhl::str::WitnessName;
                     use simplicityhl::types::TypeConstructible;
                     use simplicityhl::value::ValueConstructible;
+                    use bincode::*;
             },
             struct_token_stream: quote! {
                 #generated_struct
@@ -1011,6 +1079,7 @@ impl ConvertedMeta {
             })
             .collect();
         quote! {
+            // #[derive(bincode::Encode, bincode::Decode)]
             #[derive(Debug, Clone, PartialEq, Eq)]
             pub struct #name {
                 #(#fields),*
@@ -1069,8 +1138,16 @@ impl ConvertedMeta {
 }
 
 fn convert_contract_name_to_struct_name(contract_name: &str) -> String {
-    let mut chars = contract_name.chars();
-    // We assume that the contract name is nonzero
-    let first_letter = chars.next().unwrap();
-    first_letter.to_uppercase().collect::<String>() + chars.as_str()
+    let words: Vec<String> = contract_name
+        .split('_')
+        .filter(|w| !w.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect();
+    words.join("")
 }

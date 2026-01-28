@@ -28,7 +28,7 @@ fn include_simf_impl(input: proc_macro2::TokenStream) -> syn::Result<proc_macro2
 
     let simf_content = parse::eval_path_expr(input)?;
     let abi_meta = codegen::compile_program(&simf_content)?;
-    let generated = codegen::gen_helpers(&simf_content, &abi_meta)?;
+    let generated = codegen::gen_helpers(simf_content, abi_meta)?;
 
     Ok(generated)
 }

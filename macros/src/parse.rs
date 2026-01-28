@@ -1,4 +1,5 @@
 use crate::convert_error_to_syn;
+use proc_macro2::Span;
 use std::fs::File;
 use std::io;
 use std::io::{ErrorKind, Read};
@@ -12,6 +13,7 @@ pub struct SimfContent {
 }
 
 pub fn eval_path_expr(expr: Expr) -> syn::Result<SimfContent> {
+    let span = expr.span();
     let str_literal = match expr {
         Expr::Lit(ExprLit {
             lit: Lit::Str(s), ..
@@ -19,7 +21,8 @@ pub fn eval_path_expr(expr: Expr) -> syn::Result<SimfContent> {
         _ => Err(syn::Error::new(expr.span(), "Expected string literal")),
     }?;
 
-    let path = validate_path(str_literal)?;
+    // return Err(syn::Error::new(span, format!("error, '{}', '{:?}'", span.file(), span.local_file())));
+    let path = validate_path(span.file(), str_literal)?;
     extract_content_from_path(&path).map_err(|e| convert_error_to_syn(e))
 }
 
@@ -118,8 +121,44 @@ fn is_reserved_keyword(s: &str) -> bool {
 }
 
 #[inline]
-fn validate_path(literal: String) -> syn::Result<PathBuf> {
-    let path = PathBuf::from(literal);
+fn validate_path(local_file: String, literal: String) -> syn::Result<PathBuf> {
+    let mut path = PathBuf::from(literal.clone());
+
+    if !path.is_absolute() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "CARGO_MANIFEST_DIR not set - macro must be used within a Cargo workspace",
+            )
+        })?;
+
+        let mut path_local = PathBuf::from(manifest_dir);
+        path_local.push(literal);
+
+        // let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| {
+        //     syn::Error::new(
+        //         proc_macro2::Span::call_site(),
+        //         "CARGO_MANIFEST_DIR not set - macro must be used within a Cargo workspace",
+        //     )
+        // })?;
+        // let mut path_local = PathBuf::from(manifest_dir);
+        // path_local.push(local_file.clone());
+        // if let Some(x) = path_local.parent() {
+        //     path_local = PathBuf::from(x);
+        // }
+        //
+        // path_local.push(path);
+        // return Err(syn::Error::new(
+        //     Span::call_site(),
+        //     format!(
+        //         "path_local: {:?}, local_file: {}, literal: {}",
+        //         path_local, local_file, literal
+        //     ),
+        // ));
+
+        path = path_local;
+    }
+
     if is_not_a_file(&path) {
         return Err(convert_error_to_syn(format!(
             "File not found, look path: '{:?}', is file: '{}', canonical: '{:?}'",

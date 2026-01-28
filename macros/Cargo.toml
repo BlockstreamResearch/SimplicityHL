@@ -1,5 +1,5 @@
 [package]
-name = "macros"
+name = "simplicityhl-macros"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,10 +7,12 @@ edition = "2024"
 proc-macro = true
 
 [dependencies]
-proc-macro2 = { version = "1.0", features = [] }
+proc-macro2 = { version = "1.0", features = ["span-locations"] }
 proc-macro-error = { version = "1.0" }
 syn = { version = "2.0.114", features = ["full"] }
 quote = { version = "1" }
+bincode = { version = "2.0.1" }
 
 
 simplicityhl = { path = "../" }
+simplicityhl-core = { path = "../../simplicity-contracts-copy/crates/simplicityhl-core" }
