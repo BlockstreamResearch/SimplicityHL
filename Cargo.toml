@@ -29,7 +29,7 @@ serde = { version = "1.0.188", features = ["derive"], optional = true }
 serde_json = { version = "1.0.105", optional = true }
 simplicity-lang = { version = "0.7.0" }
 miniscript = "12.3.1"
-either = "1.12.0"
+either = { version = "1.12.0", features = ["serde"] }
 itertools = "0.13.0"
 arbitrary = { version = "1", optional = true, features = ["derive"] }
 clap = "4.5.37"
