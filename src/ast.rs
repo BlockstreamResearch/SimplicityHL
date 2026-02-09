@@ -239,6 +239,8 @@ pub enum SingleExpressionInner {
     Call(Call),
     /// Match expression.
     Match(Match),
+    /// If expression.
+    If(If),
 }
 
 /// Call of a user-defined or of a builtin function.
@@ -403,6 +405,38 @@ impl MatchArm {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct If {
+    scrutinee: Arc<Expression>,
+    then_arm: Arc<Expression>,
+    else_arm: Arc<Expression>,
+    span: Span,
+}
+
+impl If {
+    /// Access the expression who's output is deconstructed in the `if`.
+    pub fn scrutinee(&self) -> &Expression {
+        &self.scrutinee
+    }
+
+    /// Access the branch that handles the `true` portion of the `if`.
+    pub fn then_arm(&self) -> &Expression {
+        &self.then_arm
+    }
+
+    /// Access the branch that handles the `false` or `else` portion of the `if`.
+    pub fn else_arm(&self) -> &Expression {
+        &self.else_arm
+    }
+
+    /// Access the span of the if statement.
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl_eq_hash!(If; scrutinee, then_arm, else_arm);
+
 /// Item when analyzing modules.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ModuleItem {
@@ -462,6 +496,7 @@ pub enum ExprTree<'a> {
     Single(&'a SingleExpression),
     Call(&'a Call),
     Match(&'a Match),
+    If(&'a If),
 }
 
 impl TreeLike for ExprTree<'_> {
@@ -502,12 +537,18 @@ impl TreeLike for ExprTree<'_> {
                 }
                 S::Call(call) => Tree::Unary(Self::Call(call)),
                 S::Match(match_) => Tree::Unary(Self::Match(match_)),
+                S::If(if_) => Tree::Unary(Self::If(if_)),
             },
             Self::Call(call) => Tree::Nary(call.args().iter().map(Self::Expression).collect()),
             Self::Match(match_) => Tree::Nary(Arc::new([
                 Self::Expression(match_.scrutinee()),
                 Self::Expression(match_.left().expression()),
                 Self::Expression(match_.right().expression()),
+            ])),
+            Self::If(if_) => Tree::Nary(Arc::new([
+                Self::Expression(if_.scrutinee()),
+                Self::Expression(if_.then_arm()),
+                Self::Expression(if_.else_arm()),
             ])),
         }
     }
@@ -1059,6 +1100,9 @@ impl AbstractSyntaxTree for SingleExpression {
             parse::SingleExpressionInner::Match(match_) => {
                 Match::analyze(match_, ty, scope).map(SingleExpressionInner::Match)?
             }
+            parse::SingleExpressionInner::If(if_) => {
+                If::analyze(if_, ty, scope).map(SingleExpressionInner::If)?
+            }
         };
 
         Ok(Self {
@@ -1426,6 +1470,28 @@ impl AbstractSyntaxTree for Match {
     }
 }
 
+impl AbstractSyntaxTree for If {
+    type From = parse::If;
+
+    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+        let scrutinee =
+            Expression::analyze(from.scrutinee(), &ResolvedType::boolean(), scope).map(Arc::new)?;
+        scope.push_scope();
+        let ast_then = Expression::analyze(from.then_arm(), ty, scope).map(Arc::new)?;
+        scope.pop_scope();
+        scope.push_scope();
+        let ast_else = Expression::analyze(from.else_arm(), ty, scope).map(Arc::new)?;
+        scope.pop_scope();
+
+        Ok(Self {
+            scrutinee,
+            then_arm: ast_then,
+            else_arm: ast_else,
+            span: *from.as_ref(),
+        })
+    }
+}
+
 fn analyze_named_module(
     name: ModuleName,
     from: &parse::ModuleProgram,
@@ -1554,6 +1620,12 @@ impl AsRef<Span> for Call {
 }
 
 impl AsRef<Span> for Match {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl AsRef<Span> for If {
     fn as_ref(&self) -> &Span {
         &self.span
     }

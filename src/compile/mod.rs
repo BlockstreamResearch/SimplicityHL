@@ -12,7 +12,7 @@ use simplicity::{types, Cmr, FailEntropy};
 use self::builtins::array_fold;
 use crate::array::{BTreeSlice, Partition};
 use crate::ast::{
-    Call, CallName, Expression, ExpressionInner, Match, Program, SingleExpression,
+    Call, CallName, Expression, ExpressionInner, If, Match, Program, SingleExpression,
     SingleExpressionInner, Statement,
 };
 use crate::debug::CallTracker;
@@ -355,6 +355,7 @@ impl SingleExpression {
             }
             SingleExpressionInner::Call(call) => call.compile(scope)?,
             SingleExpressionInner::Match(match_) => match_.compile(scope)?,
+            SingleExpressionInner::If(if_) => if_.compile(scope)?,
         };
 
         scope
@@ -677,6 +678,25 @@ impl Match {
         let scrutinee = self.scrutinee().compile(scope)?;
         let input = scrutinee.pair(PairBuilder::iden(scope.ctx()));
         let output = ProgNode::case(left.as_ref(), right.as_ref()).with_span(self)?;
+        input.comp(&output).with_span(self)
+    }
+}
+
+impl If {
+    fn compile<'brand>(
+        &self,
+        scope: &mut Scope<'brand>,
+    ) -> Result<PairBuilder<ProgNode<'brand>>, RichError> {
+        scope.push_scope();
+        let then_arm = self.then_arm().compile(scope)?;
+        scope.pop_scope();
+        scope.push_scope();
+        let else_arm = self.else_arm().compile(scope)?;
+        scope.pop_scope();
+
+        let scrutinee = self.scrutinee().compile(scope)?;
+        let input = scrutinee.pair(PairBuilder::iden(scope.ctx()));
+        let output = ProgNode::case(then_arm.as_ref(), else_arm.as_ref()).with_span(self)?;
         input.comp(&output).with_span(self)
     }
 }
