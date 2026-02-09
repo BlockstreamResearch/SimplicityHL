@@ -851,8 +851,9 @@ macro_rules! impl_parse_wrapped_string {
                 I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
             {
                 select! {
-                    Token::Ident(ident) => Self::from_str_unchecked(ident)
+                    Token::Ident(ident) => ident
                 }
+                .map_with(|s, e| Self::from_str_unchecked(s).with_span(e.span()))
                 .labelled($label)
             }
         }
@@ -1002,27 +1003,27 @@ impl ChumskyParse for AliasedType {
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
         let atom = select! {
-            Token::Ident(ident) => {
-                match ident
-                {
-                    "u1" => AliasedType::u1(),
-                    "u2" =>  AliasedType::u2(),
-                    "u4" =>  AliasedType::u4(),
-                    "u8" => AliasedType::u8(),
-                    "u16" => AliasedType::u16(),
-                    "u32" => AliasedType::u32(),
-                    "u64" => AliasedType::u64(),
-                    "u128" => AliasedType::u128(),
-                    "u256" => AliasedType::u256(),
-                    "Ctx8" | "Pubkey" | "Message64" | "Message" | "Signature" | "Scalar" | "Fe" | "Gej"
-                    | "Ge" | "Point" | "Height" | "Time" | "Distance" | "Duration" | "Lock" | "Outpoint"
-                    | "Confidential1" | "ExplicitAsset" | "Asset1" | "ExplicitAmount" | "Amount1"
-                    | "ExplicitNonce" | "Nonce" | "TokenAmount1" => AliasedType::builtin(BuiltinAlias::from_str(ident).unwrap()),
-                    "bool" => AliasedType::boolean(),
-                    _ => AliasedType::alias(AliasName::from_str_unchecked(ident)),
-                }
-            },
-        };
+            Token::Ident(ident) => ident
+        }
+        .map_with(|ident, e| match ident {
+            "u1" => AliasedType::u1(),
+            "u2" => AliasedType::u2(),
+            "u4" => AliasedType::u4(),
+            "u8" => AliasedType::u8(),
+            "u16" => AliasedType::u16(),
+            "u32" => AliasedType::u32(),
+            "u64" => AliasedType::u64(),
+            "u128" => AliasedType::u128(),
+            "u256" => AliasedType::u256(),
+            "Ctx8" | "Pubkey" | "Message64" | "Message" | "Signature" | "Scalar" | "Fe" | "Gej"
+            | "Ge" | "Point" | "Height" | "Time" | "Distance" | "Duration" | "Lock"
+            | "Outpoint" | "Confidential1" | "ExplicitAsset" | "Asset1" | "ExplicitAmount"
+            | "Amount1" | "ExplicitNonce" | "Nonce" | "TokenAmount1" => {
+                AliasedType::builtin(BuiltinAlias::from_str(ident).unwrap())
+            }
+            "bool" => AliasedType::boolean(),
+            _ => AliasedType::alias(AliasName::from_str_unchecked(ident).with_span(e.span())),
+        });
 
         let num = select! {
             Token::DecLiteral(i) => i.clone()
@@ -1437,7 +1438,8 @@ impl ChumskyParse for CallName {
             Token::Macro("dbg!") => CallName::Debug,
         };
 
-        let jet = select! { Token::Jet(s) => JetName::from_str_unchecked(s) }.map(CallName::Jet);
+        let jet = select! { Token::Jet(s) => s }
+            .map_with(|s, e| CallName::Jet(JetName::from_str_unchecked(s).with_span(e.span())));
 
         let custom_func = FunctionName::parser().map(CallName::Custom);
 
@@ -1591,9 +1593,15 @@ impl SingleExpression {
             Token::DecLiteral(s) => SingleExpressionInner::Decimal(s),
             Token::HexLiteral(s) => SingleExpressionInner::Hexadecimal(s),
             Token::BinLiteral(s) => SingleExpressionInner::Binary(s),
-            Token::Witness(s) => SingleExpressionInner::Witness(WitnessName::from_str_unchecked(s)),
-            Token::Param(s) => SingleExpressionInner::Parameter(WitnessName::from_str_unchecked(s)),
         };
+
+        let witness = select! { Token::Witness(s) => s}.map_with(|s, e| {
+            SingleExpressionInner::Witness(WitnessName::from_str_unchecked(s).with_span(e.span()))
+        });
+
+        let param = select! { Token::Param(s) => s}.map_with(|s, e| {
+            SingleExpressionInner::Parameter(WitnessName::from_str_unchecked(s).with_span(e.span()))
+        });
 
         let call = Call::parser(expr.clone()).map(SingleExpressionInner::Call);
 
@@ -1609,7 +1617,7 @@ impl SingleExpression {
 
         choice((
             left, right, some, none, boolean, match_expr, expression, list, array, tuple, call,
-            literal, variable,
+            literal, witness, param, variable,
         ))
         .map_with(|inner, e| Self {
             inner,
@@ -1738,7 +1746,7 @@ impl Match {
 
                         (p1, p2) => {
                             emit.emit(
-                                Error::IncompatibleMatchArms(p1.clone(), p2.clone())
+                                Error::IncompatibleMatchArms(p1.to_string(), p2.to_string())
                                     .with_span(e.span()),
                             );
                             (first, second)

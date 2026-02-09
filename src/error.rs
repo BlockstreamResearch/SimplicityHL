@@ -12,12 +12,11 @@ use itertools::Itertools;
 use simplicity::elements;
 
 use crate::lexer::Token;
-use crate::parse::MatchPattern;
 use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName, WitnessName};
 use crate::types::{ResolvedType, UIntType};
 
 /// Area that an object spans inside a file.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub struct Span {
     /// Position where the object starts, inclusively.
     pub start: usize,
@@ -408,7 +407,7 @@ pub enum Error {
         label: Option<String>,
         found: Option<String>,
     },
-    IncompatibleMatchArms(MatchPattern, MatchPattern),
+    IncompatibleMatchArms(String, String),
     // TODO: Remove CompileError once SimplicityHL has a type system
     // The SimplicityHL compiler should never produce ill-typed Simplicity code
     // The compiler can only be this precise if it knows a type system at least as expressive as Simplicity's
