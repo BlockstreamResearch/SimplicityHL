@@ -12,7 +12,7 @@ use simplicity::{types, Cmr, FailEntropy};
 use self::builtins::array_fold;
 use crate::array::{BTreeSlice, Partition};
 use crate::ast::{
-    Call, CallName, Expression, ExpressionInner, Match, Program, SingleExpression,
+    Call, CallName, Expression, ExpressionInner, If, Match, Program, SingleExpression,
     SingleExpressionInner, Statement,
 };
 use crate::debug::CallTracker;
@@ -355,6 +355,7 @@ impl SingleExpression {
             }
             SingleExpressionInner::Call(call) => call.compile(scope)?,
             SingleExpressionInner::Match(match_) => match_.compile(scope)?,
+            SingleExpressionInner::If(if_) => if_.compile(scope)?,
         };
 
         scope
@@ -678,5 +679,79 @@ impl Match {
         let input = scrutinee.pair(PairBuilder::iden(scope.ctx()));
         let output = ProgNode::case(left.as_ref(), right.as_ref()).with_span(self)?;
         input.comp(&output).with_span(self)
+    }
+}
+
+impl If {
+    fn compile<'brand>(
+        &self,
+        scope: &mut Scope<'brand>,
+    ) -> Result<PairBuilder<ProgNode<'brand>>, RichError> {
+        scope.push_scope();
+        scope.insert(Pattern::Ignore);
+        let then_arm = self.then_arm().compile(scope)?;
+        scope.pop_scope();
+        scope.push_scope();
+        scope.insert(Pattern::Ignore);
+        let else_arm = self.else_arm().compile(scope)?;
+        scope.pop_scope();
+
+        let scrutinee = self.scrutinee().compile(scope)?;
+        let input = scrutinee.pair(PairBuilder::iden(scope.ctx()));
+        // Left = false, right = true
+        let output = ProgNode::case(else_arm.as_ref(), then_arm.as_ref()).with_span(self)?;
+        input.comp(&output).with_span(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::parse::ParseFromStr;
+    use crate::witness::Arguments;
+    use crate::{ast, parse};
+
+    fn compile_program(
+        input: &str,
+    ) -> Result<Arc<named::CommitNode<Elements>>, crate::error::RichError> {
+        let parse_program = parse::Program::parse_from_str(input).expect("Failed to parse");
+        let ast_program = ast::Program::analyze(&parse_program).expect("Failed to analyze");
+        ast_program.compile(Arguments::default(), false)
+    }
+
+    #[test]
+    fn match_equivalent_to_if_compiles() {
+        // The same logic expressed using `match`, which is known to compile correctly.
+        // Used as a baseline to confirm the test infrastructure works.
+        let input_match = r#"fn main() {
+    let x: u16 = 2;
+    let _s: (bool, u16) = match true {
+        true => jet::add_16(x, 2),
+        false => jet::add_16(x, 3),
+    };
+}"#;
+        let match_node = compile_program(input_match).expect("Match expression should compile");
+        // Verifies that an if expression with non-unit arms compiles correctly.
+        //
+        // This works because in Simplicity types are binary tries: `1 × A = A`
+        // definitionally (unit contributes zero bits), so the bool scrutinee
+        // `Either<1, 1>` pairs correctly with the `case` combinator's type
+        // `(1+1) × Input`.
+        let input_if = r#"fn main() {
+    let x: u16 = 2;
+    let _u: (bool, u16) = if true {
+        jet::add_16(x, 2)
+    } else {
+        jet::add_16(x, 3)
+    };
+}"#;
+        let if_node = compile_program(input_if).expect("If expression should compile");
+
+        assert_eq!(
+            match_node.display_expr().to_string(),
+            if_node.display_expr().to_string()
+        );
     }
 }

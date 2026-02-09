@@ -288,6 +288,20 @@ impl Expression {
             span,
         }
     }
+
+    pub fn is_single(&self) -> bool {
+        match &self.inner {
+            ExpressionInner::Block(..) => false,
+            ExpressionInner::Single(..) => true,
+        }
+    }
+
+    pub fn is_block(&self) -> bool {
+        match &self.inner {
+            ExpressionInner::Block(..) => true,
+            ExpressionInner::Single(..) => false,
+        }
+    }
 }
 
 impl_eq_hash!(Expression; inner);
@@ -351,6 +365,8 @@ pub enum SingleExpressionInner {
     Expression(Arc<Expression>),
     /// Match expression over a sum type
     Match(Match),
+    /// If expression
+    If(If),
     /// Tuple wrapper expression
     Tuple(Arc<[Expression]>),
     /// Array wrapper expression
@@ -464,6 +480,31 @@ impl MatchPattern {
         }
     }
 }
+
+/// Match expression.
+#[derive(Clone, Debug)]
+pub struct If {
+    scrutinee: Arc<Expression>,
+    then_arm: Arc<Expression>,
+    else_arm: Arc<Expression>,
+    span: Span,
+}
+
+impl If {
+    pub fn scrutinee(&self) -> &Expression {
+        &self.scrutinee
+    }
+
+    pub fn then_arm(&self) -> &Expression {
+        &self.then_arm
+    }
+
+    pub fn else_arm(&self) -> &Expression {
+        &self.else_arm
+    }
+}
+
+impl_eq_hash!(If; scrutinee, then_arm, else_arm);
 
 /// Program root when parsing modules.
 #[derive(Clone, Debug)]
@@ -602,6 +643,7 @@ pub enum ExprTree<'a> {
     Single(&'a SingleExpression),
     Call(&'a Call),
     Match(&'a Match),
+    If(&'a If),
 }
 
 impl TreeLike for ExprTree<'_> {
@@ -642,6 +684,7 @@ impl TreeLike for ExprTree<'_> {
                 | S::Expression(l) => Tree::Unary(Self::Expression(l)),
                 S::Call(call) => Tree::Unary(Self::Call(call)),
                 S::Match(match_) => Tree::Unary(Self::Match(match_)),
+                S::If(if_) => Tree::Unary(Self::If(if_)),
                 S::Tuple(elements) | S::Array(elements) | S::List(elements) => {
                     Tree::Nary(elements.iter().map(Self::Expression).collect())
                 }
@@ -651,6 +694,11 @@ impl TreeLike for ExprTree<'_> {
                 Self::Expression(match_.scrutinee()),
                 Self::Expression(match_.left().expression()),
                 Self::Expression(match_.right().expression()),
+            ])),
+            Self::If(if_) => Tree::Nary(Arc::new([
+                Self::Expression(if_.scrutinee()),
+                Self::Expression(if_.then_arm()),
+                Self::Expression(if_.else_arm()),
             ])),
         }
     }
@@ -715,7 +763,7 @@ impl fmt::Display for ExprTree<'_> {
                             write!(f, ")")?;
                         }
                     },
-                    S::Call(..) | S::Match(..) => {}
+                    S::Call(..) | S::Match(..) | S::If(..) => {}
                     S::Tuple(tuple) => {
                         if data.n_children_yielded == 0 {
                             write!(f, "(")?;
@@ -764,6 +812,15 @@ impl fmt::Display for ExprTree<'_> {
                     n => {
                         debug_assert_eq!(n, 3);
                         write!(f, ",\n}}")?;
+                    }
+                },
+                Self::If(..) => match data.n_children_yielded {
+                    0 => write!(f, "if ")?,
+                    1 => write!(f, "{{ ")?,
+                    2 => write!(f, "}} else {{")?,
+                    n => {
+                        debug_assert_eq!(n, 3);
+                        write!(f, "}}")?;
                     }
                 },
             }
@@ -1599,6 +1656,8 @@ impl SingleExpression {
 
         let match_expr = Match::parser(expr.clone()).map(SingleExpressionInner::Match);
 
+        let if_expr = If::parser(expr.clone()).map(SingleExpressionInner::If);
+
         let variable = Identifier::parser().map(SingleExpressionInner::Variable);
 
         // Expression delimeted by parentheses
@@ -1608,8 +1667,8 @@ impl SingleExpression {
             .map(|es| SingleExpressionInner::Expression(Arc::from(es)));
 
         choice((
-            left, right, some, none, boolean, match_expr, expression, list, array, tuple, call,
-            literal, variable,
+            left, right, some, none, boolean, match_expr, if_expr, expression, list, array, tuple,
+            call, literal, variable,
         ))
         .map_with(|inner, e| Self {
             inner,
@@ -1773,6 +1832,44 @@ impl Match {
     }
 }
 
+impl If {
+    fn parser<'tokens, 'src: 'tokens, I, E>(
+        expr: E,
+    ) -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
+    where
+        I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
+        E: Parser<'tokens, I, Expression, ParseError<'src>> + Clone + 'tokens,
+    {
+        let scrutinee = expr.clone().map(Arc::new);
+
+        let true_arm = expr.clone().map(Arc::new);
+        let false_arm = expr.clone().map(Arc::new);
+
+        just(Token::If)
+            .ignore_then(scrutinee)
+            .then(true_arm)
+            .then_ignore(just(Token::Else))
+            .then(false_arm)
+            .validate(|((scrutinee, then), else_), extra, emit| {
+                // Do not allow single statements, only blocks. I.E. `then` and `else` arms must be
+                // wrapped in braces.
+                if !then.is_block() {
+                    emit.emit(Error::IfThenArmMissingBraces.with_span(extra.span()));
+                }
+                if !else_.is_block() {
+                    emit.emit(Error::IfElseArmMissingBraces.with_span(extra.span()))
+                }
+
+                Self {
+                    scrutinee,
+                    then_arm: then,
+                    else_arm: else_,
+                    span: extra.span(),
+                }
+            })
+    }
+}
+
 impl ChumskyParse for ModuleItem {
     fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
     where
@@ -1904,6 +2001,12 @@ impl AsRef<Span> for Call {
 }
 
 impl AsRef<Span> for Match {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl AsRef<Span> for If {
     fn as_ref(&self) -> &Span {
         &self.span
     }
@@ -2161,5 +2264,41 @@ impl crate::ArbitraryRec for Match {
             },
             span: Span::DUMMY,
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+    #[test]
+    fn test_if_statement_parse() {
+        let input = "if true {0} else {1}";
+
+        let statement = Expression::parse_from_str(input).expect("Error");
+
+        match &statement.inner() {
+            ExpressionInner::Single(se) => match se.inner() {
+                SingleExpressionInner::If(_if_) => {
+                    // pass
+                }
+                _ => panic!("Did not find if statement correctly"),
+            },
+            _ => panic!("Did not parse correctly"),
+        }
+    }
+
+    #[test]
+    fn test_if_statement_requires_braces() {
+        // `else` branch without braces should fail to parse
+        assert!(
+            Expression::parse_from_str("if true { x } else y").is_err(),
+            "if-else without braces on else branch should fail"
+        );
+        // `if` branch without braces should also fail
+        assert!(
+            Expression::parse_from_str("if true x else { y }").is_err(),
+            "if without braces on if branch should fail"
+        );
     }
 }

@@ -437,6 +437,8 @@ pub enum Error {
     ModuleRedefined(ModuleName),
     ArgumentMissing(WitnessName),
     ArgumentTypeMismatch(WitnessName, ResolvedType, ResolvedType),
+    IfThenArmMissingBraces,
+    IfElseArmMissingBraces,
 }
 
 #[rustfmt::skip]
@@ -582,6 +584,8 @@ impl fmt::Display for Error {
                 f,
                 "Parameter `{name}` was declared with type `{declared}` but its assigned argument is of type `{assigned}`"
             ),
+            Error::IfThenArmMissingBraces | Error::IfElseArmMissingBraces => write!(f, "If statement must have enclosing braces")
+
         }
     }
 }

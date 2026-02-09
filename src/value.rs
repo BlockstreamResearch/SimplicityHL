@@ -671,7 +671,8 @@ impl Value {
                 | ExprTree::Statement(..)
                 | ExprTree::Assignment(..)
                 | ExprTree::Call(..)
-                | ExprTree::Match(..) => return None, // not const
+                | ExprTree::Match(..)
+                | ExprTree::If(..) => return None, // not const
             };
             let size = data.node.n_children();
             match single.inner() {
@@ -680,7 +681,8 @@ impl Value {
                 | S::Parameter(..)
                 | S::Variable(..)
                 | S::Call(..)
-                | S::Match(..) => return None, // not const
+                | S::Match(..)
+                | S::If(..) => return None, // not const
                 S::Expression(..) => continue, // skip
                 S::Tuple(..) => {
                     let elements = output.split_off(output.len() - size);
