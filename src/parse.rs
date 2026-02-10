@@ -52,13 +52,92 @@ pub enum Item {
     TypeAlias(TypeAlias),
     /// A function.
     Function(Function),
+    /// An import declaration (e.g., `use math::add`) that brings another
+    /// [`Item`] into the current scope.
+    Use(UseDecl),
     /// A module, which is ignored.
     Module,
 }
 
-/// Definition of a function.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub enum Visibility {
+    Public,
+    #[default]
+    Private,
+}
+
+/// Represents an import declaration in the Abstract Syntax Tree.
+///
+/// This structure defines how items from other modules or files are brought into the
+/// current scope. Note that in this architecture, the first identifier in the path
+/// is always treated as an alias bound to a specific physical path.
+///
+/// # Example
+/// ```text
+/// pub use std::collections::{HashMap, HashSet};
+/// ```
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct UseDecl {
+    /// The visibility of the import (e.g., `pub use` vs `use`).
+    visibility: Visibility,
+
+    /// The base path to the target file or module.
+    ///
+    /// The first element is always the registered alias for the import path.
+    /// Subsequent elements represent nested modules or directories.
+    path: Vec<Identifier>,
+
+    /// The specific item or list of items being imported from the resolved path.
+    items: UseItems,
+    span: Span,
+}
+
+impl UseDecl {
+    pub fn visibility(&self) -> &Visibility {
+        &self.visibility
+    }
+
+    pub fn path(&self) -> &Vec<Identifier> {
+        &self.path
+    }
+
+    pub fn items(&self) -> &UseItems {
+        &self.items
+    }
+
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl_eq_hash!(UseDecl; visibility, path, items);
+
+/// Specified the items being brought into scope at the end of a `use` declaration
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub enum UseItems {
+    /// A single item import.
+    ///
+    /// # Example
+    /// ```text
+    /// use core::math::add;
+    /// ```
+    Single(Identifier),
+
+    /// A multiple item import grouped in a list.
+    ///
+    /// # Example
+    /// ```text
+    /// use core::math::{add, subtract};
+    /// ```
+    List(Vec<Identifier>),
+}
+
 #[derive(Clone, Debug)]
 pub struct Function {
+    visibility: Visibility,
     name: FunctionName,
     params: Arc<[FunctionParam]>,
     ret: Option<AliasedType>,
@@ -67,6 +146,10 @@ pub struct Function {
 }
 
 impl Function {
+    pub fn visibility(&self) -> &Visibility {
+        &self.visibility
+    }
+
     /// Access the name of the function.
     pub fn name(&self) -> &FunctionName {
         &self.name
@@ -95,7 +178,7 @@ impl Function {
     }
 }
 
-impl_eq_hash!(Function; name, params, ret, body);
+impl_eq_hash!(Function; visibility, name, params, ret, body);
 
 /// Parameter of a function.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -222,12 +305,17 @@ pub enum CallName {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TypeAlias {
+    visibility: Visibility,
     name: AliasName,
     ty: AliasedType,
     span: Span,
 }
 
 impl TypeAlias {
+    pub fn visibility(&self) -> &Visibility {
+        &self.visibility
+    }
+
     /// Access the name of the alias.
     pub fn name(&self) -> &AliasName {
         &self.name
@@ -556,6 +644,7 @@ impl fmt::Display for Item {
         match self {
             Self::TypeAlias(alias) => write!(f, "{alias}"),
             Self::Function(function) => write!(f, "{function}"),
+            Self::Use(use_declaration) => write!(f, "{use_declaration}"),
             // The parse tree contains no information about the contents of modules.
             // We print a random empty module `mod witness {}` here
             // so that `from_string(to_string(x)) = x` holds for all trees `x`.
@@ -564,15 +653,30 @@ impl fmt::Display for Item {
     }
 }
 
+impl fmt::Display for Visibility {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Public => write!(f, "pub "),
+            Self::Private => write!(f, ""),
+        }
+    }
+}
+
 impl fmt::Display for TypeAlias {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "type {} = {};", self.name(), self.ty())
+        write!(
+            f,
+            "{}type {} = {};",
+            self.visibility(),
+            self.name(),
+            self.ty()
+        )
     }
 }
 
 impl fmt::Display for Function {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "fn {}(", self.name())?;
+        write!(f, "{}fn {}(", self.visibility(), self.name())?;
         for (i, param) in self.params().iter().enumerate() {
             if 0 < i {
                 write!(f, ", ")?;
@@ -584,6 +688,43 @@ impl fmt::Display for Function {
             write!(f, " -> {ty}")?;
         }
         write!(f, " {}", self.body())
+    }
+}
+
+impl fmt::Display for UseDecl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = write!(f, "{}use ", self.visibility());
+
+        for (i, segment) in self.path.iter().enumerate() {
+            if i > 0 {
+                write!(f, "::")?;
+            }
+            write!(f, "{}", segment)?;
+        }
+
+        if !self.path.is_empty() {
+            write!(f, "::")?;
+        }
+
+        write!(f, "{};", self.items)
+    }
+}
+
+impl fmt::Display for UseItems {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UseItems::Single(ident) => write!(f, "{}", ident),
+            UseItems::List(idents) => {
+                let _ = write!(f, "{{");
+                for (i, ident) in idents.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", ident)?;
+                }
+                write!(f, "}}")
+            }
+        }
     }
 }
 
@@ -1129,7 +1270,12 @@ impl ChumskyParse for Program {
         let skip_until_next_item = any()
             .then(
                 any()
-                    .filter(|t| !matches!(t, Token::Fn | Token::Type | Token::Mod))
+                    .filter(|t| {
+                        !matches!(
+                            t,
+                            Token::Pub | Token::Use | Token::Fn | Token::Type | Token::Mod
+                        )
+                    })
                     .repeated(),
             )
             // map to empty module
@@ -1153,9 +1299,10 @@ impl ChumskyParse for Item {
     {
         let func_parser = Function::parser().map(Item::Function);
         let type_parser = TypeAlias::parser().map(Item::TypeAlias);
+        let use_parser = UseDecl::parser().map(Item::Use);
         let mod_parser = Module::parser().map(|_| Item::Module);
 
-        choice((func_parser, type_parser, mod_parser))
+        choice((func_parser, use_parser, type_parser, mod_parser))
     }
 }
 
@@ -1164,6 +1311,12 @@ impl ChumskyParse for Function {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
+        let visibility = just(Token::Pub)
+            .to(Visibility::Public)
+            .or_not()
+            .map(Option::unwrap_or_default)
+            .labelled("function visibility");
+
         let params = delimited_with_recovery(
             FunctionParam::parser()
                 .separated_by(just(Token::Comma))
@@ -1195,16 +1348,60 @@ impl ChumskyParse for Function {
             )))
             .labelled("function body");
 
-        just(Token::Fn)
-            .ignore_then(FunctionName::parser())
+        visibility
+            .then_ignore(just(Token::Fn))
+            .then(FunctionName::parser())
             .then(params)
             .then(ret)
             .then(body)
-            .map_with(|(((name, params), ret), body), e| Self {
+            .map_with(|((((visibility, name), params), ret), body), e| Self {
+                visibility,
                 name,
                 params,
                 ret,
                 body,
+                span: e.span(),
+            })
+    }
+}
+
+impl ChumskyParse for UseDecl {
+    fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
+    where
+        I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
+    {
+        let visibility = just(Token::Pub)
+            .to(Visibility::Public)
+            .or_not()
+            .map(Option::unwrap_or_default);
+
+        // Parse the base path prefix (e.g., `dependency_root_path::file::` or `dependency_root_path::dir::file::`).
+        // We require at least 2 segments here because a valid import needs a minimum
+        // of 3 items total: the dependency_root_path, the file, and the specific item/function.
+        let path = Identifier::parser()
+            .then_ignore(just(Token::DoubleColon))
+            .repeated()
+            .at_least(2)
+            .collect::<Vec<_>>();
+
+        let list = Identifier::parser()
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect()
+            .delimited_by(just(Token::LBrace), just(Token::RBrace))
+            .map(UseItems::List);
+        let single = Identifier::parser().map(UseItems::Single);
+        let items = choice((list, single));
+
+        visibility
+            .then_ignore(just(Token::Use))
+            .then(path)
+            .then(items)
+            .then_ignore(just(Token::Semi))
+            .map_with(|((visibility, path), items), e| Self {
+                visibility,
+                path,
+                items,
                 span: e.span(),
             })
     }
@@ -1450,6 +1647,11 @@ impl ChumskyParse for TypeAlias {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
+        let visibility = just(Token::Pub)
+            .to(Visibility::Public)
+            .or_not()
+            .map(Option::unwrap_or_default);
+
         let name = AliasName::parser()
             .validate(|name, e, emit| {
                 let ident = name.as_inner();
@@ -1470,12 +1672,16 @@ impl ChumskyParse for TypeAlias {
             })
             .map_with(|name, e| (name, e.span()));
 
-        just(Token::Type)
-            .ignore_then(name)
-            .then_ignore(parse_token_with_recovery(Token::Eq))
-            .then(AliasedType::parser())
-            .then_ignore(just(Token::Semi))
-            .map_with(|(name, ty), e| Self {
+        visibility
+            .then(
+                just(Token::Type)
+                    .ignore_then(name)
+                    .then_ignore(parse_token_with_recovery(Token::Eq))
+                    .then(AliasedType::parser())
+                    .then_ignore(just(Token::Semi)),
+            )
+            .map_with(|(visibility, (name, ty)), e| Self {
+                visibility,
                 name: name.0,
                 ty,
                 span: e.span(),
@@ -1960,6 +2166,7 @@ impl crate::ArbitraryRec for Function {
     fn arbitrary_rec(u: &mut arbitrary::Unstructured, budget: usize) -> arbitrary::Result<Self> {
         use arbitrary::Arbitrary;
 
+        let visibility = Visibility::arbitrary(u)?;
         let name = FunctionName::arbitrary(u)?;
         let len = u.int_in_range(0..=3)?;
         let params = (0..len)
@@ -1968,6 +2175,7 @@ impl crate::ArbitraryRec for Function {
         let ret = Option::<AliasedType>::arbitrary(u)?;
         let body = Expression::arbitrary_rec(u, budget).map(Expression::into_block)?;
         Ok(Self {
+            visibility,
             name,
             params,
             ret,
