@@ -11,6 +11,9 @@ pub type Tokens<'src> = Vec<(Token<'src>, crate::error::Span)>;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Token<'src> {
     // Keywords
+    Pub,
+    Use,
+    As,
     Fn,
     Let,
     Type,
@@ -20,6 +23,10 @@ pub enum Token<'src> {
 
     // Control symbols
     Arrow,
+    /// Represents a contiguous `::` token.
+    /// This prevents the lexer from allowing spaces between colons (e.g., `use a: :b`),
+    /// ensuring we strictly parse valid paths.
+    DoubleColon,
     Colon,
     Semi,
     Comma,
@@ -63,6 +70,9 @@ pub enum Token<'src> {
 impl<'src> fmt::Display for Token<'src> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Token::Pub => write!(f, "pub"),
+            Token::Use => write!(f, "use"),
+            Token::As => write!(f, "as"),
             Token::Fn => write!(f, "fn"),
             Token::Let => write!(f, "let"),
             Token::Type => write!(f, "type"),
@@ -71,6 +81,7 @@ impl<'src> fmt::Display for Token<'src> {
             Token::Match => write!(f, "match"),
 
             Token::Arrow => write!(f, "->"),
+            Token::DoubleColon => write!(f, "::"),
             Token::Colon => write!(f, ":"),
             Token::Semi => write!(f, ";"),
             Token::Comma => write!(f, ","),
@@ -134,6 +145,9 @@ pub fn lexer<'src>(
         choice((just("assert!"), just("panic!"), just("dbg!"), just("list!"))).map(Token::Macro);
 
     let keyword = text::ident().map(|s| match s {
+        "pub" => Token::Pub,
+        "use" => Token::Use,
+        "as" => Token::As,
         "fn" => Token::Fn,
         "let" => Token::Let,
         "type" => Token::Type,
@@ -162,6 +176,7 @@ pub fn lexer<'src>(
         just("->").to(Token::Arrow),
         just("=>").to(Token::FatArrow),
         just("=").to(Token::Eq),
+        just("::").to(Token::DoubleColon), // NOTE: It must be before ":", otherwise it does not work
         just(":").to(Token::Colon),
         just(";").to(Token::Semi),
         just(",").to(Token::Comma),
