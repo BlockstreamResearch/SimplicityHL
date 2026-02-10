@@ -1,0 +1,9 @@
+//pub use temp::get_five;
+
+fn get_five() -> u32 {
+    7
+}
+
+fn main() {
+    let five: u32 = get_five();
+}
