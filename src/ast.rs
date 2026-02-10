@@ -762,6 +762,7 @@ impl AbstractSyntaxTree for Item {
             parse::Item::Function(function) => {
                 Function::analyze(function, ty, scope).map(Self::Function)
             }
+            parse::Item::Use(_) => todo!(),
             parse::Item::Module => Ok(Self::Module),
         }
     }

@@ -8,9 +8,18 @@ use crate::str::{Binary, Decimal, Hexadecimal};
 pub type Spanned<T> = (T, SimpleSpan);
 pub type Tokens<'src> = Vec<(Token<'src>, crate::error::Span)>;
 
+/// # Architecture Note: Omitted Keywords
+/// The `crate` and `super` keywords were not added to the compiler because they
+/// are unnecessary at this stage. Typically, they are used to resolve relative
+/// paths during import parsing. However, in our architecture, the prefix before
+/// the first `::` in a `use` statement is always an alias. Since all aliases are
+/// unique and strictly bound to specific paths, the resolver can always
+/// unambiguously resolve the path without needing relative pointers.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Token<'src> {
     // Keywords
+    Pub,
+    Use,
     Fn,
     Let,
     Type,
@@ -66,6 +75,8 @@ pub enum Token<'src> {
 impl<'src> fmt::Display for Token<'src> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Token::Pub => write!(f, "pub"),
+            Token::Use => write!(f, "use"),
             Token::Fn => write!(f, "fn"),
             Token::Let => write!(f, "let"),
             Token::Type => write!(f, "type"),
@@ -138,6 +149,8 @@ pub fn lexer<'src>(
         choice((just("assert!"), just("panic!"), just("dbg!"), just("list!"))).map(Token::Macro);
 
     let keyword = text::ident().map(|s| match s {
+        "pub" => Token::Pub,
+        "use" => Token::Use,
         "fn" => Token::Fn,
         "let" => Token::Let,
         "type" => Token::Type,
