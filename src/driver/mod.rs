@@ -1,3 +1,5 @@
+mod linearization;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -44,6 +46,10 @@ impl CanonSourceFile {
 
     pub fn name(&self) -> &CanonPath {
         &self.name
+    }
+
+    pub fn str_name(&self) -> String {
+        self.name.as_path().display().to_string()
     }
 
     pub fn content(&self) -> Arc<str> {
@@ -326,7 +332,7 @@ mod tests {
     /// 3. `TempWorkspace`: The temporary directory instance. This must be kept in scope by the caller so
     ///    the OS doesn't delete the files before the test finishes.
     /// 4. `ErrorCollector`: The handler containing any logged errors, useful fo
-    fn setup_graph_raw(
+    pub(crate) fn setup_graph_raw(
         files: Vec<(&str, &str)>,
     ) -> (
         Option<DependencyGraph>,
@@ -414,7 +420,7 @@ mod tests {
     ///
     /// This function will immediately panic and print the collected errors
     /// to standard error if the parser or graph builder encounters any issues.
-    fn setup_graph(
+    pub(crate) fn setup_graph(
         files: Vec<(&str, &str)>,
     ) -> (DependencyGraph, HashMap<String, usize>, TempWorkspace) {
         let (graph_option, file_ids, ws, handler) = setup_graph_raw(files);
