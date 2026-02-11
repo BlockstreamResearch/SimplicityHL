@@ -21,7 +21,7 @@ pub enum Token<'src> {
     Else,
 
     // Control symbols
-    /// `->``
+    /// `->`
     Arrow,
     /// `:`
     Colon,

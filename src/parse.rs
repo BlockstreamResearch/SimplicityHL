@@ -2250,15 +2250,13 @@ mod test {
     use super::*;
     #[test]
     fn test_if_statement_parse() {
-        // let input: Arc<str> = "if true {0} else {1};".into();
         let input = "if true {0} else {1}";
 
         let statement = Expression::parse_from_str(input).expect("Error");
 
         match &statement.inner() {
             ExpressionInner::Single(se) => match se.inner() {
-                SingleExpressionInner::If(if_) => {
-                    dbg!(if_);
+                SingleExpressionInner::If(_if_) => {
                     // pass
                 }
                 _ => panic!("Did not find if statement correctly"),
