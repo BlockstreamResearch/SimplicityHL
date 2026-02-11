@@ -115,6 +115,12 @@ impl<'a> arbitrary::Arbitrary<'a> for FunctionName {
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Identifier(Arc<str>);
 
+impl AsRef<str> for Identifier {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 wrapped_string!(Identifier, "variable identifier");
 impl_arbitrary_lowercase_alpha!(Identifier);
 

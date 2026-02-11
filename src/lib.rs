@@ -4,6 +4,7 @@ pub mod array;
 pub mod ast;
 pub mod compile;
 pub mod debug;
+pub mod driver;
 pub mod dummy_env;
 pub mod error;
 pub mod jet;
@@ -20,6 +21,8 @@ pub mod types;
 pub mod value;
 mod witness;
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use simplicity::jet::elements::ElementsEnv;
@@ -30,11 +33,45 @@ pub extern crate simplicity;
 pub use simplicity::elements;
 
 use crate::debug::DebugSymbols;
+use crate::driver::ProjectGraph;
 use crate::error::{ErrorCollector, WithFile};
 use crate::parse::ParseFromStrWithErrors;
 pub use crate::types::ResolvedType;
 pub use crate::value::Value;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
+
+pub struct LibConfig {
+    pub libraries: HashMap<String, PathBuf>,
+    pub root_path: PathBuf,
+}
+
+impl LibConfig {
+    pub fn new(libraries: HashMap<String, PathBuf>, raw_root_path: &Path) -> Self {
+        let root_path = raw_root_path.with_extension("");
+
+        Self {
+            libraries,
+            root_path,
+        }
+    }
+
+    pub fn get_full_path(&self, use_decl: &parse::UseDecl) -> Result<PathBuf, String> {
+        let parts: Vec<&str> = use_decl.path().iter().map(|s| s.as_ref()).collect();
+        let first_segment = parts[0];
+
+        if let Some(lib_root) = self.libraries.get(first_segment) {
+            let mut full_path = lib_root.clone();
+            full_path.extend(&parts[1..]);
+
+            return Ok(full_path);
+        }
+
+        Err(format!(
+            "Unknown module or library '{}'. Did you forget to pass --lib {}=...?",
+            first_segment, first_segment,
+        ))
+    }
+}
 
 /// The template of a SimplicityHL program.
 ///
@@ -51,11 +88,18 @@ impl TemplateProgram {
     /// ## Errors
     ///
     /// The string is not a valid SimplicityHL program.
-    pub fn new<Str: Into<Arc<str>>>(s: Str) -> Result<Self, String> {
+    pub fn new<Str: Into<Arc<str>>>(lib_cfg: Option<&LibConfig>, s: Str) -> Result<Self, String> {
         let file = s.into();
         let mut error_handler = ErrorCollector::new(Arc::clone(&file));
         let parse_program = parse::Program::parse_from_str_with_errors(&file, &mut error_handler);
+
         if let Some(program) = parse_program {
+            let _ = if let Some(lib_cfg) = lib_cfg {
+                Some(ProjectGraph::new(lib_cfg, &program)?)
+            } else {
+                None
+            };
+
             let ast_program = ast::Program::analyze(&program).with_file(Arc::clone(&file))?;
             Ok(Self {
                 simfony: ast_program,
@@ -129,11 +173,12 @@ impl CompiledProgram {
     /// - [`TemplateProgram::new`]
     /// - [`TemplateProgram::instantiate`]
     pub fn new<Str: Into<Arc<str>>>(
+        lib_cfg: Option<&LibConfig>,
         s: Str,
         arguments: Arguments,
         include_debug_symbols: bool,
     ) -> Result<Self, String> {
-        TemplateProgram::new(s)
+        TemplateProgram::new(lib_cfg, s)
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -213,12 +258,13 @@ impl SatisfiedProgram {
     /// - [`TemplateProgram::instantiate`]
     /// - [`CompiledProgram::satisfy`]
     pub fn new<Str: Into<Arc<str>>>(
+        lib_cfg: Option<&LibConfig>,
         s: Str,
         arguments: Arguments,
         witness_values: WitnessValues,
         include_debug_symbols: bool,
     ) -> Result<Self, String> {
-        let compiled = CompiledProgram::new(s, arguments, include_debug_symbols)?;
+        let compiled = CompiledProgram::new(lib_cfg, s, arguments, include_debug_symbols)?;
         compiled.satisfy(witness_values)
     }
 
@@ -321,7 +367,7 @@ pub(crate) mod tests {
         }
 
         pub fn template_text(program_text: Cow<str>) -> Self {
-            let program = match TemplateProgram::new(program_text.as_ref()) {
+            let program = match TemplateProgram::new(None, program_text.as_ref()) {
                 Ok(x) => x,
                 Err(error) => panic!("{error}"),
             };
@@ -658,6 +704,7 @@ fn main() {
 }
 "#;
         match SatisfiedProgram::new(
+            None,
             prog_text,
             Arguments::default(),
             WitnessValues::default(),
