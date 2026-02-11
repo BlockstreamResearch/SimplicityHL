@@ -1,0 +1,5 @@
+pub fn sha256(data: u32) -> u256 {
+    let ctx: Ctx8 = jet::sha_256_ctx_8_init();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_4(ctx, data);
+    jet::sha_256_ctx_8_finalize(ctx)
+}

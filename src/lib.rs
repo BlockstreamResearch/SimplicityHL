@@ -4,6 +4,7 @@ pub mod array;
 pub mod ast;
 pub mod compile;
 pub mod debug;
+pub mod driver;
 pub mod dummy_env;
 pub mod error;
 pub mod jet;
@@ -12,6 +13,7 @@ pub mod named;
 pub mod num;
 pub mod parse;
 pub mod pattern;
+pub mod resolution;
 #[cfg(feature = "serde")]
 mod serde;
 pub mod str;
@@ -30,8 +32,10 @@ pub extern crate simplicity;
 pub use simplicity::elements;
 
 use crate::debug::DebugSymbols;
+use crate::driver::ProjectGraph;
 use crate::error::{ErrorCollector, WithFile};
 use crate::parse::ParseFromStrWithErrors;
+use crate::resolution::LibConfig;
 pub use crate::types::ResolvedType;
 pub use crate::value::Value;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
@@ -46,6 +50,31 @@ pub struct TemplateProgram {
 }
 
 impl TemplateProgram {
+    pub fn new_with_dep<Str: Into<Arc<str>>>(
+        lib_cfg: Option<&LibConfig>,
+        s: Str,
+    ) -> Result<Self, String> {
+        let file = s.into();
+        let mut error_handler = ErrorCollector::new(Arc::clone(&file));
+        let parse_program = parse::Program::parse_from_str_with_errors(&file, &mut error_handler);
+
+        if let Some(program) = parse_program {
+            let _ = if let Some(lib_cfg) = lib_cfg {
+                Some(ProjectGraph::new(lib_cfg, &program)?)
+            } else {
+                None
+            };
+
+            let ast_program = ast::Program::analyze(&program).with_file(Arc::clone(&file))?;
+            Ok(Self {
+                simfony: ast_program,
+                file,
+            })
+        } else {
+            Err(ErrorCollector::to_string(&error_handler))?
+        }
+    }
+
     /// Parse the template of a SimplicityHL program.
     ///
     /// ## Errors
@@ -122,6 +151,16 @@ pub struct CompiledProgram {
 }
 
 impl CompiledProgram {
+    pub fn new_with_dep<Str: Into<Arc<str>>>(
+        lib_cfg: Option<&LibConfig>,
+        s: Str,
+        arguments: Arguments,
+        include_debug_symbols: bool,
+    ) -> Result<Self, String> {
+        TemplateProgram::new_with_dep(lib_cfg, s)
+            .and_then(|template| template.instantiate(arguments, include_debug_symbols))
+    }
+
     /// Parse and compile a SimplicityHL program from the given string.
     ///
     /// ## See
@@ -205,6 +244,17 @@ pub struct SatisfiedProgram {
 }
 
 impl SatisfiedProgram {
+    pub fn new_with_dep<Str: Into<Arc<str>>>(
+        lib_cfg: Option<&LibConfig>,
+        s: Str,
+        arguments: Arguments,
+        witness_values: WitnessValues,
+        include_debug_symbols: bool,
+    ) -> Result<Self, String> {
+        let compiled = CompiledProgram::new_with_dep(lib_cfg, s, arguments, include_debug_symbols)?;
+        compiled.satisfy(witness_values)
+    }
+
     /// Parse, compile and satisfy a SimplicityHL program from the given string.
     ///
     /// ## See

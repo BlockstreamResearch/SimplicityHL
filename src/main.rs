@@ -2,8 +2,9 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
+use simplicityhl::resolution::LibConfig;
 use simplicityhl::{AbiMeta, CompiledProgram};
-use std::{env, fmt};
+use std::{collections::HashMap, env, fmt, path::PathBuf};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 /// The compilation output.
@@ -48,6 +49,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .value_name("PROGRAM_FILE")
                     .action(ArgAction::Set)
                     .help("SimplicityHL program file to build"),
+            )
+            .arg(
+                Arg::new("dependency")
+                    .long("dep")
+                    .value_name("ALIAS=PATH")
+                    .action(ArgAction::Append)
+                    .help("Link a dependency with an alias (e.g., --dep math=./deps/math)"),
             )
             .arg(
                 Arg::new("wit_file")
@@ -113,7 +121,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         simplicityhl::Arguments::default()
     };
 
-    let compiled = match CompiledProgram::new(prog_text, args_opt, include_debug_symbols) {
+    let dep_args = matches.get_many::<String>("dependency").unwrap_or_default();
+
+    let dependency_map: HashMap<String, PathBuf> = dep_args
+        .map(|arg| {
+            let parts: Vec<&str> = arg.splitn(2, '=').collect();
+
+            if parts.len() != 2 {
+                eprintln!(
+                    "Error: Dependency argument must be in format ALIAS=PATH, got '{}'",
+                    arg
+                );
+                std::process::exit(1);
+            }
+
+            (parts[0].to_string(), std::path::PathBuf::from(parts[1]))
+        })
+        .collect();
+
+    let config = LibConfig::new(dependency_map, prog_path);
+    let compiled = match CompiledProgram::new_with_dep(
+        Some(&config),
+        prog_text,
+        args_opt,
+        include_debug_symbols,
+    ) {
         Ok(program) => program,
         Err(e) => {
             eprintln!("{}", e);
