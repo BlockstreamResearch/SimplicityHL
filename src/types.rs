@@ -6,6 +6,7 @@ use miniscript::iter::{Tree, TreeLike};
 use simplicity::types::{CompleteBound, Final};
 
 use crate::array::{BTreeSlice, Partition};
+use crate::error::Span;
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::str::AliasName;
 
@@ -27,6 +28,8 @@ pub enum TypeInner<A> {
     Array(A, usize),
     /// List of the same type
     List(A, NonZeroPow2Usize),
+    /// Error type
+    Error,
 }
 
 impl<A> TypeInner<A> {
@@ -85,6 +88,7 @@ impl<A> TypeInner<A> {
                     write!(f, ", {bound}>")
                 }
             },
+            TypeInner::Error => write!(f, "ERROR"),
         }
     }
 }
@@ -324,6 +328,14 @@ impl ResolvedType {
     pub fn as_inner(&self) -> &TypeInner<Arc<Self>> {
         &self.0
     }
+
+    pub fn error() -> Self {
+        Self(TypeInner::Error)
+    }
+
+    pub fn is_error(&self) -> bool {
+        matches!(self.as_inner(), TypeInner::Error)
+    }
 }
 
 impl TypeConstructible for ResolvedType {
@@ -409,6 +421,7 @@ impl TreeLike for &ResolvedType {
             TypeInner::Option(l) | TypeInner::Array(l, _) | TypeInner::List(l, _) => Tree::Unary(l),
             TypeInner::Either(l, r) => Tree::Binary(l, r),
             TypeInner::Tuple(elements) => Tree::Nary(elements.iter().map(Arc::as_ref).collect()),
+            TypeInner::Error => Tree::Nullary,
         }
     }
 }
@@ -486,7 +499,7 @@ impl<'a> arbitrary::Arbitrary<'a> for ResolvedType {
 
 /// SimplicityHL type with type aliases.
 #[derive(PartialEq, Eq, Hash, Clone)]
-pub struct AliasedType(AliasedInner);
+pub struct AliasedType(AliasedInner, Span);
 
 /// Type alias or primitive.
 ///
@@ -548,14 +561,30 @@ impl AliasedType {
         }
     }
 
+    const fn new(inner: AliasedInner) -> Self {
+        Self(inner, Span::new(0, 0))
+    }
+
+    pub fn span(&self) -> Span {
+        self.1
+    }
+
+    pub fn with_span(self, span: Span) -> Self {
+        Self(self.0, span)
+    }
+
+    pub fn error() -> Self {
+        Self::new(AliasedInner::Inner(TypeInner::Error))
+    }
+
     /// Create a type alias from the given `identifier`.
     pub const fn alias(name: AliasName) -> Self {
-        Self(AliasedInner::Alias(name))
+        Self::new(AliasedInner::Alias(name))
     }
 
     /// Create a builtin type alias.
     pub const fn builtin(builtin: BuiltinAlias) -> Self {
-        Self(AliasedInner::Builtin(builtin))
+        Self::new(AliasedInner::Builtin(builtin))
     }
 
     /// Resolve all aliases in the type based on the given map of `aliases` to types.
@@ -600,6 +629,7 @@ impl AliasedType {
                         let element = output.pop().unwrap();
                         output.push(ResolvedType::list(element, *bound));
                     }
+                    TypeInner::Error => return Ok(ResolvedType::error()),
                 },
             }
         }
@@ -615,35 +645,35 @@ impl AliasedType {
 
 impl TypeConstructible for AliasedType {
     fn either(left: Self, right: Self) -> Self {
-        Self(AliasedInner::Inner(TypeInner::Either(
+        Self::new(AliasedInner::Inner(TypeInner::Either(
             Arc::new(left),
             Arc::new(right),
         )))
     }
 
     fn option(inner: Self) -> Self {
-        Self(AliasedInner::Inner(TypeInner::Option(Arc::new(inner))))
+        Self::new(AliasedInner::Inner(TypeInner::Option(Arc::new(inner))))
     }
 
     fn boolean() -> Self {
-        Self(AliasedInner::Inner(TypeInner::Boolean))
+        Self::new(AliasedInner::Inner(TypeInner::Boolean))
     }
 
     fn tuple<I: IntoIterator<Item = Self>>(elements: I) -> Self {
-        Self(AliasedInner::Inner(TypeInner::Tuple(
+        Self::new(AliasedInner::Inner(TypeInner::Tuple(
             elements.into_iter().map(Arc::new).collect(),
         )))
     }
 
     fn array(element: Self, size: usize) -> Self {
-        Self(AliasedInner::Inner(TypeInner::Array(
+        Self::new(AliasedInner::Inner(TypeInner::Array(
             Arc::new(element),
             size,
         )))
     }
 
     fn list(element: Self, bound: NonZeroPow2Usize) -> Self {
-        Self(AliasedInner::Inner(TypeInner::List(
+        Self::new(AliasedInner::Inner(TypeInner::List(
             Arc::new(element),
             bound,
         )))
@@ -711,6 +741,7 @@ impl TreeLike for &AliasedType {
                 TypeInner::Tuple(elements) => {
                     Tree::Nary(elements.iter().map(Arc::as_ref).collect())
                 }
+                TypeInner::Error => Tree::Nullary,
             },
         }
     }
@@ -737,7 +768,7 @@ impl fmt::Display for AliasedType {
 
 impl From<UIntType> for AliasedType {
     fn from(value: UIntType) -> Self {
-        Self(AliasedInner::Inner(TypeInner::UInt(value)))
+        Self::new(AliasedInner::Inner(TypeInner::UInt(value)))
     }
 }
 
@@ -1004,6 +1035,9 @@ impl From<&ResolvedType> for StructuralType {
                     let element = output.pop().unwrap();
                     output.push(StructuralType::list(element, *bound));
                 }
+                // Not sure what to put here, but it should not be unreachable in correctly builded
+                // AST.
+                TypeInner::Error => output.push(StructuralType::unit()),
             }
         }
         debug_assert_eq!(output.len(), 1);

@@ -288,6 +288,13 @@ impl Expression {
             span,
         }
     }
+
+    pub fn error(span: Span) -> Self {
+        Self {
+            inner: ExpressionInner::Error,
+            span,
+        }
+    }
 }
 
 impl_eq_hash!(Expression; inner);
@@ -301,6 +308,8 @@ pub enum ExpressionInner {
     /// Then, the block returns the value of its final expression.
     /// The block returns nothing (unit) if there is no final expression.
     Block(Arc<[Statement]>, Option<Arc<Expression>>),
+    /// Error type
+    Error,
 }
 
 /// A single expression directly returns a value.
@@ -399,7 +408,7 @@ impl Match {
             }
             (MatchPattern::None, MatchPattern::Some(_, ty_r)) => AliasedType::option(ty_r.clone()),
             (MatchPattern::False, MatchPattern::True) => AliasedType::boolean(),
-            _ => unreachable!("Match expressions have valid left and right arms"),
+            _ => AliasedType::error().with_span(*self.as_ref()),
         }
     }
 }
@@ -614,6 +623,7 @@ impl TreeLike for ExprTree<'_> {
                     Tree::Unary(Self::Block(statements, maybe_expr))
                 }
                 ExpressionInner::Single(single) => Tree::Unary(Self::Single(single)),
+                ExpressionInner::Error => Tree::Nullary,
             },
             Self::Block(statements, maybe_expr) => Tree::Nary(
                 statements
@@ -936,13 +946,7 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStrWithErrors for A {
 
         handler.update(parse_errs);
 
-        // TODO: We should return parsed result if we found errors, but because analyzing in `ast` module
-        // is not handling poisoned tree right now, we don't return parsed result
-        if handler.get().is_empty() {
-            ast
-        } else {
-            None
-        }
+        ast
     }
 }
 
@@ -1043,12 +1047,7 @@ impl ChumskyParse for AliasedType {
                     .then(ty.clone()),
                 Token::LAngle,
                 Token::RAngle,
-                |_| {
-                    (
-                        AliasedType::alias(AliasName::from_str_unchecked("error")),
-                        AliasedType::alias(AliasName::from_str_unchecked("error")),
-                    )
-                },
+                |_| (AliasedType::error(), AliasedType::error()),
             );
 
             let sum_type = just(Token::Ident("Either"))
@@ -1074,7 +1073,7 @@ impl ChumskyParse for AliasedType {
                     .map(|s: Vec<AliasedType>| AliasedType::tuple(s)),
                 Token::LParen,
                 Token::RParen,
-                |_| AliasedType::tuple(Vec::new()),
+                |_| AliasedType::error(),
             )
             .labelled("tuple");
 
@@ -1087,12 +1086,7 @@ impl ChumskyParse for AliasedType {
                     }),
                 Token::LBracket,
                 Token::RBracket,
-                |_| {
-                    AliasedType::array(
-                        AliasedType::alias(AliasName::from_str_unchecked("error")),
-                        0,
-                    )
-                },
+                |_| AliasedType::error(),
             )
             .labelled("array");
 
@@ -1114,18 +1108,13 @@ impl ChumskyParse for AliasedType {
                         })),
                     Token::LAngle,
                     Token::RAngle,
-                    |_| {
-                        (
-                            AliasedType::alias(AliasName::from_str_unchecked("error")),
-                            NonZeroPow2Usize::TWO,
-                        )
-                    },
+                    |_| (AliasedType::error(), NonZeroPow2Usize::TWO),
                 ))
                 .map(|(ty, size)| AliasedType::list(ty, size))
                 .labelled("List");
 
             choice((sum_type, option_type, tuple, array, list, atom))
-                .map_with(|inner, _| inner)
+                .map_with(|inner, e| inner.with_span(e.span()))
                 .labelled("type")
         })
     }
@@ -1201,7 +1190,7 @@ impl ChumskyParse for Function {
                     (Token::LParen, Token::RParen),
                     (Token::LBracket, Token::RBracket),
                 ],
-                Expression::empty,
+                Expression::error,
             )))
             .labelled("function body");
 
@@ -1495,7 +1484,7 @@ impl ChumskyParse for Expression {
                         (Token::RAngle, Token::RAngle),
                         (Token::LBracket, Token::RBracket),
                     ],
-                    |span| Expression::empty(span).inner().clone(),
+                    |span| Expression::error(span).inner().clone(),
                 );
 
                 let statements = statement
@@ -1762,7 +1751,7 @@ impl Match {
                 }
                 _ => {
                     let match_arm_fallback = MatchArm {
-                        expression: Arc::new(Expression::empty(Span::new(0, 0))),
+                        expression: Arc::new(Expression::error(Span::new(0, 0))),
                         pattern: MatchPattern::False,
                     };
 
