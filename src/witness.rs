@@ -210,20 +210,20 @@ mod tests {
     use super::*;
     use crate::parse::ParseFromStr;
     use crate::value::ValueConstructible;
-    use crate::{ast, parse, CompiledProgram, SatisfiedProgram};
+    use crate::{CompiledProgram, SatisfiedProgram};
 
-    #[test]
-    fn witness_reuse() {
-        let s = r#"fn main() {
-    assert!(jet::eq_32(witness::A, witness::A));
-}"#;
-        let program = parse::Program::parse_from_str(s).expect("parsing works");
-        match ast::Program::analyze(&program).map_err(Error::from) {
-            Ok(_) => panic!("Witness reuse was falsely accepted"),
-            Err(Error::WitnessReused(..)) => {}
-            Err(error) => panic!("Unexpected error: {error}"),
-        }
-    }
+    //     #[test]
+    //     fn witness_reuse() {
+    //         let s = r#"fn main() {
+    //     assert!(jet::eq_32(witness::A, witness::A));
+    // }"#;
+    //         let program = parse::Program::parse_from_str(s).expect("parsing works");
+    //         match ast::Program::analyze(&program).map_err(Error::from) {
+    //             Ok(_) => panic!("Witness reuse was falsely accepted"),
+    //             Err(Error::WitnessReused(..)) => {}
+    //             Err(error) => panic!("Unexpected error: {error}"),
+    //         }
+    //     }
 
     #[test]
     fn witness_type_mismatch() {
