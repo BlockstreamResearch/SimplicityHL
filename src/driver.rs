@@ -27,6 +27,12 @@ pub struct ProjectGraph {
     pub dependencies: HashMap<usize, Vec<usize>>,
 }
 
+#[derive(Debug)]
+pub enum C3Error {
+    CycleDetected(Vec<usize>),
+    InconsistentLinearization { module: usize },
+}
+
 fn get_full_path(
     library_map: &HashMap<String, PathBuf>,
     use_decl: &UseDecl,
@@ -118,6 +124,91 @@ impl ProjectGraph {
             dependencies,
         })
     }
+
+    pub fn c3_linearize(&self) -> Result<Vec<usize>, C3Error> {
+        self.linearize_module(0)
+    }
+
+    fn linearize_module(&self, root: usize) -> Result<Vec<usize>, C3Error> {
+        let mut memo = HashMap::<usize, Vec<usize>>::new();
+        let mut visiting = Vec::<usize>::new();
+
+        self.linearize_rec(root, &mut memo, &mut visiting)
+    }
+
+    fn linearize_rec(
+        &self,
+        module: usize,
+        memo: &mut HashMap<usize, Vec<usize>>,
+        visiting: &mut Vec<usize>,
+    ) -> Result<Vec<usize>, C3Error> {
+        if let Some(result) = memo.get(&module) {
+            return Ok(result.clone());
+        }
+
+        if visiting.contains(&module) {
+            let cycle_start = visiting.iter().position(|m| *m == module).unwrap();
+            return Err(C3Error::CycleDetected(
+                visiting[cycle_start..].to_vec(),
+            ));
+        }
+
+        visiting.push(module);
+
+        let parents = self.dependencies.get(&module).cloned().unwrap_or_default();
+
+        let mut seqs: Vec<Vec<usize>> = Vec::new();
+
+        for parent in &parents {
+            let lin = self.linearize_rec(*parent, memo, visiting)?;
+            seqs.push(lin);
+        }
+
+        seqs.push(parents.clone());
+
+        let mut result = vec![module];
+        let merged = merge(seqs)
+            .ok_or(C3Error::InconsistentLinearization { module })?;
+
+        result.extend(merged);
+
+        visiting.pop();
+        memo.insert(module, result.clone());
+
+        Ok(result)
+    }
+}
+
+fn merge(mut seqs: Vec<Vec<usize>>) -> Option<Vec<usize>> {
+    let mut result = Vec::new();
+
+    loop {
+        seqs.retain(|s| !s.is_empty());
+        if seqs.is_empty() {
+            return Some(result);
+        }
+
+        let mut candidate = None;
+
+        'outer: for seq in &seqs {
+            let head = seq[0];
+
+            if seqs.iter().all(|s| !s[1..].contains(&head)) {
+                candidate = Some(head);
+                break 'outer;
+            }
+        }
+
+        let head = candidate?;
+
+        result.push(head);
+
+        for seq in &mut seqs {
+            if seq.first() == Some(&head) {
+                seq.remove(0);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -181,6 +272,26 @@ mod tests {
     }
 
     #[test]
+    fn test_c3_simple_import() {
+
+        let temp_dir = TempDir::new().unwrap();
+        let root_path =
+            create_simf_file(temp_dir.path(), "root.simf", "use std::math::some_func;");
+        create_simf_file(temp_dir.path(), "libs/std/math.simf", "");
+
+        let mut lib_map = HashMap::new();
+        lib_map.insert("std".to_string(), temp_dir.path().join("libs/std"));
+
+        let root_program = parse_root(&root_path);
+        let config = LibConfig::new(lib_map, &root_path);
+        let graph = ProjectGraph::new(&config, &root_program).expect("Graph build failed");
+
+        let order = graph.c3_linearize().expect("C3 failed");
+
+        assert_eq!(order, vec![0, 1]);
+    }
+
+    #[test]
     fn test_diamond_dependency_deduplication() {
         // Setup:
         // root -> imports A, B
@@ -232,6 +343,47 @@ mod tests {
     }
 
     #[test]
+    fn test_c3_diamond_dependency_deduplication() {
+        // Setup:
+        // root -> imports A, B
+        // A -> imports Common
+        // B -> imports Common
+        // Expected: Common loaded ONLY ONCE.
+
+        let temp_dir = TempDir::new().unwrap();
+        let root_path = create_simf_file(
+            temp_dir.path(),
+            "root.simf",
+            "use lib::A::foo; use lib::B::bar;",
+        );
+        create_simf_file(
+            temp_dir.path(),
+            "libs/lib/A.simf",
+            "use lib::Common::dummy1;",
+        );
+        create_simf_file(
+            temp_dir.path(),
+            "libs/lib/B.simf",
+            "use lib::Common::dummy2;",
+        );
+        create_simf_file(temp_dir.path(), "libs/lib/Common.simf", ""); // Empty leaf
+
+        let mut lib_map = HashMap::new();
+        lib_map.insert("lib".to_string(), temp_dir.path().join("libs/lib"));
+
+        let root_program = parse_root(&root_path);
+        let config = LibConfig::new(lib_map, &root_path);
+        let graph = ProjectGraph::new(&config, &root_program).expect("Graph build failed");
+
+        let order = graph.c3_linearize().expect("C3 failed");
+
+        assert_eq!(
+            order, vec![0, 1, 2, 3],
+        );
+    }
+
+
+    #[test]
     fn test_cyclic_dependency() {
         // Setup:
         // A -> imports B
@@ -266,6 +418,37 @@ mod tests {
         // B depends on A (Circular)
         assert!(graph.dependencies[&1].contains(&0));
     }
+
+    #[test]
+    fn test_c3_cyclic_dependency() {
+        // Setup:
+        // A -> imports B
+        // B -> imports A
+        // Expected: Should finish without infinite loop
+
+        let temp_dir = TempDir::new().unwrap();
+        let a_path = create_simf_file(
+            temp_dir.path(),
+            "libs/test/A.simf",
+            "use test::B::some_test;",
+        );
+        create_simf_file(
+            temp_dir.path(),
+            "libs/test/B.simf",
+            "use test::A::another_test;",
+        );
+
+        let mut lib_map = HashMap::new();
+        lib_map.insert("test".to_string(), temp_dir.path().join("libs/test"));
+
+        let root_program = parse_root(&a_path);
+        let config = LibConfig::new(lib_map, &a_path);
+        let graph = ProjectGraph::new(&config, &root_program).expect("Graph build failed");
+
+        let order = graph.c3_linearize().unwrap_err();
+        matches!(order, C3Error::CycleDetected(_));
+    }
+
 
     #[test]
     fn test_missing_file_error() {
@@ -314,4 +497,5 @@ mod tests {
             "Root should have no resolved dependencies"
         );
     }
+
 }
