@@ -52,13 +52,58 @@ pub enum Item {
     TypeAlias(TypeAlias),
     /// A function.
     Function(Function),
+    /// Use keyword to load other items
+    Use(UseDecl),
     /// A module, which is ignored.
     Module,
+}
+
+/// Definition of a declaration
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct UseDecl {
+    visibility: Visibility,
+    path: Vec<Identifier>, // TODO: Maybe change to Arc<[Identifier]> for consisten
+    items: UseItems,
+    span: Span,
+}
+
+impl UseDecl {
+    /// Access the visibility of the use declaration.
+    pub fn visibility(&self) -> &Visibility {
+        &self.visibility
+    }
+
+    /// Access the visibility of the function.
+    pub fn path(&self) -> &Vec<Identifier> {
+        &self.path
+    }
+
+    /// Access the visibility of the function.
+    pub fn items(&self) -> &UseItems {
+        &self.items
+    }
+
+    /// Access the span of the use declaration.
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl_eq_hash!(UseDecl; visibility, path, items);
+
+// TODO: Add aliases
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub enum UseItems {
+    Single(Identifier),
+    List(Vec<Identifier>),
 }
 
 /// Definition of a function.
 #[derive(Clone, Debug)]
 pub struct Function {
+    visibility: Visibility,
     name: FunctionName,
     params: Arc<[FunctionParam]>,
     ret: Option<AliasedType>,
@@ -66,7 +111,19 @@ pub struct Function {
     span: Span,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub enum Visibility {
+    Public,
+    Private,
+}
+
 impl Function {
+    /// Access the visibility of the function.
+    pub fn visibility(&self) -> &Visibility {
+        &self.visibility
+    }
+
     /// Access the name of the function.
     pub fn name(&self) -> &FunctionName {
         &self.name
@@ -95,7 +152,7 @@ impl Function {
     }
 }
 
-impl_eq_hash!(Function; name, params, ret, body);
+impl_eq_hash!(Function; visibility, name, params, ret, body);
 
 /// Parameter of a function.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -222,12 +279,18 @@ pub enum CallName {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TypeAlias {
+    visibility: Visibility,
     name: AliasName,
     ty: AliasedType,
     span: Span,
 }
 
 impl TypeAlias {
+    /// Access the visibility of the alias.
+    pub fn visibility(&self) -> &Visibility {
+        &self.visibility
+    }
+
     /// Access the name of the alias.
     pub fn name(&self) -> &AliasName {
         &self.name
@@ -556,6 +619,7 @@ impl fmt::Display for Item {
         match self {
             Self::TypeAlias(alias) => write!(f, "{alias}"),
             Self::Function(function) => write!(f, "{function}"),
+            Self::Use(use_declaration) => write!(f, "{use_declaration}"),
             // The parse tree contains no information about the contents of modules.
             // We print a random empty module `mod witness {}` here
             // so that `from_string(to_string(x)) = x` holds for all trees `x`.
@@ -584,6 +648,47 @@ impl fmt::Display for Function {
             write!(f, " -> {ty}")?;
         }
         write!(f, " {}", self.body())
+    }
+}
+
+impl fmt::Display for UseDecl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Visibility::Public = self.visibility {
+            write!(f, "pub ")?;
+        }
+
+        let _ = write!(f, "use ");
+
+        for (i, segment) in self.path.iter().enumerate() {
+            if i > 0 {
+                write!(f, "::")?;
+            }
+            write!(f, "{}", segment)?;
+        }
+
+        if !self.path.is_empty() {
+            write!(f, "::")?;
+        }
+
+        write!(f, "{};", self.items)
+    }
+}
+
+impl fmt::Display for UseItems {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UseItems::Single(ident) => write!(f, "{}", ident),
+            UseItems::List(idents) => {
+                let _ = write!(f, "{{");
+                for (i, ident) in idents.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", ident)?;
+                }
+                write!(f, "}}")
+            }
+        }
     }
 }
 
@@ -1138,7 +1243,12 @@ impl ChumskyParse for Program {
         let skip_until_next_item = any()
             .then(
                 any()
-                    .filter(|t| !matches!(t, Token::Fn | Token::Type | Token::Mod))
+                    .filter(|t| {
+                        !matches!(
+                            t,
+                            Token::Pub | Token::Use | Token::Fn | Token::Type | Token::Mod
+                        )
+                    })
                     .repeated(),
             )
             // map to empty module
@@ -1162,9 +1272,10 @@ impl ChumskyParse for Item {
     {
         let func_parser = Function::parser().map(Item::Function);
         let type_parser = TypeAlias::parser().map(Item::TypeAlias);
+        let use_parser = UseDecl::parser().map(Item::Use);
         let mod_parser = Module::parser().map(|_| Item::Module);
 
-        choice((func_parser, type_parser, mod_parser))
+        choice((func_parser, use_parser, type_parser, mod_parser))
     }
 }
 
@@ -1173,6 +1284,12 @@ impl ChumskyParse for Function {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
+        let visibility = just(Token::Pub)
+            .to(Visibility::Public)
+            .or_not()
+            .map(|v| v.unwrap_or(Visibility::Private))
+            .labelled("function visibility");
+
         let params = delimited_with_recovery(
             FunctionParam::parser()
                 .separated_by(just(Token::Comma))
@@ -1204,16 +1321,60 @@ impl ChumskyParse for Function {
             )))
             .labelled("function body");
 
-        just(Token::Fn)
-            .ignore_then(FunctionName::parser())
+        visibility
+            .then_ignore(just(Token::Fn))
+            .then(FunctionName::parser())
             .then(params)
             .then(ret)
             .then(body)
-            .map_with(|(((name, params), ret), body), e| Self {
+            .map_with(|((((visibility, name), params), ret), body), e| Self {
+                visibility,
                 name,
                 params,
                 ret,
                 body,
+                span: e.span(),
+            })
+    }
+}
+
+impl ChumskyParse for UseDecl {
+    fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
+    where
+        I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
+    {
+        // TODO: Check does it possible to parse `use a: : smth`, because we need parse only `use a::smth`
+        let double_colon = just(Token::Colon).then(just(Token::Colon)).labelled("::");
+
+        let visibility = just(Token::Pub)
+            .to(Visibility::Public)
+            .or_not()
+            .map(|v| v.unwrap_or(Visibility::Private));
+
+        let path = Identifier::parser()
+            .then_ignore(double_colon)
+            .repeated()
+            .at_least(1)
+            .collect::<Vec<_>>();
+
+        let list = Identifier::parser()
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect()
+            .delimited_by(just(Token::LBrace), just(Token::RBrace))
+            .map(UseItems::List);
+        let single = Identifier::parser().map(UseItems::Single);
+        let items = choice((list, single));
+
+        visibility
+            .then_ignore(just(Token::Use))
+            .then(path)
+            .then(items)
+            .then_ignore(just(Token::Semi))
+            .map_with(|((visibility, path), items), e| Self {
+                visibility,
+                path,
+                items,
                 span: e.span(),
             })
     }
@@ -1461,14 +1622,23 @@ impl ChumskyParse for TypeAlias {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
+        let visibility = just(Token::Pub)
+            .to(Visibility::Public)
+            .or_not()
+            .map(|v| v.unwrap_or(Visibility::Private));
+
         let name = AliasName::parser().map_with(|name, e| (name, e.span()));
 
-        just(Token::Type)
-            .ignore_then(name)
-            .then_ignore(parse_token_with_recovery(Token::Eq))
-            .then(AliasedType::parser())
-            .then_ignore(just(Token::Semi))
-            .map_with(|(name, ty), e| Self {
+        visibility
+            .then(
+                just(Token::Type)
+                    .ignore_then(name)
+                    .then_ignore(parse_token_with_recovery(Token::Eq))
+                    .then(AliasedType::parser())
+                    .then_ignore(just(Token::Semi)),
+            )
+            .map_with(|(visibility, (name, ty)), e| Self {
+                visibility,
                 name: name.0,
                 ty,
                 span: e.span(),
@@ -1953,6 +2123,7 @@ impl crate::ArbitraryRec for Function {
     fn arbitrary_rec(u: &mut arbitrary::Unstructured, budget: usize) -> arbitrary::Result<Self> {
         use arbitrary::Arbitrary;
 
+        let visibility = Visibility::arbitrary(u)?;
         let name = FunctionName::arbitrary(u)?;
         let len = u.int_in_range(0..=3)?;
         let params = (0..len)
@@ -1961,6 +2132,7 @@ impl crate::ArbitraryRec for Function {
         let ret = Option::<AliasedType>::arbitrary(u)?;
         let body = Expression::arbitrary_rec(u, budget).map(Expression::into_block)?;
         Ok(Self {
+            visibility,
             name,
             params,
             ret,

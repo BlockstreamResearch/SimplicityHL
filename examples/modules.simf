@@ -1,0 +1,12 @@
+use example::of::my::file;
+pub use another::file::*;
+pub use some::list::{of, items};
+
+pub fn get_five() -> u32 {
+    5
+}
+
+fn main() {
+    let five: u32 = dbg!(get_five());
+    assert!(jet::eq_32(five, 5));
+}

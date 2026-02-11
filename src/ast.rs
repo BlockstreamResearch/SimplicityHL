@@ -11,7 +11,7 @@ use simplicity::jet::Elements;
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
 use crate::error::{Error, RichError, Span, WithSpan};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
-use crate::parse::MatchPattern;
+use crate::parse::{MatchPattern, UseDecl};
 use crate::pattern::Pattern;
 use crate::str::{AliasName, FunctionName, Identifier, ModuleName, WitnessName};
 use crate::types::{
@@ -73,6 +73,8 @@ pub enum Item {
     TypeAlias,
     /// A function.
     Function(Function),
+    /// A use declaration
+    Use(UseDecl),
     /// A module, which is ignored.
     Module,
 }
@@ -759,6 +761,12 @@ impl AbstractSyntaxTree for Item {
             parse::Item::Function(function) => {
                 Function::analyze(function, ty, scope).map(Self::Function)
             }
+            parse::Item::Use(_) => {
+                println!("WARN: Skipping use declaration (not implemented yet)");
+                Ok(Self::Module)
+                //todo!()
+                //Use::analyze(use_declaration).map(Self::Use)
+            }
             parse::Item::Module => Ok(Self::Module),
         }
     }
@@ -819,6 +827,64 @@ impl AbstractSyntaxTree for Function {
         Ok(Self::Main(body))
     }
 }
+
+/*
+impl AbstractSyntaxTree for UseDecl {
+    type From = parse::UseDecl;
+
+    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+        assert!(ty.is_unit(), "Function definitions cannot return anything");
+        assert!(scope.is_topmost(), "Items live in the topmost scope only");
+
+        if from.name().as_inner() != "main" {
+            let params = from
+                .params()
+                .iter()
+                .map(|param| {
+                    let identifier = param.identifier().clone();
+                    let ty = scope.resolve(param.ty())?;
+                    Ok(FunctionParam { identifier, ty })
+                })
+                .collect::<Result<Arc<[FunctionParam]>, Error>>()
+                .with_span(from)?;
+            let ret = from
+                .ret()
+                .as_ref()
+                .map(|aliased| scope.resolve(aliased).with_span(from))
+                .transpose()?
+                .unwrap_or_else(ResolvedType::unit);
+            scope.push_scope();
+            for param in params.iter() {
+                scope.insert_variable(param.identifier().clone(), param.ty().clone());
+            }
+            let body = Expression::analyze(from.body(), &ret, scope).map(Arc::new)?;
+            scope.pop_scope();
+            debug_assert!(scope.is_topmost());
+            let function = CustomFunction { params, body };
+            scope
+                .insert_function(from.name().clone(), function)
+                .with_span(from)?;
+
+            return Ok(Self::Custom);
+        }
+
+        if !from.params().is_empty() {
+            return Err(Error::MainNoInputs).with_span(from);
+        }
+        if let Some(aliased) = from.ret() {
+            let resolved = scope.resolve(aliased).with_span(from)?;
+            if !resolved.is_unit() {
+                return Err(Error::MainNoOutput).with_span(from);
+            }
+        }
+
+        scope.push_main_scope();
+        let body = Expression::analyze(from.body(), ty, scope)?;
+        scope.pop_main_scope();
+        Ok(Self::Main(body))
+    }
+}
+*/
 
 impl AbstractSyntaxTree for Statement {
     type From = parse::Statement;

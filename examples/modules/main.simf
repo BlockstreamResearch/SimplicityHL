@@ -1,0 +1,10 @@
+pub use temp::get_five::get_five;
+
+fn seven() -> u32 {
+    7
+}
+
+fn main() {
+    let five: u32 = dbg!(get_five());
+    let seven: u32 = dbg!(seven());
+}
