@@ -39,6 +39,12 @@ pub struct ProjectGraph {
     pub dependencies: HashMap<usize, Vec<usize>>,
 }
 
+#[derive(Debug)]
+pub enum C3Error {
+    CycleDetected(Vec<usize>),
+    InconsistentLinearization { module: usize },
+}
+
 fn parse_and_get_program(prog_file: &Path) -> Result<parse::Program, String> {
     let prog_text = std::fs::read_to_string(prog_file).map_err(|e| e.to_string())?;
     let file = prog_text.into();
@@ -48,6 +54,39 @@ fn parse_and_get_program(prog_file: &Path) -> Result<parse::Program, String> {
         Ok(program)
     } else {
         Err(ErrorCollector::to_string(&error_handler))?
+    }
+}
+
+// Function used by the C3 algorithm.
+fn merge(mut seqs: Vec<Vec<usize>>) -> Option<Vec<usize>> {
+    let mut result = Vec::new();
+
+    loop {
+        seqs.retain(|s| !s.is_empty());
+        if seqs.is_empty() {
+            return Some(result);
+        }
+
+        let mut candidate = None;
+
+        'outer: for seq in &seqs {
+            let head = seq[0];
+
+            if seqs.iter().all(|s| !s[1..].contains(&head)) {
+                candidate = Some(head);
+                break 'outer;
+            }
+        }
+
+        let head = candidate?;
+
+        result.push(head);
+
+        for seq in &mut seqs {
+            if seq.first() == Some(&head) {
+                seq.remove(0);
+            }
+        }
     }
 }
 
@@ -87,7 +126,10 @@ impl ProjectGraph {
                 }
 
                 if let Some(&existing_id) = lookup.get(&path) {
-                    dependencies.entry(curr_id).or_default().push(existing_id);
+                    let deps = dependencies.entry(curr_id).or_default();
+                    if !deps.contains(&existing_id) {
+                        deps.push(existing_id);
+                    }
                     continue;
                 }
 
@@ -109,5 +151,65 @@ impl ProjectGraph {
             lookup,
             dependencies,
         })
+    }
+
+    /// Computes the linear resolution order of the project modules.
+    ///
+    /// # Errors
+    /// Returns a `C3Error` if a cyclic dependency is detected or if a valid
+    /// linearization is mathematically impossible.
+    pub fn c3_linearize(&self) -> Result<Vec<usize>, C3Error> {
+        self.linearize_module(0)
+    }
+
+    /// Internal helper to initiate the recursive C3 linearization process.
+    fn linearize_module(&self, root: usize) -> Result<Vec<usize>, C3Error> {
+        let mut memo = HashMap::<usize, Vec<usize>>::new();
+        let mut visiting = Vec::<usize>::new();
+
+        self.linearize_rec(root, &mut memo, &mut visiting)
+    }
+
+    /// Recursively calculates the C3 linearization sequence for a given module.
+    ///
+    /// Uses memoization to cache results and tracks the `visiting` path to
+    /// detect infinite cyclic dependencies (e.g., A imports B, B imports A).
+    fn linearize_rec(
+        &self,
+        module: usize,
+        memo: &mut HashMap<usize, Vec<usize>>,
+        visiting: &mut Vec<usize>,
+    ) -> Result<Vec<usize>, C3Error> {
+        if let Some(result) = memo.get(&module) {
+            return Ok(result.clone());
+        }
+
+        if visiting.contains(&module) {
+            let cycle_start = visiting.iter().position(|m| *m == module).unwrap();
+            return Err(C3Error::CycleDetected(visiting[cycle_start..].to_vec()));
+        }
+
+        visiting.push(module);
+
+        let parents = self.dependencies.get(&module).cloned().unwrap_or_default();
+
+        let mut seqs: Vec<Vec<usize>> = Vec::new();
+
+        for parent in &parents {
+            let lin = self.linearize_rec(*parent, memo, visiting)?;
+            seqs.push(lin);
+        }
+
+        seqs.push(parents.clone());
+
+        let mut result = vec![module];
+        let merged = merge(seqs).ok_or(C3Error::InconsistentLinearization { module })?;
+
+        result.extend(merged);
+
+        visiting.pop();
+        memo.insert(module, result.clone());
+
+        Ok(result)
     }
 }

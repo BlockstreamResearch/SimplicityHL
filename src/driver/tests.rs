@@ -169,6 +169,68 @@ mod graph_construction_and_dependency_resolution {
 }
 
 #[cfg(test)]
+mod c3_linearization {
+    use super::*;
+
+    #[test]
+    fn test_c3_simple_import() {
+        // Setup similar to above
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("main.simf", "use lib::math::some_func;"),
+            ("libs/lib/math.simf", ""),
+        ]);
+
+        let order = graph.c3_linearize().expect("C3 failed");
+
+        let root_id = ids["main"];
+        let math_id = ids["math"];
+
+        // Assuming linearization order: Dependent (Root) -> Dependency (Math)
+        assert_eq!(order, vec![root_id, math_id]);
+    }
+
+    #[test]
+    fn test_c3_diamond_dependency_deduplication() {
+        // Setup:
+        // root -> imports A, B
+        // A -> imports Common
+        // B -> imports Common
+        // Expected: Common loaded ONLY ONCE.
+
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("main.simf", "use lib::A::foo; use lib::B::bar;"),
+            ("libs/lib/A.simf", "use lib::Common::dummy1;"),
+            ("libs/lib/B.simf", "use lib::Common::dummy2;"),
+            ("libs/lib/Common.simf", ""),
+        ]);
+
+        let order = graph.c3_linearize().expect("C3 failed");
+
+        // Verify order using IDs from the helper map
+        let main_id = ids["main"];
+        let a_id = ids["A"];
+        let b_id = ids["B"];
+        let common_id = ids["Common"];
+
+        // In the `resolve_complication_order` function, the order was reversed.
+        // Therefore, `common` will be the first, and `main` will be last.
+        assert_eq!(order, vec![main_id, a_id, b_id, common_id]);
+    }
+
+    #[test]
+    fn test_c3_detects_cycle() {
+        let (graph, _, _dir) = setup_graph(vec![
+            ("main.simf", "use lib::A::entry;"),
+            ("libs/lib/A.simf", "use lib::B::func;"),
+            ("libs/lib/B.simf", "use lib::A::func;"),
+        ]);
+
+        let order = graph.c3_linearize();
+        matches!(order, Err(C3Error::CycleDetected(_)));
+    }
+}
+
+#[cfg(test)]
 mod error_diganostic_and_terminal_formatting {
     use super::*;
 
