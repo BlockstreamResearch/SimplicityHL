@@ -235,7 +235,7 @@ mod tests {
             WitnessName::from_str_unchecked("A"),
             Value::u16(42),
         )]));
-        match SatisfiedProgram::new(s, Arguments::default(), witness, false) {
+        match SatisfiedProgram::new(None, s, Arguments::default(), witness, false) {
             Ok(_) => panic!("Ill-typed witness assignment was falsely accepted"),
             Err(error) => assert_eq!(
                 "Witness `A` was declared with type `u32` but its assigned value is of type `u16`",
@@ -254,7 +254,7 @@ fn main() {
     assert!(jet::is_zero_32(f()));
 }"#;
 
-        match CompiledProgram::new(s, Arguments::default(), false) {
+        match CompiledProgram::new(None, s, Arguments::default(), false) {
             Ok(_) => panic!("Witness outside main was falsely accepted"),
             Err(error) => {
                 assert!(error

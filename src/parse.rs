@@ -63,7 +63,7 @@ pub enum Item {
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct UseDecl {
     visibility: Visibility,
-    path: Vec<Identifier>,  // TODO: Maybe change to Arc<[Identifier]> for consisten
+    path: Vec<Identifier>, // TODO: Maybe change to Arc<[Identifier]> for consisten
     items: UseItems,
     span: Span,
 }
@@ -1243,7 +1243,12 @@ impl ChumskyParse for Program {
         let skip_until_next_item = any()
             .then(
                 any()
-                    .filter(|t| !matches!(t, Token::Pub | Token::Use | Token::Fn | Token::Type | Token::Mod))
+                    .filter(|t| {
+                        !matches!(
+                            t,
+                            Token::Pub | Token::Use | Token::Fn | Token::Type | Token::Mod
+                        )
+                    })
                     .repeated(),
             )
             // map to empty module
@@ -1279,8 +1284,8 @@ impl ChumskyParse for Function {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
-        let visibility =
-            just(Token::Pub).to(Visibility::Public)
+        let visibility = just(Token::Pub)
+            .to(Visibility::Public)
             .or_not()
             .map(|v| v.unwrap_or(Visibility::Private))
             .labelled("function visibility");
@@ -1341,8 +1346,8 @@ impl ChumskyParse for UseDecl {
         // TODO: Check does it possible to parse `use a: : smth`, because we need parse only `use a::smth`
         let double_colon = just(Token::Colon).then(just(Token::Colon)).labelled("::");
 
-        let visibility =
-            just(Token::Pub).to(Visibility::Public)
+        let visibility = just(Token::Pub)
+            .to(Visibility::Public)
             .or_not()
             .map(|v| v.unwrap_or(Visibility::Private));
 
@@ -1503,7 +1508,7 @@ impl ChumskyParse for CallName {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
-        let double_colon: chumsky::label::Labelled<chumsky::combinator::Then<chumsky::primitive::Just<Token<'_>, I, extra::Full<RichError, (), ()>>, chumsky::primitive::Just<Token<'_>, I, extra::Full<RichError, (), ()>>, Token<'_>, Token<'_>, extra::Full<RichError, (), ()>>, &str> = just(Token::Colon).then(just(Token::Colon)).labelled("::");
+        let double_colon = just(Token::Colon).then(just(Token::Colon)).labelled("::");
 
         let turbofish_start = double_colon.clone().then(just(Token::LAngle)).ignored();
 
@@ -1617,19 +1622,21 @@ impl ChumskyParse for TypeAlias {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
-        let visibility =
-            just(Token::Pub).to(Visibility::Public)
+        let visibility = just(Token::Pub)
+            .to(Visibility::Public)
             .or_not()
             .map(|v| v.unwrap_or(Visibility::Private));
-        
+
         let name = AliasName::parser().map_with(|name, e| (name, e.span()));
-        
+
         visibility
-            .then(just(Token::Type)
-            .ignore_then(name)
-            .then_ignore(parse_token_with_recovery(Token::Eq))
-            .then(AliasedType::parser())
-            .then_ignore(just(Token::Semi)))
+            .then(
+                just(Token::Type)
+                    .ignore_then(name)
+                    .then_ignore(parse_token_with_recovery(Token::Eq))
+                    .then(AliasedType::parser())
+                    .then_ignore(just(Token::Semi)),
+            )
             .map_with(|(visibility, (name, ty)), e| Self {
                 visibility,
                 name: name.0,

@@ -2,8 +2,8 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
-use simplicityhl::{Arguments, CompiledProgram};
-use std::{env, fmt};
+use simplicityhl::{Arguments, CompiledProgram, LibConfig};
+use std::{collections::HashMap, env, fmt, path::PathBuf};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 /// The compilation output.
@@ -42,6 +42,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .help("SimplicityHL program file to build"),
             )
             .arg(
+                Arg::new("library")
+                    .long("lib")
+                    .short('L')
+                    .value_name("ALIAS=PATH")
+                    .action(ArgAction::Append)
+                    .help("Link a library with an alias (e.g., --lib math=./libs/math)"),
+            )
+            .arg(
                 Arg::new("wit_file")
                     .value_name("WITNESS_FILE")
                     .action(ArgAction::Set)
@@ -69,14 +77,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let include_debug_symbols = matches.get_flag("debug");
     let output_json = matches.get_flag("json");
 
-    let compiled =
-        match CompiledProgram::new(prog_text, Arguments::default(), include_debug_symbols) {
-            Ok(program) => program,
-            Err(e) => {
-                eprintln!("{}", e);
+    let lib_args = matches.get_many::<String>("library").unwrap_or_default();
+
+    let library_map: HashMap<String, PathBuf> = lib_args
+        .map(|arg| {
+            let parts: Vec<&str> = arg.splitn(2, '=').collect();
+
+            if parts.len() != 2 {
+                eprintln!(
+                    "Error: Library argument must be in format ALIAS=PATH, got '{}'",
+                    arg
+                );
                 std::process::exit(1);
             }
-        };
+
+            (parts[0].to_string(), std::path::PathBuf::from(parts[1]))
+        })
+        .collect();
+
+    let config = LibConfig::new(library_map, prog_path);
+    let compiled = match CompiledProgram::new(
+        Some(&config),
+        prog_text,
+        Arguments::default(),
+        include_debug_symbols,
+    ) {
+        Ok(program) => program,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
 
     #[cfg(feature = "serde")]
     let witness_opt = matches
