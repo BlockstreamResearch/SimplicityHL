@@ -125,6 +125,12 @@ pub struct WitnessName(Arc<str>);
 wrapped_string!(WitnessName, "witness name");
 impl_arbitrary_lowercase_alpha!(WitnessName);
 
+impl AsRef<str> for WitnessName {
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
 /// The name of a jet.
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct JetName(Arc<str>);
