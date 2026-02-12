@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use crate::error::Span;
+
 /// Implementations for newtypes that wrap [`Arc<str>`].
 macro_rules! wrapped_string {
     ($wrapper:ident, $name:expr) => {
@@ -16,7 +18,7 @@ macro_rules! wrapped_string {
             #[doc = "## Panics\n\n"]
             #[doc = "Panics may occur down the line if the precondition is not satisfied."]
             pub fn from_str_unchecked(s: &str) -> Self {
-                Self(Arc::from(s))
+                Self(Arc::from(s), Span::new(0, 0))
             }
 
             /// Access the inner string.
@@ -26,7 +28,16 @@ macro_rules! wrapped_string {
 
             /// Make a cheap copy of the name.
             pub fn shallow_clone(&self) -> Self {
-                Self(Arc::clone(&self.0))
+                Self(Arc::clone(&self.0), self.1)
+            }
+
+            pub fn with_span(self, span: Span) -> Self {
+                Self(self.0, span)
+            }
+
+            /// Access span of the name.
+            pub fn span(&self) -> Span {
+                self.1
             }
         }
 
@@ -39,6 +50,20 @@ macro_rules! wrapped_string {
         impl std::fmt::Debug for $wrapper {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 std::fmt::Display::fmt(&self.0, f)
+            }
+        }
+
+        impl PartialEq for $wrapper {
+            fn eq(&self, other: &Self) -> bool {
+                self.0 == other.0
+            }
+        }
+
+        impl Eq for $wrapper {}
+
+        impl std::hash::Hash for $wrapper {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                self.0.hash(state);
             }
         }
     };
@@ -68,13 +93,13 @@ macro_rules! impl_arbitrary_lowercase_alpha {
 }
 
 /// The name of a function.
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct FunctionName(Arc<str>);
+#[derive(Clone, Ord, PartialOrd)]
+pub struct FunctionName(Arc<str>, Span);
 
 impl FunctionName {
     /// Return the name of the main function.
     pub fn main() -> Self {
-        Self(Arc::from("main"))
+        Self::from_str_unchecked("main")
     }
 }
 
@@ -112,22 +137,22 @@ impl<'a> arbitrary::Arbitrary<'a> for FunctionName {
 }
 
 /// The identifier of a variable.
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct Identifier(Arc<str>);
+#[derive(Clone, Ord, PartialOrd)]
+pub struct Identifier(Arc<str>, Span);
 
 wrapped_string!(Identifier, "variable identifier");
 impl_arbitrary_lowercase_alpha!(Identifier);
 
 /// The name of a witness.
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct WitnessName(Arc<str>);
+#[derive(Clone, Ord, PartialOrd)]
+pub struct WitnessName(Arc<str>, Span);
 
 wrapped_string!(WitnessName, "witness name");
 impl_arbitrary_lowercase_alpha!(WitnessName);
 
 /// The name of a jet.
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct JetName(Arc<str>);
+#[derive(Clone, Ord, PartialOrd)]
+pub struct JetName(Arc<str>, Span);
 
 wrapped_string!(JetName, "jet name");
 
@@ -137,13 +162,13 @@ impl<'a> arbitrary::Arbitrary<'a> for JetName {
         u.choose(&simplicity::jet::Elements::ALL)
             .map(simplicity::jet::Elements::to_string)
             .map(Arc::from)
-            .map(Self)
+            .map(|jet| Self(jet, Span::DUMMY))
     }
 }
 
 /// The name of a type alias.
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct AliasName(Arc<str>);
+#[derive(Clone, Ord, PartialOrd)]
+pub struct AliasName(Arc<str>, Span);
 
 wrapped_string!(AliasName, "name of a type alias");
 
@@ -205,8 +230,8 @@ impl<'a> arbitrary::Arbitrary<'a> for AliasName {
 }
 
 /// A string of decimal digits.
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct Decimal(Arc<str>);
+#[derive(Clone, Ord, PartialOrd)]
+pub struct Decimal(Arc<str>, Span);
 
 wrapped_string!(Decimal, "decimal string");
 
@@ -224,8 +249,8 @@ impl<'a> arbitrary::Arbitrary<'a> for Decimal {
 }
 
 /// A string of binary digits.
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct Binary(Arc<str>);
+#[derive(Clone, Ord, PartialOrd)]
+pub struct Binary(Arc<str>, Span);
 
 wrapped_string!(Binary, "binary string");
 
@@ -244,8 +269,8 @@ impl<'a> arbitrary::Arbitrary<'a> for Binary {
 }
 
 /// A string of hexadecimal digits.
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct Hexadecimal(Arc<str>);
+#[derive(Clone, Ord, PartialOrd)]
+pub struct Hexadecimal(Arc<str>, Span);
 
 wrapped_string!(Hexadecimal, "hexadecimal string");
 
@@ -268,18 +293,18 @@ impl<'a> arbitrary::Arbitrary<'a> for Hexadecimal {
 }
 
 /// The name of a module.
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct ModuleName(Arc<str>);
+#[derive(Clone, Ord, PartialOrd)]
+pub struct ModuleName(Arc<str>, Span);
 
 impl ModuleName {
     /// Return the name of the witness module.
     pub fn witness() -> Self {
-        Self(Arc::from("witness"))
+        Self::from_str_unchecked("witness")
     }
 
     /// Return the name of the parameter module.
     pub fn param() -> Self {
-        Self(Arc::from("param"))
+        Self::from_str_unchecked("param")
     }
 }
 

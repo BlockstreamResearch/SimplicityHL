@@ -56,11 +56,11 @@ impl TemplateProgram {
         let mut error_handler = ErrorCollector::new(Arc::clone(&file));
         let parse_program = parse::Program::parse_from_str_with_errors(&file, &mut error_handler);
         if let Some(program) = parse_program {
-            let ast_program = ast::Program::analyze(&program).with_file(Arc::clone(&file))?;
-            Ok(Self {
-                simfony: ast_program,
-                file,
-            })
+            let ast_program = ast::Program::analyze(&program, &mut error_handler);
+            match ast_program {
+                Some(ast) => Ok(Self { simfony: ast, file }),
+                None => Err(ErrorCollector::to_string(&error_handler))?,
+            }
         } else {
             Err(ErrorCollector::to_string(&error_handler))?
         }

@@ -288,6 +288,13 @@ impl Expression {
             span,
         }
     }
+
+    pub fn error(span: Span) -> Self {
+        Self {
+            inner: ExpressionInner::Error,
+            span,
+        }
+    }
 }
 
 impl_eq_hash!(Expression; inner);
@@ -301,6 +308,8 @@ pub enum ExpressionInner {
     /// Then, the block returns the value of its final expression.
     /// The block returns nothing (unit) if there is no final expression.
     Block(Arc<[Statement]>, Option<Arc<Expression>>),
+    /// Error type
+    Error,
 }
 
 /// A single expression directly returns a value.
@@ -399,7 +408,7 @@ impl Match {
             }
             (MatchPattern::None, MatchPattern::Some(_, ty_r)) => AliasedType::option(ty_r.clone()),
             (MatchPattern::False, MatchPattern::True) => AliasedType::boolean(),
-            _ => unreachable!("Match expressions have valid left and right arms"),
+            _ => AliasedType::error().with_span(*self.as_ref()),
         }
     }
 }
@@ -614,6 +623,7 @@ impl TreeLike for ExprTree<'_> {
                     Tree::Unary(Self::Block(statements, maybe_expr))
                 }
                 ExpressionInner::Single(single) => Tree::Unary(Self::Single(single)),
+                ExpressionInner::Error => Tree::Nullary,
             },
             Self::Block(statements, maybe_expr) => Tree::Nary(
                 statements
@@ -851,8 +861,9 @@ macro_rules! impl_parse_wrapped_string {
                 I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
             {
                 select! {
-                    Token::Ident(ident) => Self::from_str_unchecked(ident)
+                    Token::Ident(ident) => ident
                 }
+                .map_with(|s, e| Self::from_str_unchecked(s).with_span(e.span()))
                 .labelled($label)
             }
         }
@@ -935,13 +946,7 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStrWithErrors for A {
 
         handler.update(parse_errs);
 
-        // TODO: We should return parsed result if we found errors, but because analyzing in `ast` module
-        // is not handling poisoned tree right now, we don't return parsed result
-        if handler.get().is_empty() {
-            ast
-        } else {
-            None
-        }
+        ast
     }
 }
 
@@ -1002,27 +1007,27 @@ impl ChumskyParse for AliasedType {
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
         let atom = select! {
-            Token::Ident(ident) => {
-                match ident
-                {
-                    "u1" => AliasedType::u1(),
-                    "u2" =>  AliasedType::u2(),
-                    "u4" =>  AliasedType::u4(),
-                    "u8" => AliasedType::u8(),
-                    "u16" => AliasedType::u16(),
-                    "u32" => AliasedType::u32(),
-                    "u64" => AliasedType::u64(),
-                    "u128" => AliasedType::u128(),
-                    "u256" => AliasedType::u256(),
-                    "Ctx8" | "Pubkey" | "Message64" | "Message" | "Signature" | "Scalar" | "Fe" | "Gej"
-                    | "Ge" | "Point" | "Height" | "Time" | "Distance" | "Duration" | "Lock" | "Outpoint"
-                    | "Confidential1" | "ExplicitAsset" | "Asset1" | "ExplicitAmount" | "Amount1"
-                    | "ExplicitNonce" | "Nonce" | "TokenAmount1" => AliasedType::builtin(BuiltinAlias::from_str(ident).unwrap()),
-                    "bool" => AliasedType::boolean(),
-                    _ => AliasedType::alias(AliasName::from_str_unchecked(ident)),
-                }
-            },
-        };
+            Token::Ident(ident) => ident
+        }
+        .map_with(|ident, e| match ident {
+            "u1" => AliasedType::u1(),
+            "u2" => AliasedType::u2(),
+            "u4" => AliasedType::u4(),
+            "u8" => AliasedType::u8(),
+            "u16" => AliasedType::u16(),
+            "u32" => AliasedType::u32(),
+            "u64" => AliasedType::u64(),
+            "u128" => AliasedType::u128(),
+            "u256" => AliasedType::u256(),
+            "Ctx8" | "Pubkey" | "Message64" | "Message" | "Signature" | "Scalar" | "Fe" | "Gej"
+            | "Ge" | "Point" | "Height" | "Time" | "Distance" | "Duration" | "Lock"
+            | "Outpoint" | "Confidential1" | "ExplicitAsset" | "Asset1" | "ExplicitAmount"
+            | "Amount1" | "ExplicitNonce" | "Nonce" | "TokenAmount1" => {
+                AliasedType::builtin(BuiltinAlias::from_str(ident).unwrap())
+            }
+            "bool" => AliasedType::boolean(),
+            _ => AliasedType::alias(AliasName::from_str_unchecked(ident).with_span(e.span())),
+        });
 
         let num = select! {
             Token::DecLiteral(i) => i.clone()
@@ -1042,12 +1047,7 @@ impl ChumskyParse for AliasedType {
                     .then(ty.clone()),
                 Token::LAngle,
                 Token::RAngle,
-                |_| {
-                    (
-                        AliasedType::alias(AliasName::from_str_unchecked("error")),
-                        AliasedType::alias(AliasName::from_str_unchecked("error")),
-                    )
-                },
+                |_| (AliasedType::error(), AliasedType::error()),
             );
 
             let sum_type = just(Token::Ident("Either"))
@@ -1073,7 +1073,7 @@ impl ChumskyParse for AliasedType {
                     .map(|s: Vec<AliasedType>| AliasedType::tuple(s)),
                 Token::LParen,
                 Token::RParen,
-                |_| AliasedType::tuple(Vec::new()),
+                |_| AliasedType::error(),
             )
             .labelled("tuple");
 
@@ -1086,12 +1086,7 @@ impl ChumskyParse for AliasedType {
                     }),
                 Token::LBracket,
                 Token::RBracket,
-                |_| {
-                    AliasedType::array(
-                        AliasedType::alias(AliasName::from_str_unchecked("error")),
-                        0,
-                    )
-                },
+                |_| AliasedType::error(),
             )
             .labelled("array");
 
@@ -1113,18 +1108,13 @@ impl ChumskyParse for AliasedType {
                         })),
                     Token::LAngle,
                     Token::RAngle,
-                    |_| {
-                        (
-                            AliasedType::alias(AliasName::from_str_unchecked("error")),
-                            NonZeroPow2Usize::TWO,
-                        )
-                    },
+                    |_| (AliasedType::error(), NonZeroPow2Usize::TWO),
                 ))
                 .map(|(ty, size)| AliasedType::list(ty, size))
                 .labelled("List");
 
             choice((sum_type, option_type, tuple, array, list, atom))
-                .map_with(|inner, _| inner)
+                .map_with(|inner, e| inner.with_span(e.span()))
                 .labelled("type")
         })
     }
@@ -1200,7 +1190,7 @@ impl ChumskyParse for Function {
                     (Token::LParen, Token::RParen),
                     (Token::LBracket, Token::RBracket),
                 ],
-                Expression::empty,
+                Expression::error,
             )))
             .labelled("function body");
 
@@ -1437,7 +1427,8 @@ impl ChumskyParse for CallName {
             Token::Macro("dbg!") => CallName::Debug,
         };
 
-        let jet = select! { Token::Jet(s) => JetName::from_str_unchecked(s) }.map(CallName::Jet);
+        let jet = select! { Token::Jet(s) => s }
+            .map_with(|s, e| CallName::Jet(JetName::from_str_unchecked(s).with_span(e.span())));
 
         let custom_func = FunctionName::parser().map(CallName::Custom);
 
@@ -1493,7 +1484,7 @@ impl ChumskyParse for Expression {
                         (Token::RAngle, Token::RAngle),
                         (Token::LBracket, Token::RBracket),
                     ],
-                    |span| Expression::empty(span).inner().clone(),
+                    |span| Expression::error(span).inner().clone(),
                 );
 
                 let statements = statement
@@ -1591,9 +1582,15 @@ impl SingleExpression {
             Token::DecLiteral(s) => SingleExpressionInner::Decimal(s),
             Token::HexLiteral(s) => SingleExpressionInner::Hexadecimal(s),
             Token::BinLiteral(s) => SingleExpressionInner::Binary(s),
-            Token::Witness(s) => SingleExpressionInner::Witness(WitnessName::from_str_unchecked(s)),
-            Token::Param(s) => SingleExpressionInner::Parameter(WitnessName::from_str_unchecked(s)),
         };
+
+        let witness = select! { Token::Witness(s) => s}.map_with(|s, e| {
+            SingleExpressionInner::Witness(WitnessName::from_str_unchecked(s).with_span(e.span()))
+        });
+
+        let param = select! { Token::Param(s) => s}.map_with(|s, e| {
+            SingleExpressionInner::Parameter(WitnessName::from_str_unchecked(s).with_span(e.span()))
+        });
 
         let call = Call::parser(expr.clone()).map(SingleExpressionInner::Call);
 
@@ -1609,7 +1606,7 @@ impl SingleExpression {
 
         choice((
             left, right, some, none, boolean, match_expr, expression, list, array, tuple, call,
-            literal, variable,
+            literal, witness, param, variable,
         ))
         .map_with(|inner, e| Self {
             inner,
@@ -1738,7 +1735,7 @@ impl Match {
 
                         (p1, p2) => {
                             emit.emit(
-                                Error::IncompatibleMatchArms(p1.clone(), p2.clone())
+                                Error::IncompatibleMatchArms(p1.to_string(), p2.to_string())
                                     .with_span(e.span()),
                             );
                             (first, second)
@@ -1754,7 +1751,7 @@ impl Match {
                 }
                 _ => {
                     let match_arm_fallback = MatchArm {
-                        expression: Arc::new(Expression::empty(Span::new(0, 0))),
+                        expression: Arc::new(Expression::error(Span::new(0, 0))),
                         pattern: MatchPattern::False,
                     };
 
