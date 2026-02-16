@@ -2,8 +2,9 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::error::ErrorCollector;
-use crate::parse::{self, ParseFromStrWithErrors};
+use crate::error::{ErrorCollector, Span};
+use crate::parse::{self, ParseFromStrWithErrors, Visibility};
+use crate::str::Identifier;
 use crate::LibConfig;
 
 /// Represents a single, isolated file in the SimplicityHL project.
@@ -19,12 +20,21 @@ pub struct Module {
 pub struct ProjectGraph {
     /// Arena Pattern: the data itself lives here.
     /// A flat vector guarantees that module data is stored contiguously in memory.
-    pub modules: Vec<Module>,
+    pub(self) modules: Vec<Module>,
+
+    /// The configuration environment.
+    /// Used to resolve xternal library dependencies and invoke their associated functions.
+    pub config: Arc<LibConfig>,
 
     /// Fast lookup: File Path -> Module ID.
     /// A reverse index mapping absolute file paths to their internal IDs.
     /// This solves the duplication problem, ensuring each file is only parsed once.
     pub lookup: HashMap<PathBuf, usize>,
+
+    /// Fast lookup: Module ID -> File Path.
+    /// A direct index mapping internal IDs back to their absolute file paths.
+    /// This serves as the exact inverse of the `lookup` map.
+    pub paths: Vec<PathBuf>,
 
     /// The Adjacency List: Defines the Directed acyclic Graph (DAG) of imports.
     ///
@@ -34,6 +44,18 @@ pub struct ProjectGraph {
     /// Example: If `main.simf` (ID: 0) has `use lib::math;` (ID: 1) and `use lib::io;` (ID: 2),
     /// this map will contain: `{ 0: [1, 2] }`.
     pub dependencies: HashMap<usize, Vec<usize>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Resolution {
+    pub visibility: Visibility,
+}
+
+pub struct Program {
+    //pub graph: ProjectGraph,
+    pub items: Arc<[parse::Item]>,
+    pub scope_items: Vec<HashMap<Identifier, Resolution>>,
+    pub span: Span,
 }
 
 #[derive(Debug)]
@@ -55,15 +77,16 @@ fn parse_and_get_program(prog_file: &Path) -> Result<parse::Program, String> {
 }
 
 impl ProjectGraph {
-    pub fn new(lib_cfg: &LibConfig, root_program: &parse::Program) -> Result<Self, String> {
+    pub fn new(config: Arc<LibConfig>, root_program: &parse::Program) -> Result<Self, String> {
         let mut modules: Vec<Module> = vec![Module {
             parsed_program: root_program.clone(),
         }];
         let mut lookup: HashMap<PathBuf, usize> = HashMap::new();
+        let mut paths: Vec<PathBuf> = vec![config.root_path.clone()];
         let mut dependencies: HashMap<usize, Vec<usize>> = HashMap::new();
 
         let root_id = 0;
-        lookup.insert(lib_cfg.root_path.clone(), root_id);
+        lookup.insert(config.root_path.clone(), root_id);
         dependencies.insert(root_id, Vec::new());
 
         // Implementation of the standard BFS algorithm with memoization and queue
@@ -76,7 +99,7 @@ impl ProjectGraph {
 
             for elem in current_program.items() {
                 if let parse::Item::Use(use_decl) = elem {
-                    if let Ok(path) = lib_cfg.get_full_path(use_decl) {
+                    if let Ok(path) = config.get_full_path(use_decl) {
                         pending_imports.push(path);
                     }
                 }
@@ -101,6 +124,7 @@ impl ProjectGraph {
                     parsed_program: program,
                 });
                 lookup.insert(path.clone(), last_ind);
+                paths.push(path.clone());
                 dependencies.entry(curr_id).or_default().push(last_ind);
 
                 queue.push_back(last_ind);
@@ -109,7 +133,9 @@ impl ProjectGraph {
 
         Ok(Self {
             modules,
+            config,
             lookup,
+            paths,
             dependencies,
         })
     }
@@ -162,6 +188,117 @@ impl ProjectGraph {
         memo.insert(module, result.clone());
 
         Ok(result)
+    }
+
+    fn process_use_item(
+        scope_items: &mut [HashMap<Identifier, Resolution>],
+        file_id: usize,
+        ind: usize,
+        elem: &Identifier,
+        use_decl_visibility: Visibility,
+    ) -> Result<(), String> {
+        if matches!(
+            scope_items[ind][elem].visibility,
+            parse::Visibility::Private
+        ) {
+            return Err(format!(
+                "Function {} is private and cannot be used.",
+                elem.as_inner()
+            ));
+        }
+
+        scope_items[file_id].insert(
+            elem.clone(),
+            Resolution {
+                visibility: use_decl_visibility,
+            },
+        );
+
+        Ok(())
+    }
+
+    fn register_def(
+        items: &mut Vec<parse::Item>,
+        scope: &mut HashMap<Identifier, Resolution>,
+        item: &parse::Item,
+        name: Identifier,
+        vis: &parse::Visibility,
+    ) {
+        items.push(item.clone());
+        scope.insert(
+            name,
+            Resolution {
+                visibility: vis.clone(),
+            },
+        );
+    }
+
+    // TODO: @LesterEvSe, consider processing more than one error at a time
+    fn build_program(&self, order: &Vec<usize>) -> Result<Program, String> {
+        let mut items: Vec<parse::Item> = Vec::new();
+        let mut scope_items: Vec<HashMap<Identifier, Resolution>> =
+            vec![HashMap::new(); order.len()];
+
+        for &file_id in order {
+            let program_items = self.modules[file_id].parsed_program.items();
+
+            for elem in program_items {
+                match elem {
+                    parse::Item::Use(use_decl) => {
+                        let full_path = self.config.get_full_path(use_decl)?;
+                        let ind = self.lookup[&full_path];
+                        let visibility = use_decl.visibility();
+
+                        let use_targets = match use_decl.items() {
+                            parse::UseItems::Single(elem) => std::slice::from_ref(elem),
+                            parse::UseItems::List(elems) => elems.as_slice(),
+                        };
+
+                        for target in use_targets {
+                            ProjectGraph::process_use_item(
+                                &mut scope_items,
+                                file_id,
+                                ind,
+                                target,
+                                visibility.clone(),
+                            )?;
+                        }
+                    }
+                    parse::Item::TypeAlias(alias) => {
+                        Self::register_def(
+                            &mut items,
+                            &mut scope_items[file_id],
+                            elem,
+                            alias.name().clone().into(),
+                            alias.visibility(),
+                        );
+                    }
+                    parse::Item::Function(function) => {
+                        Self::register_def(
+                            &mut items,
+                            &mut scope_items[file_id],
+                            elem,
+                            function.name().clone().into(),
+                            function.visibility(),
+                        );
+                    }
+                    parse::Item::Module => {}
+                }
+            }
+        }
+
+        Ok(Program {
+            items: items.into(),
+            scope_items,
+            span: *self.modules[0].parsed_program.as_ref(),
+        })
+    }
+
+    pub fn resolve_complication_order(&self) -> Result<Program, String> {
+        // TODO: @LesterEvSe, resolve errors more appropriately
+        let mut order = self.c3_linearize().unwrap();
+        order.reverse();
+        self.build_program(&order)
     }
 }
 
@@ -226,6 +363,160 @@ mod tests {
         parse_and_get_program(path).expect("Root parsing failed")
     }
 
+    /// Initializes a graph environment for testing.
+    /// Returns:
+    /// 1. The constructed `ProjectGraph`.
+    /// 2. A `HashMap` mapping filenames (e.g., "A.simf") to their `FileID` (usize).
+    /// 3. The `TempDir` (to keep files alive during the test).
+    fn setup_graph(files: Vec<(&str, &str)>) -> (ProjectGraph, HashMap<String, usize>, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let mut lib_map = HashMap::new();
+
+        // Define the standard library path structure
+        let lib_path = temp_dir.path().join("libs/lib");
+        lib_map.insert("lib".to_string(), lib_path);
+
+        let mut root_path = None;
+
+        // Create all requested files
+        for (name, content) in files {
+            if name == "main.simf" {
+                root_path = Some(create_simf_file(temp_dir.path(), name, content));
+            } else {
+                // Names should be passed like "libs/lib/A.simf"
+                create_simf_file(temp_dir.path(), name, content);
+            }
+        }
+
+        let root_p = root_path.expect("main.simf must be defined in file list");
+        let root_program = parse_root(&root_p);
+
+        let config = Arc::from(LibConfig::new(lib_map, &root_p));
+        let graph = ProjectGraph::new(config, &root_program).expect("Failed to build graph");
+
+        // Create a lookup map for tests: "A.simf" -> FileID
+        let mut file_ids = HashMap::new();
+        for (path, id) in &graph.lookup {
+            let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+            file_ids.insert(file_name, *id);
+        }
+
+        (graph, file_ids, temp_dir)
+    }
+
+    #[test]
+    fn test_local_definitions_visibility() {
+        // Scenario:
+        // main.simf defines a private function and a public function.
+        // Expected: Both should appear in the scope with correct visibility.
+
+        let (graph, ids, _dir) = setup_graph(vec![(
+            "main.simf",
+            "fn private_fn() {} pub fn public_fn() {}",
+        )]);
+
+        let root_id = *ids.get("main").unwrap();
+        let order = vec![root_id]; // Only one file
+
+        let program = graph
+            .build_program(&order)
+            .expect("Failed to build program");
+        let scope = &program.scope_items[root_id];
+
+        // Check private function
+        let private_res = scope
+            .get(&Identifier::from("private_fn"))
+            .expect("private_fn missing");
+        assert_eq!(private_res.visibility, Visibility::Private);
+
+        // Check public function
+        let public_res = scope
+            .get(&Identifier::from("public_fn"))
+            .expect("public_fn missing");
+        assert_eq!(public_res.visibility, Visibility::Public);
+    }
+
+    #[test]
+    fn test_pub_use_propagation() {
+        // Scenario: Re-exporting.
+        // 1. A.simf defines `pub fn foo`.
+        // 2. B.simf imports it and re-exports it via `pub use`.
+        // 3. main.simf imports it from B.
+        // Expected: B's scope must contain `foo` marked as Public.
+
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn foo() {}"),
+            ("libs/lib/B.simf", "pub use lib::A::foo;"),
+            ("main.simf", "use lib::B::foo;"),
+        ]);
+
+        let id_a = *ids.get("A").unwrap();
+        let id_b = *ids.get("B").unwrap();
+        let id_root = *ids.get("main").unwrap();
+
+        // Manual topological order: A -> B -> Root
+        let order = vec![id_a, id_b, id_root];
+
+        let program = graph
+            .build_program(&order)
+            .expect("Failed to build program");
+
+        // Check B's scope
+        let scope_b = &program.scope_items[id_b];
+        let foo_in_b = scope_b
+            .get(&Identifier::from("foo"))
+            .expect("foo missing in B");
+
+        // This is the critical check: Did `pub use` make it Public in B?
+        assert_eq!(
+            foo_in_b.visibility,
+            Visibility::Public,
+            "B should re-export foo as Public"
+        );
+
+        // Check Root's scope
+        let scope_root = &program.scope_items[id_root];
+        let foo_in_root = scope_root
+            .get(&Identifier::from("foo"))
+            .expect("foo missing in Root");
+
+        // Root imported it via `use` (not pub use), so it should be Private in Root
+        assert_eq!(
+            foo_in_root.visibility,
+            Visibility::Private,
+            "Root should have foo as Private"
+        );
+    }
+
+    #[test]
+    fn test_private_import_encapsulation_error() {
+        // Scenario: Access violation.
+        // 1. A.simf defines `pub fn foo`.
+        // 2. B.simf imports it via `use` (Private import).
+        // 3. main.simf tries to import `foo` from B.
+        // Expected: Error, because B did not re-export foo.
+
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn foo() {}"),
+            ("libs/lib/B.simf", "use lib::A::foo;"), // <--- Private binding!
+            ("main.simf", "use lib::B::foo;"),       // <--- Should fail
+        ]);
+
+        let id_a = *ids.get("A").unwrap();
+        let id_b = *ids.get("B").unwrap();
+        let id_root = *ids.get("main").unwrap();
+
+        // Order: A -> B -> Root
+        let order = vec![id_a, id_b, id_root];
+
+        let result = graph.build_program(&order);
+
+        assert!(
+            result.is_err(),
+            "Build should fail when importing a private binding"
+        );
+    }
+
     #[test]
     fn test_simple_import() {
         // Setup:
@@ -242,10 +533,10 @@ mod tests {
 
         // Parse Root
         let root_program = parse_root(&root_path);
-        let config = LibConfig::new(lib_map, &root_path);
+        let config = Arc::from(LibConfig::new(lib_map, &root_path));
 
         // Run Logic
-        let graph = ProjectGraph::new(&config, &root_program).expect("Graph build failed");
+        let graph = ProjectGraph::new(config, &root_program).expect("Graph build failed");
 
         // Assertions
         assert_eq!(graph.modules.len(), 2, "Should have Root and Math module");
@@ -265,8 +556,8 @@ mod tests {
         lib_map.insert("std".to_string(), temp_dir.path().join("libs/std"));
 
         let root_program = parse_root(&root_path);
-        let config = LibConfig::new(lib_map, &root_path);
-        let graph = ProjectGraph::new(&config, &root_program).expect("Graph build failed");
+        let config = Arc::from(LibConfig::new(lib_map, &root_path));
+        let graph = ProjectGraph::new(config, &root_program).expect("Graph build failed");
 
         let order = graph.c3_linearize().expect("C3 failed");
 
@@ -303,8 +594,8 @@ mod tests {
         lib_map.insert("lib".to_string(), temp_dir.path().join("libs/lib"));
 
         let root_program = parse_root(&root_path);
-        let config = LibConfig::new(lib_map, &root_path);
-        let graph = ProjectGraph::new(&config, &root_program).expect("Graph build failed");
+        let config = Arc::from(LibConfig::new(lib_map, &root_path));
+        let graph = ProjectGraph::new(config, &root_program).expect("Graph build failed");
 
         // Assertions
         // Structure: Root(0), A(1), B(2), Common(3)
@@ -354,8 +645,8 @@ mod tests {
         lib_map.insert("lib".to_string(), temp_dir.path().join("libs/lib"));
 
         let root_program = parse_root(&root_path);
-        let config = LibConfig::new(lib_map, &root_path);
-        let graph = ProjectGraph::new(&config, &root_program).expect("Graph build failed");
+        let config = Arc::from(LibConfig::new(lib_map, &root_path));
+        let graph = ProjectGraph::new(config, &root_program).expect("Graph build failed");
 
         let order = graph.c3_linearize().expect("C3 failed");
 
@@ -385,11 +676,9 @@ mod tests {
         lib_map.insert("test".to_string(), temp_dir.path().join("libs/test"));
 
         let root_program = parse_root(&a_path);
-        let config = LibConfig::new(lib_map, &a_path);
-        let graph = ProjectGraph::new(&config, &root_program).expect("Graph build failed");
+        let config = Arc::from(LibConfig::new(lib_map, &a_path));
+        let graph = ProjectGraph::new(config, &root_program).expect("Graph build failed");
 
-        println!("Graph dependencies: {:?}", graph.dependencies);
-        println!("lookup: {:?}", graph.lookup);
         assert_eq!(graph.modules.len(), 2, "Should only have A and B");
 
         // A depends on B
@@ -421,8 +710,8 @@ mod tests {
         lib_map.insert("test".to_string(), temp_dir.path().join("libs/test"));
 
         let root_program = parse_root(&a_path);
-        let config = LibConfig::new(lib_map, &a_path);
-        let graph = ProjectGraph::new(&config, &root_program).expect("Graph build failed");
+        let config = Arc::from(LibConfig::new(lib_map, &a_path));
+        let graph = ProjectGraph::new(config, &root_program).expect("Graph build failed");
 
         let order = graph.c3_linearize().unwrap_err();
         matches!(order, C3Error::CycleDetected(_));
@@ -441,8 +730,8 @@ mod tests {
         lib_map.insert("std".to_string(), temp_dir.path().join("libs/std"));
 
         let root_program = parse_root(&root_path);
-        let config = LibConfig::new(lib_map, &root_path);
-        let result = ProjectGraph::new(&config, &root_program);
+        let config = Arc::from(LibConfig::new(lib_map, &root_path));
+        let result = ProjectGraph::new(config, &root_program);
 
         assert!(result.is_err(), "Should fail for missing file");
         let err_msg = result.err().unwrap();
@@ -465,9 +754,9 @@ mod tests {
         let lib_map = HashMap::new();
 
         let root_program = parse_root(&root_path);
-        let config = LibConfig::new(lib_map, &root_path);
+        let config = Arc::from(LibConfig::new(lib_map, &root_path));
         let graph =
-            ProjectGraph::new(&config, &root_program).expect("Should succeed but ignore import");
+            ProjectGraph::new(config, &root_program).expect("Should succeed but ignore import");
 
         assert_eq!(graph.modules.len(), 1, "Should only contain root");
         assert!(

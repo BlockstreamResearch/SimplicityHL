@@ -35,11 +35,12 @@ pub use simplicity::elements;
 use crate::debug::DebugSymbols;
 use crate::driver::ProjectGraph;
 use crate::error::{ErrorCollector, WithFile};
-use crate::parse::ParseFromStrWithErrors;
+use crate::parse::{ParseFromStrWithErrors, UseDecl};
 pub use crate::types::ResolvedType;
 pub use crate::value::Value;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 
+#[derive(Debug, Clone)]
 pub struct LibConfig {
     pub libraries: HashMap<String, PathBuf>,
     pub root_path: PathBuf,
@@ -55,7 +56,7 @@ impl LibConfig {
         }
     }
 
-    pub fn get_full_path(&self, use_decl: &parse::UseDecl) -> Result<PathBuf, String> {
+    pub fn get_full_path(&self, use_decl: &UseDecl) -> Result<PathBuf, String> {
         let parts: Vec<&str> = use_decl.path().iter().map(|s| s.as_ref()).collect();
         let first_segment = parts[0];
 
@@ -94,8 +95,13 @@ impl TemplateProgram {
         let parse_program = parse::Program::parse_from_str_with_errors(&file, &mut error_handler);
 
         if let Some(program) = parse_program {
-            let _ = if let Some(lib_cfg) = lib_cfg {
-                Some(ProjectGraph::new(lib_cfg, &program)?)
+            // TODO: Consider a proper resolution strategy later.
+            let _: Option<driver::Program> = if let Some(cfg) = lib_cfg {
+                let config_arc = Arc::new(cfg.clone());
+                let graph = ProjectGraph::new(config_arc, &program)?;
+
+                // TODO: Perhaps add an `error_handler` here, too.
+                Some(graph.resolve_complication_order()?)
             } else {
                 None
             };
