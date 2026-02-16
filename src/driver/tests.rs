@@ -20,7 +20,7 @@ fn create_simf_file(dir: &Path, rel_path: &str, content: &str) -> PathBuf {
 
 // Helper to mock the initial root program parsing
 fn parse_root(path: &Path) -> parse::Program {
-    parse_and_get_program(path).expect("Root parsing failed")
+    parse_and_get_program(path).unwrap()
 }
 
 /// Initializes a graph environment for testing.
@@ -51,8 +51,8 @@ fn setup_graph(files: Vec<(&str, &str)>) -> (ProjectGraph, HashMap<String, usize
     let root_p = root_path.expect("main.simf must be defined in file list");
     let root_program = parse_root(&root_p);
 
-    let config = LibConfig::new(lib_map, &root_p);
-    let graph = ProjectGraph::new(&config, &root_program).unwrap();
+    let config = Arc::from(LibConfig::new(lib_map, &root_p));
+    let graph = ProjectGraph::new(config, &root_program).unwrap();
 
     // Create a lookup map for tests: "A.simf" -> FileID
     let mut file_ids = HashMap::new();
@@ -87,7 +87,7 @@ mod graph_construction_and_dependency_resolution {
 
         assert!(
             graph.dependencies[&root_id].contains(&math_id),
-            "Root (main.simf) should depend on Math (main.simf)"
+            "Root (main.simf) should depend on Math (math.simf)"
         );
     }
 
@@ -231,6 +231,124 @@ mod c3_linearization {
 }
 
 #[cfg(test)]
+mod visibility_and_access_control {
+    use super::*;
+
+    #[test]
+    fn test_local_definitions_visibility() {
+        // Scenario:
+        // main.simf defines a private function and a public function.
+        // Expected: Both should appear in the scope with correct visibility.
+
+        let (graph, ids, _dir) = setup_graph(vec![(
+            "main.simf",
+            "fn private_fn() {} pub fn public_fn() {}",
+        )]);
+
+        let root_id = ids["main"];
+        let order = vec![root_id]; // Only one file
+
+        let program = graph
+            .build_program(&order)
+            .expect("Failed to build program");
+        let scope = &program.scope_items[root_id];
+
+        // Check private function
+        let private_res = scope
+            .get(&Identifier::from("private_fn"))
+            .expect("private_fn missing");
+        assert_eq!(private_res.visibility, Visibility::Private);
+
+        // Check public function
+        let public_res = scope
+            .get(&Identifier::from("public_fn"))
+            .expect("public_fn missing");
+        assert_eq!(public_res.visibility, Visibility::Public);
+    }
+
+    #[test]
+    fn test_pub_use_propagation() {
+        // Scenario: Re-exporting.
+        // 1. A.simf defines `pub fn foo`.
+        // 2. B.simf imports it and re-exports it via `pub use`.
+        // 3. main.simf imports it from B.
+        // Expected: B's scope must contain `foo` marked as Public.
+
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn foo() {}"),
+            ("libs/lib/B.simf", "pub use lib::A::foo;"),
+            ("main.simf", "use lib::B::foo;"),
+        ]);
+
+        let id_a = ids["A"];
+        let id_b = ids["B"];
+        let id_root = ids["main"];
+
+        // Manual topological order: A -> B -> Root
+        let order = vec![id_a, id_b, id_root];
+
+        let program = graph
+            .build_program(&order)
+            .expect("Failed to build program");
+
+        // Check B's scope
+        let scope_b = &program.scope_items[id_b];
+        let foo_in_b = scope_b
+            .get(&Identifier::from("foo"))
+            .expect("foo missing in B");
+
+        // This is the critical check: Did `pub use` make it Public in B?
+        assert_eq!(
+            foo_in_b.visibility,
+            Visibility::Public,
+            "B should re-export foo as Public"
+        );
+
+        // Check Root's scope
+        let scope_root = &program.scope_items[id_root];
+        let foo_in_root = scope_root
+            .get(&Identifier::from("foo"))
+            .expect("foo missing in Root");
+
+        // Root imported it via `use` (not pub use), so it should be Private in Root
+        assert_eq!(
+            foo_in_root.visibility,
+            Visibility::Private,
+            "Root should have foo as Private"
+        );
+    }
+
+    #[test]
+    fn test_private_import_encapsulation_error() {
+        // Scenario: Access violation.
+        // 1. A.simf defines `pub fn foo`.
+        // 2. B.simf imports it via `use` (Private import).
+        // 3. main.simf tries to import `foo` from B.
+        // Expected: Error, because B did not re-export foo.
+
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn foo() {}"),
+            ("libs/lib/B.simf", "use lib::A::foo;"), // <--- Private binding!
+            ("main.simf", "use lib::B::foo;"),       // <--- Should fail
+        ]);
+
+        let id_a = ids["A"];
+        let id_b = ids["B"];
+        let id_root = ids["main"];
+
+        // Order: A -> B -> Root
+        let order = vec![id_a, id_b, id_root];
+
+        let result = graph.build_program(&order);
+
+        assert!(
+            result.is_err(),
+            "Build should fail when importing a private binding"
+        );
+    }
+}
+
+#[cfg(test)]
 mod error_diganostic_and_terminal_formatting {
     use super::*;
 
@@ -247,8 +365,8 @@ mod error_diganostic_and_terminal_formatting {
         lib_map.insert("std".to_string(), temp_dir.path().join("libs/std"));
 
         let root_program = parse_root(&root_path);
-        let config = LibConfig::new(lib_map, &root_path);
-        let result = ProjectGraph::new(&config, &root_program);
+        let config = Arc::from(LibConfig::new(lib_map, &root_path));
+        let result = ProjectGraph::new(config, &root_program);
 
         assert!(result.is_err(), "Should fail for missing file");
         let err_msg = result.err().unwrap();

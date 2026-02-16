@@ -5,9 +5,10 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::error::ErrorCollector;
-use crate::parse::{self, ParseFromStrWithErrors};
+use crate::error::{ErrorCollector, Span};
+use crate::parse::{self, ParseFromStrWithErrors, Visibility};
 use crate::resolution::LibConfig;
+use crate::str::Identifier;
 
 /// Represents a single, isolated file in the SimplicityHL project.
 /// In this architecture, a file and a module are the exact same thing.
@@ -22,12 +23,21 @@ pub struct Module {
 pub struct ProjectGraph {
     /// Arena Pattern: the data itself lives here.
     /// A flat vector guarantees that module data is stored contiguously in memory.
-    pub modules: Vec<Module>,
+    pub(self) modules: Vec<Module>,
+
+    /// The configuration environment.
+    /// Used to resolve xternal library dependencies and invoke their associated functions.
+    pub config: Arc<LibConfig>,
 
     /// Fast lookup: File Path -> Module ID.
     /// A reverse index mapping absolute file paths to their internal IDs.
     /// This solves the duplication problem, ensuring each file is only parsed once.
     pub lookup: HashMap<PathBuf, usize>,
+
+    /// Fast lookup: Module ID -> File Path.
+    /// A direct index mapping internal IDs back to their absolute file paths.
+    /// This serves as the exact inverse of the `lookup` map.
+    pub paths: Vec<PathBuf>,
 
     /// The Adjacency List: Defines the Directed acyclic Graph (DAG) of imports.
     ///
@@ -37,6 +47,18 @@ pub struct ProjectGraph {
     /// Example: If `main.simf` (ID: 0) has `use lib::math;` (ID: 1) and `use lib::io;` (ID: 2),
     /// this map will contain: `{ 0: [1, 2] }`.
     pub dependencies: HashMap<usize, Vec<usize>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Resolution {
+    pub visibility: Visibility,
+}
+
+pub struct Program {
+    //pub graph: ProjectGraph,
+    pub items: Arc<[parse::Item]>,
+    pub scope_items: Vec<HashMap<Identifier, Resolution>>,
+    pub span: Span,
 }
 
 #[derive(Debug)]
@@ -91,15 +113,16 @@ fn merge(mut seqs: Vec<Vec<usize>>) -> Option<Vec<usize>> {
 }
 
 impl ProjectGraph {
-    pub fn new(lib_cfg: &LibConfig, root_program: &parse::Program) -> Result<Self, String> {
+    pub fn new(config: Arc<LibConfig>, root_program: &parse::Program) -> Result<Self, String> {
         let mut modules: Vec<Module> = vec![Module {
             parsed_program: root_program.clone(),
         }];
         let mut lookup: HashMap<PathBuf, usize> = HashMap::new();
+        let mut paths: Vec<PathBuf> = vec![config.root_path.clone()];
         let mut dependencies: HashMap<usize, Vec<usize>> = HashMap::new();
 
         let root_id = 0;
-        lookup.insert(lib_cfg.root_path.clone(), root_id);
+        lookup.insert(config.root_path.clone(), root_id);
         dependencies.insert(root_id, Vec::new());
 
         // Implementation of the standard BFS algorithm with memoization and queue
@@ -112,7 +135,7 @@ impl ProjectGraph {
 
             for elem in current_program.items() {
                 if let parse::Item::Use(use_decl) = elem {
-                    if let Ok(path) = lib_cfg.get_full_path(use_decl) {
+                    if let Ok(path) = config.get_full_path(use_decl) {
                         pending_imports.push(path);
                     }
                 }
@@ -140,6 +163,7 @@ impl ProjectGraph {
                     parsed_program: program,
                 });
                 lookup.insert(path.clone(), last_ind);
+                paths.push(path.clone());
                 dependencies.entry(curr_id).or_default().push(last_ind);
 
                 queue.push_back(last_ind);
@@ -148,7 +172,9 @@ impl ProjectGraph {
 
         Ok(Self {
             modules,
+            config,
             lookup,
+            paths,
             dependencies,
         })
     }
@@ -211,5 +237,116 @@ impl ProjectGraph {
         memo.insert(module, result.clone());
 
         Ok(result)
+    }
+
+    fn process_use_item(
+        scope_items: &mut [HashMap<Identifier, Resolution>],
+        file_id: usize,
+        ind: usize,
+        elem: &Identifier,
+        use_decl_visibility: Visibility,
+    ) -> Result<(), String> {
+        if matches!(
+            scope_items[ind][elem].visibility,
+            parse::Visibility::Private
+        ) {
+            return Err(format!(
+                "Function {} is private and cannot be used.",
+                elem.as_inner()
+            ));
+        }
+
+        scope_items[file_id].insert(
+            elem.clone(),
+            Resolution {
+                visibility: use_decl_visibility,
+            },
+        );
+
+        Ok(())
+    }
+
+    fn register_def(
+        items: &mut Vec<parse::Item>,
+        scope: &mut HashMap<Identifier, Resolution>,
+        item: &parse::Item,
+        name: Identifier,
+        vis: &parse::Visibility,
+    ) {
+        items.push(item.clone());
+        scope.insert(
+            name,
+            Resolution {
+                visibility: vis.clone(),
+            },
+        );
+    }
+
+    // TODO: @LesterEvSe, consider processing more than one error at a time
+    fn build_program(&self, order: &Vec<usize>) -> Result<Program, String> {
+        let mut items: Vec<parse::Item> = Vec::new();
+        let mut scope_items: Vec<HashMap<Identifier, Resolution>> =
+            vec![HashMap::new(); order.len()];
+
+        for &file_id in order {
+            let program_items = self.modules[file_id].parsed_program.items();
+
+            for elem in program_items {
+                match elem {
+                    parse::Item::Use(use_decl) => {
+                        let full_path = self.config.get_full_path(use_decl)?;
+                        let ind = self.lookup[&full_path];
+                        let visibility = use_decl.visibility();
+
+                        let use_targets = match use_decl.items() {
+                            parse::UseItems::Single(elem) => std::slice::from_ref(elem),
+                            parse::UseItems::List(elems) => elems.as_slice(),
+                        };
+
+                        for target in use_targets {
+                            ProjectGraph::process_use_item(
+                                &mut scope_items,
+                                file_id,
+                                ind,
+                                target,
+                                visibility.clone(),
+                            )?;
+                        }
+                    }
+                    parse::Item::TypeAlias(alias) => {
+                        Self::register_def(
+                            &mut items,
+                            &mut scope_items[file_id],
+                            elem,
+                            alias.name().clone().into(),
+                            alias.visibility(),
+                        );
+                    }
+                    parse::Item::Function(function) => {
+                        Self::register_def(
+                            &mut items,
+                            &mut scope_items[file_id],
+                            elem,
+                            function.name().clone().into(),
+                            function.visibility(),
+                        );
+                    }
+                    parse::Item::Module => {}
+                }
+            }
+        }
+
+        Ok(Program {
+            items: items.into(),
+            scope_items,
+            span: *self.modules[0].parsed_program.as_ref(),
+        })
+    }
+
+    pub fn resolve_complication_order(&self) -> Result<Program, String> {
+        // TODO: @LesterEvSe, resolve errors more appropriately
+        let mut order = self.c3_linearize().unwrap();
+        order.reverse();
+        self.build_program(&order)
     }
 }

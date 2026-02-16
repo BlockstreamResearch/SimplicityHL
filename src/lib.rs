@@ -59,8 +59,13 @@ impl TemplateProgram {
         let parse_program = parse::Program::parse_from_str_with_errors(&file, &mut error_handler);
 
         if let Some(program) = parse_program {
-            let _ = if let Some(lib_cfg) = lib_cfg {
-                Some(ProjectGraph::new(lib_cfg, &program)?)
+            // TODO: Consider a proper resolution strategy later.
+            let _: Option<driver::Program> = if let Some(cfg) = lib_cfg {
+                let config_arc = Arc::new(cfg.clone());
+                let graph = ProjectGraph::new(config_arc, &program)?;
+
+                // TODO: Perhaps add an `error_handler` here, too.
+                Some(graph.resolve_complication_order()?)
             } else {
                 None
             };
