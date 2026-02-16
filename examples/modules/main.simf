@@ -1,4 +1,4 @@
-pub use temp::get_five::get_five;
+pub use temp::funcs::get_five;
 
 fn seven() -> u32 {
     7

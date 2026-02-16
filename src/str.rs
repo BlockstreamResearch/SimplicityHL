@@ -115,6 +115,25 @@ impl<'a> arbitrary::Arbitrary<'a> for FunctionName {
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Identifier(Arc<str>);
 
+impl From<AliasName> for Identifier {
+    fn from(alias: AliasName) -> Self {
+        // We move the inner Arc, so this is cheap
+        Self(alias.0)
+    }
+}
+
+impl From<FunctionName> for Identifier {
+    fn from(func: FunctionName) -> Self {
+        Self(func.0)
+    }
+}
+
+impl From<&str> for Identifier {
+    fn from(s: &str) -> Self {
+        Self(Arc::from(s))
+    }
+}
+
 impl AsRef<str> for Identifier {
     fn as_ref(&self) -> &str {
         &self.0

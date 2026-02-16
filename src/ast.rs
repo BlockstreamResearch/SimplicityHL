@@ -11,7 +11,7 @@ use simplicity::jet::Elements;
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
 use crate::error::{Error, RichError, Span, WithSpan};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
-use crate::parse::{MatchPattern, UseDecl};
+use crate::parse::{MatchPattern, UseDecl, Visibility};
 use crate::pattern::Pattern;
 use crate::str::{AliasName, FunctionName, Identifier, ModuleName, WitnessName};
 use crate::types::{
@@ -307,6 +307,7 @@ pub enum CallName {
 /// Definition of a custom function.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct CustomFunction {
+    visibility: Visibility,
     params: Arc<[FunctionParam]>,
     body: Arc<Expression>,
 }
@@ -780,6 +781,7 @@ impl AbstractSyntaxTree for Function {
         assert!(scope.is_topmost(), "Items live in the topmost scope only");
 
         if from.name().as_inner() != "main" {
+            let visibility = from.visibility().clone();
             let params = from
                 .params()
                 .iter()
@@ -803,7 +805,11 @@ impl AbstractSyntaxTree for Function {
             let body = Expression::analyze(from.body(), &ret, scope).map(Arc::new)?;
             scope.pop_scope();
             debug_assert!(scope.is_topmost());
-            let function = CustomFunction { params, body };
+            let function = CustomFunction {
+                visibility,
+                params,
+                body,
+            };
             scope
                 .insert_function(from.name().clone(), function)
                 .with_span(from)?;

@@ -79,6 +79,10 @@ impl UseDecl {
         &self.path
     }
 
+    pub fn path_buf(&self) -> std::path::PathBuf {
+        self.path().iter().map(|s| s.as_ref()).collect()
+    }
+
     /// Access the visibility of the function.
     pub fn items(&self) -> &UseItems {
         &self.items
