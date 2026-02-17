@@ -17,21 +17,37 @@ pub enum Token<'src> {
     Mod,
     Const,
     Match,
+    If,
+    Else,
 
     // Control symbols
+    /// `->`
     Arrow,
+    /// `:`
     Colon,
+    /// `;`
     Semi,
+    /// `,`
     Comma,
+    /// `=`
     Eq,
+    /// `=>`
     FatArrow,
+    /// `(`
     LParen,
+    /// `)`
     RParen,
+    /// `[`
     LBracket,
+    /// `]`
     RBracket,
+    /// `{`
     LBrace,
+    /// `}`
     RBrace,
+    /// `<`
     LAngle,
+    /// `>`
     RAngle,
 
     // Number literals
@@ -69,6 +85,8 @@ impl<'src> fmt::Display for Token<'src> {
             Token::Mod => write!(f, "mod"),
             Token::Const => write!(f, "const"),
             Token::Match => write!(f, "match"),
+            Token::If => write!(f, "if"),
+            Token::Else => write!(f, "else"),
 
             Token::Arrow => write!(f, "->"),
             Token::Colon => write!(f, ":"),
@@ -140,6 +158,8 @@ pub fn lexer<'src>(
         "mod" => Token::Mod,
         "const" => Token::Const,
         "match" => Token::Match,
+        "if" => Token::If,
+        "else" => Token::Else,
         "true" => Token::Bool(true),
         "false" => Token::Bool(false),
         _ => Token::Ident(s),
@@ -249,6 +269,88 @@ mod tests {
         let (tokens, errors) = lexer().parse(input).into_output_errors();
         let tokens = tokens.map(|vec| vec.iter().map(|(tok, _)| tok.clone()).collect::<Vec<_>>());
         (tokens, errors)
+    }
+
+    /// Helper function to get the variant name of a token
+    fn variant_name(token: &Token) -> &'static str {
+        match token {
+            Token::Fn => "Fn",
+            Token::Let => "Let",
+            Token::Type => "Type",
+            Token::Mod => "Mod",
+            Token::Const => "Const",
+            Token::Match => "Match",
+            Token::If => "If",
+            Token::Else => "Else",
+            Token::Arrow => "Arrow",
+            Token::Colon => "Colon",
+            Token::Semi => "Semi",
+            Token::Comma => "Comma",
+            Token::Eq => "Eq",
+            Token::FatArrow => "FatArrow",
+            Token::LParen => "LParen",
+            Token::RParen => "RParen",
+            Token::LBracket => "LBracket",
+            Token::RBracket => "RBracket",
+            Token::LBrace => "LBrace",
+            Token::RBrace => "RBrace",
+            Token::LAngle => "LAngle",
+            Token::RAngle => "RAngle",
+            Token::DecLiteral(_) => "DecLiteral",
+            Token::HexLiteral(_) => "HexLiteral",
+            Token::BinLiteral(_) => "BinLiteral",
+            Token::Bool(_) => "Bool",
+            Token::Ident(_) => "Ident",
+            Token::Jet(_) => "Jet",
+            Token::Witness(_) => "Witness",
+            Token::Param(_) => "Param",
+            Token::Macro(_) => "Macro",
+            Token::Comment => "Comment",
+            Token::BlockComment => "BlockComment",
+        }
+    }
+
+    /// Macro to assert that a sequence of tokens matches the expected variant types
+    macro_rules! assert_tokens_match {
+        ($tokens:expr, $($expected:ident),* $(,)?) => {
+            {
+                let tokens = $tokens.as_ref().expect("Expected Some tokens");
+                let expected_variants = vec![$( stringify!($expected) ),*];
+
+                assert_eq!(
+                    tokens.len(),
+                    expected_variants.len(),
+                    "Expected {} tokens, got {}.\nTokens: {:?}",
+                    expected_variants.len(),
+                    tokens.len(),
+                    tokens
+                );
+
+                for (idx, (token, expected_variant)) in tokens.iter().zip(expected_variants.iter()).enumerate() {
+                    let actual_variant = variant_name(token);
+                    assert_eq!(
+                        actual_variant,
+                        *expected_variant,
+                        "Token at index {} does not match: expected {}, got {} (token: {:?})",
+                        idx,
+                        expected_variant,
+                        actual_variant,
+                        token
+                    );
+                }
+            }
+        };
+    }
+
+    #[test]
+    fn test_if_statement() {
+        let input = "if true {0} else {1};";
+        let (tokens, errors) = lex(input);
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+
+        assert_tokens_match!(
+            tokens, If, Bool, LBrace, DecLiteral, RBrace, Else, LBrace, DecLiteral, RBrace, Semi,
+        );
     }
 
     #[test]
