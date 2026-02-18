@@ -775,6 +775,7 @@ impl Value {
                         }
                     }
                 }
+                TypeInner::Error => return None,
             }
         }
         debug_assert_eq!(output.len(), 1);
@@ -836,6 +837,7 @@ impl crate::ArbitraryOfType for Value {
                     .collect::<arbitrary::Result<Vec<Self>>>()?;
                 Ok(Self::list(elements, ty.as_ref().clone(), *bound))
             }
+            TypeInner::Error => Self::arbitrary_of_type(u, &ResolvedType::error()),
         }
     }
 }
@@ -1159,6 +1161,7 @@ impl TreeLike for Destructor<'_> {
                 ),
                 None => Tree::Unary(Self::WrongType),
             },
+            TypeInner::Error => Tree::Nullary,
         }
     }
 }

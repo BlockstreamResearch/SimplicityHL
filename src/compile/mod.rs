@@ -294,6 +294,10 @@ impl Expression {
                 res
             }
             ExpressionInner::Single(e) => e.compile(scope),
+            ExpressionInner::Error => Err(Error::CannotCompile(
+                "Compiled from poisoned tree".to_string(),
+            )
+            .with_span(*self.as_ref())),
         }
     }
 }

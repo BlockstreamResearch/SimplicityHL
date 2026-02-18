@@ -27,6 +27,8 @@ pub enum TypeInner<A> {
     Array(A, usize),
     /// List of the same type
     List(A, NonZeroPow2Usize),
+    /// Error type
+    Error,
 }
 
 impl<A> TypeInner<A> {
@@ -85,6 +87,7 @@ impl<A> TypeInner<A> {
                     write!(f, ", {bound}>")
                 }
             },
+            TypeInner::Error => write!(f, "ERROR"),
         }
     }
 }
@@ -324,6 +327,14 @@ impl ResolvedType {
     pub fn as_inner(&self) -> &TypeInner<Arc<Self>> {
         &self.0
     }
+
+    pub const fn error() -> Self {
+        Self(TypeInner::Error)
+    }
+
+    pub fn is_error(&self) -> bool {
+        matches!(self.as_inner(), TypeInner::Error)
+    }
 }
 
 impl TypeConstructible for ResolvedType {
@@ -409,6 +420,7 @@ impl TreeLike for &ResolvedType {
             TypeInner::Option(l) | TypeInner::Array(l, _) | TypeInner::List(l, _) => Tree::Unary(l),
             TypeInner::Either(l, r) => Tree::Binary(l, r),
             TypeInner::Tuple(elements) => Tree::Nary(elements.iter().map(Arc::as_ref).collect()),
+            TypeInner::Error => Tree::Nullary,
         }
     }
 }
@@ -548,6 +560,10 @@ impl AliasedType {
         }
     }
 
+    pub fn error() -> Self {
+        Self(AliasedInner::Inner(TypeInner::Error))
+    }
+
     /// Create a type alias from the given `identifier`.
     pub const fn alias(name: AliasName) -> Self {
         Self(AliasedInner::Alias(name))
@@ -600,6 +616,7 @@ impl AliasedType {
                         let element = output.pop().unwrap();
                         output.push(ResolvedType::list(element, *bound));
                     }
+                    TypeInner::Error => return Ok(ResolvedType::error()),
                 },
             }
         }
@@ -711,6 +728,7 @@ impl TreeLike for &AliasedType {
                 TypeInner::Tuple(elements) => {
                     Tree::Nary(elements.iter().map(Arc::as_ref).collect())
                 }
+                TypeInner::Error => Tree::Nullary,
             },
         }
     }
@@ -1004,6 +1022,9 @@ impl From<&ResolvedType> for StructuralType {
                     let element = output.pop().unwrap();
                     output.push(StructuralType::list(element, *bound));
                 }
+                // Not sure what to put here, but it should not be unreachable in correctly builded
+                // AST.
+                TypeInner::Error => output.push(StructuralType::unit()),
             }
         }
         debug_assert_eq!(output.len(), 1);

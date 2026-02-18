@@ -9,7 +9,7 @@ use miniscript::iter::{Tree, TreeLike};
 use simplicity::jet::Elements;
 
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
-use crate::error::{Error, RichError, Span, WithSpan};
+use crate::error::{Error, ErrorCollector, RichError, Span, WithSpan};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::parse::MatchPattern;
 use crate::pattern::Pattern;
@@ -160,6 +160,14 @@ impl Expression {
     pub fn span(&self) -> &Span {
         &self.span
     }
+
+    pub fn error(span: Span) -> Self {
+        Self {
+            inner: ExpressionInner::Error,
+            ty: ResolvedType::error(),
+            span,
+        }
+    }
 }
 
 /// Variant of an expression.
@@ -171,6 +179,9 @@ pub enum ExpressionInner {
     /// Then, the block returns the value of its final expression.
     /// The block returns nothing (unit) if there is no final expression.
     Block(Arc<[Statement]>, Option<Arc<Expression>>),
+    /// An error expression state, which indicates that parser didn't recognize this expression or
+    /// analyzer failed to analyze this expression.
+    Error,
 }
 
 /// A single expression directly returns its value.
@@ -474,6 +485,7 @@ impl TreeLike for ExprTree<'_> {
                     Tree::Unary(Self::Block(statements, maybe_expr))
                 }
                 ExpressionInner::Single(single) => Tree::Unary(Self::Single(single)),
+                ExpressionInner::Error => Tree::Nullary,
             },
             Self::Block(statements, maybe_expr) => Tree::Nary(
                 statements
@@ -529,6 +541,7 @@ struct Scope {
     functions: HashMap<FunctionName, CustomFunction>,
     is_main: bool,
     call_tracker: CallTracker,
+    errors: Vec<RichError>,
 }
 
 impl Scope {
@@ -663,11 +676,13 @@ impl Scope {
     /// 1. The map of parameter types.
     /// 2. The map of witness types.
     /// 3. The function call tracker.
-    pub fn destruct(self) -> (Parameters, WitnessTypes, CallTracker) {
+    /// 4. Collected errors.
+    pub fn destruct(self) -> (Parameters, WitnessTypes, CallTracker, Vec<RichError>) {
         (
             Parameters::from(self.parameters),
             WitnessTypes::from(self.witnesses),
             self.call_tracker,
+            self.errors,
         )
     }
 
@@ -699,6 +714,42 @@ impl Scope {
     pub fn track_call<S: AsRef<Span>>(&mut self, span: &S, name: TrackedCallName) {
         self.call_tracker.track_call(*span.as_ref(), name);
     }
+
+    /// Push an error into vector of errors.
+    pub fn push_error(&mut self, err: RichError) {
+        self.errors.push(err);
+    }
+}
+
+/// Helper trait to report errors.
+trait ScopeReport<T> {
+    /// Update the scope with error and return an `Option`.
+    fn report(self, scope: &mut Scope) -> Option<T>;
+
+    /// Update the scope with error and return `T`, either original or fallback.
+    fn report_and_fallback(self, scope: &mut Scope, fallback: T) -> T;
+}
+
+impl<T, E: Into<RichError>> ScopeReport<T> for Result<T, E> {
+    fn report(self, scope: &mut Scope) -> Option<T> {
+        match self {
+            Ok(t) => Some(t),
+            Err(err) => {
+                scope.push_error(err.into());
+                None
+            }
+        }
+    }
+
+    fn report_and_fallback(self, scope: &mut Scope, fallback: T) -> T {
+        match self {
+            Ok(ty) => ty,
+            Err(err) => {
+                scope.push_error(err.into());
+                fallback
+            }
+        }
+    }
 }
 
 /// Part of the abstract syntax tree that can be generated from a precursor in the parse tree.
@@ -715,25 +766,42 @@ trait AbstractSyntaxTree: Sized {
 }
 
 impl Program {
-    pub fn analyze(from: &parse::Program) -> Result<Self, RichError> {
+    pub fn analyze(from: &parse::Program, error_collector: &mut ErrorCollector) -> Option<Self> {
         let unit = ResolvedType::unit();
         let mut scope = Scope::default();
         let items = from
             .items()
             .iter()
-            .map(|s| Item::analyze(s, &unit, &mut scope))
-            .collect::<Result<Vec<Item>, RichError>>()?;
+            .filter_map(|s| {
+                Item::analyze(s, &unit, &mut scope)
+                    .map(Some)
+                    .report_and_fallback(&mut scope, None)
+            })
+            .collect::<Vec<Item>>();
         debug_assert!(scope.is_topmost());
-        let (parameters, witness_types, call_tracker) = scope.destruct();
+        let (parameters, witness_types, call_tracker, mut errors) = scope.destruct();
         let mut iter = items.into_iter().filter_map(|item| match item {
             Item::Function(Function::Main(expr)) => Some(expr),
             _ => None,
         });
-        let main = iter.next().ok_or(Error::MainRequired).with_span(from)?;
+        let main = match iter.next() {
+            Some(expr) => expr,
+            None => {
+                errors.push(Error::MainRequired.with_span(*from.as_ref()));
+                Expression::error(*from.as_ref())
+            }
+        };
+
         if iter.next().is_some() {
-            return Err(Error::FunctionRedefined(FunctionName::main())).with_span(from);
+            errors.push(Error::FunctionRedefined(FunctionName::main()).with_span(*from.as_ref()));
         }
-        Ok(Self {
+
+        if !errors.is_empty() {
+            error_collector.update(errors);
+            return None;
+        }
+
+        Some(Self {
             main,
             parameters,
             witness_types,
@@ -753,7 +821,8 @@ impl AbstractSyntaxTree for Item {
             parse::Item::TypeAlias(alias) => {
                 scope
                     .insert_alias(alias.name().clone(), alias.ty().clone())
-                    .with_span(alias)?;
+                    .with_span(alias)
+                    .report(scope);
                 Ok(Self::TypeAlias)
             }
             parse::Item::Function(function) => {
@@ -777,39 +846,48 @@ impl AbstractSyntaxTree for Function {
                 .iter()
                 .map(|param| {
                     let identifier = param.identifier().clone();
-                    let ty = scope.resolve(param.ty())?;
-                    Ok(FunctionParam { identifier, ty })
+                    let ty = scope
+                        .resolve(param.ty())
+                        .with_span(from)
+                        .report_and_fallback(scope, ResolvedType::error());
+                    FunctionParam { identifier, ty }
                 })
-                .collect::<Result<Arc<[FunctionParam]>, Error>>()
-                .with_span(from)?;
-            let ret = from
-                .ret()
-                .as_ref()
-                .map(|aliased| scope.resolve(aliased).with_span(from))
-                .transpose()?
-                .unwrap_or_else(ResolvedType::unit);
+                .collect::<Arc<[FunctionParam]>>();
+            let ret = from.ret().as_ref().map_or(ResolvedType::unit(), |aliased| {
+                scope
+                    .resolve(aliased)
+                    .with_span(from)
+                    .report_and_fallback(scope, ResolvedType::error())
+            });
             scope.push_scope();
             for param in params.iter() {
                 scope.insert_variable(param.identifier().clone(), param.ty().clone());
             }
-            let body = Expression::analyze(from.body(), &ret, scope).map(Arc::new)?;
+            let body = Arc::new(
+                Expression::analyze(from.body(), &ret, scope)
+                    .report_and_fallback(scope, Expression::error(*from.as_ref())),
+            );
             scope.pop_scope();
             debug_assert!(scope.is_topmost());
             let function = CustomFunction { params, body };
             scope
                 .insert_function(from.name().clone(), function)
-                .with_span(from)?;
+                .with_span(from)
+                .report(scope);
 
             return Ok(Self::Custom);
         }
 
         if !from.params().is_empty() {
-            return Err(Error::MainNoInputs).with_span(from);
+            scope.push_error((Error::MainNoInputs).with_span(*from.as_ref()));
         }
         if let Some(aliased) = from.ret() {
-            let resolved = scope.resolve(aliased).with_span(from)?;
+            let resolved = scope
+                .resolve(aliased)
+                .with_span(from)
+                .report_and_fallback(scope, ResolvedType::error());
             if !resolved.is_unit() {
-                return Err(Error::MainNoOutput).with_span(from);
+                scope.push_error((Error::MainNoOutput).with_span(*from.as_ref()));
             }
         }
 
@@ -879,32 +957,44 @@ impl AbstractSyntaxTree for Expression {
     type From = parse::Expression;
 
     fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+        if ty.is_error() {
+            return Ok(Self::error(*from.as_ref()));
+        }
+
         match from.inner() {
             parse::ExpressionInner::Single(single) => {
-                let ast_single = SingleExpression::analyze(single, ty, scope)?;
-                Ok(Self {
-                    ty: ty.clone(),
-                    inner: ExpressionInner::Single(ast_single),
-                    span: *from.as_ref(),
-                })
+                if let Some(ast_single) = SingleExpression::analyze(single, ty, scope).report(scope)
+                {
+                    Ok(Self {
+                        ty: ty.clone(),
+                        inner: ExpressionInner::Single(ast_single),
+                        span: *from.as_ref(),
+                    })
+                } else {
+                    Ok(Self::error(*from.as_ref()))
+                }
             }
             parse::ExpressionInner::Block(statements, expression) => {
                 scope.push_scope();
                 let ast_statements = statements
                     .iter()
-                    .map(|s| Statement::analyze(s, &ResolvedType::unit(), scope))
-                    .collect::<Result<Arc<[Statement]>, RichError>>()?;
+                    .filter_map(|s| {
+                        Statement::analyze(s, &ResolvedType::unit(), scope).report(scope)
+                    })
+                    .collect::<Arc<[Statement]>>();
                 let ast_expression = match expression {
-                    Some(expression) => Expression::analyze(expression, ty, scope)
-                        .map(Arc::new)
-                        .map(Some),
+                    Some(expression) => Ok(Expression::analyze(expression, ty, scope)
+                        .report(scope)
+                        .map(Arc::new)),
                     None if ty.is_unit() => Ok(None),
                     None => Err(Error::ExpressionTypeMismatch(
                         ty.clone(),
                         ResolvedType::unit(),
                     ))
                     .with_span(from),
-                }?;
+                }
+                .report_and_fallback(scope, None);
+
                 scope.pop_scope();
 
                 Ok(Self {
@@ -913,6 +1003,7 @@ impl AbstractSyntaxTree for Expression {
                     span: *from.as_ref(),
                 })
             }
+            parse::ExpressionInner::Error => Ok(Self::error(*from.as_ref())),
         }
     }
 }
@@ -971,7 +1062,7 @@ impl AbstractSyntaxTree for SingleExpression {
                     .get_variable(identifier)
                     .ok_or(Error::UndefinedVariable(identifier.clone()))
                     .with_span(from)?;
-                if ty != bound_ty {
+                if ty != bound_ty && !(ty.is_error() || bound_ty.is_error()) {
                     return Err(Error::ExpressionTypeMismatch(ty.clone(), bound_ty.clone()))
                         .with_span(from);
                 }
@@ -1073,17 +1164,17 @@ impl AbstractSyntaxTree for Call {
     type From = parse::Call;
 
     fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
-        fn check_argument_types(
+        fn check_argument_types<T: Into<Span>>(
             parse_args: &[parse::Expression],
             expected_tys: &[ResolvedType],
-        ) -> Result<(), Error> {
-            if parse_args.len() == expected_tys.len() {
-                Ok(())
-            } else {
-                Err(Error::InvalidNumberOfArguments(
-                    expected_tys.len(),
-                    parse_args.len(),
-                ))
+            scope: &mut Scope,
+            span: T,
+        ) {
+            if parse_args.len() != expected_tys.len() {
+                scope.push_error(
+                    Error::InvalidNumberOfArguments(expected_tys.len(), parse_args.len())
+                        .with_span(span.into()),
+                )
             }
         }
 
@@ -1091,7 +1182,7 @@ impl AbstractSyntaxTree for Call {
             observed_ty: &ResolvedType,
             expected_ty: &ResolvedType,
         ) -> Result<(), Error> {
-            if observed_ty == expected_ty {
+            if observed_ty == expected_ty || (observed_ty.is_error() || expected_ty.is_error()) {
                 Ok(())
             } else {
                 Err(Error::ExpressionTypeMismatch(
@@ -1105,13 +1196,16 @@ impl AbstractSyntaxTree for Call {
             parse_args: &[parse::Expression],
             args_tys: &[ResolvedType],
             scope: &mut Scope,
-        ) -> Result<Arc<[Expression]>, RichError> {
+        ) -> Arc<[Expression]> {
             let args = parse_args
                 .iter()
                 .zip(args_tys.iter())
-                .map(|(arg_parse, arg_ty)| Expression::analyze(arg_parse, arg_ty, scope))
-                .collect::<Result<Arc<[Expression]>, RichError>>()?;
-            Ok(args)
+                .map(|(arg_parse, arg_ty)| {
+                    Expression::analyze(arg_parse, arg_ty, scope)
+                        .report_and_fallback(scope, Expression::error(*arg_parse.as_ref()))
+                })
+                .collect::<Arc<[Expression]>>();
+            args
         }
 
         let name = CallName::analyze(from, ty, scope)?;
@@ -1123,63 +1217,63 @@ impl AbstractSyntaxTree for Call {
                     .collect::<Result<Vec<ResolvedType>, AliasName>>()
                     .map_err(Error::UndefinedAlias)
                     .with_span(from)?;
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
+                check_argument_types(from.args(), &args_tys, scope, from);
                 let out_ty = crate::jet::target_type(jet)
                     .resolve_builtin()
                     .map_err(Error::UndefinedAlias)
                     .with_span(from)?;
                 check_output_type(&out_ty, ty).with_span(from)?;
                 scope.track_call(from, TrackedCallName::Jet);
-                analyze_arguments(from.args(), &args_tys, scope)?
+                analyze_arguments(from.args(), &args_tys, scope)
             }
             CallName::UnwrapLeft(right_ty) => {
                 let args_tys = [ResolvedType::either(ty.clone(), right_ty)];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
-                let args = analyze_arguments(from.args(), &args_tys, scope)?;
+                check_argument_types(from.args(), &args_tys, scope, from);
+                let args = analyze_arguments(from.args(), &args_tys, scope);
                 let [arg_ty] = args_tys;
                 scope.track_call(from, TrackedCallName::UnwrapLeft(arg_ty));
                 args
             }
             CallName::UnwrapRight(left_ty) => {
                 let args_tys = [ResolvedType::either(left_ty, ty.clone())];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
-                let args = analyze_arguments(from.args(), &args_tys, scope)?;
+                check_argument_types(from.args(), &args_tys, scope, from);
+                let args = analyze_arguments(from.args(), &args_tys, scope);
                 let [arg_ty] = args_tys;
                 scope.track_call(from, TrackedCallName::UnwrapRight(arg_ty));
                 args
             }
             CallName::IsNone(some_ty) => {
                 let args_tys = [ResolvedType::option(some_ty)];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
+                check_argument_types(from.args(), &args_tys, scope, from);
                 let out_ty = ResolvedType::boolean();
                 check_output_type(&out_ty, ty).with_span(from)?;
-                analyze_arguments(from.args(), &args_tys, scope)?
+                analyze_arguments(from.args(), &args_tys, scope)
             }
             CallName::Unwrap => {
                 let args_tys = [ResolvedType::option(ty.clone())];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
+                check_argument_types(from.args(), &args_tys, scope, from);
                 scope.track_call(from, TrackedCallName::Unwrap);
-                analyze_arguments(from.args(), &args_tys, scope)?
+                analyze_arguments(from.args(), &args_tys, scope)
             }
             CallName::Assert => {
                 let args_tys = [ResolvedType::boolean()];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
+                check_argument_types(from.args(), &args_tys, scope, from);
                 let out_ty = ResolvedType::unit();
                 check_output_type(&out_ty, ty).with_span(from)?;
                 scope.track_call(from, TrackedCallName::Assert);
-                analyze_arguments(from.args(), &args_tys, scope)?
+                analyze_arguments(from.args(), &args_tys, scope)
             }
             CallName::Panic => {
                 let args_tys = [];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
+
                 // panic! allows every output type because it will never return anything
                 scope.track_call(from, TrackedCallName::Panic);
-                analyze_arguments(from.args(), &args_tys, scope)?
+                analyze_arguments(from.args(), &args_tys, scope)
             }
             CallName::Debug => {
                 let args_tys = [ty.clone()];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
-                let args = analyze_arguments(from.args(), &args_tys, scope)?;
+                check_argument_types(from.args(), &args_tys, scope, from);
+                let args = analyze_arguments(from.args(), &args_tys, scope);
                 let [arg_ty] = args_tys;
                 scope.track_call(from, TrackedCallName::Debug(arg_ty));
                 args
@@ -1190,8 +1284,8 @@ impl AbstractSyntaxTree for Call {
                 }
 
                 let args_tys = [source];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
-                analyze_arguments(from.args(), &args_tys, scope)?
+                check_argument_types(from.args(), &args_tys, scope, from);
+                analyze_arguments(from.args(), &args_tys, scope)
             }
             CallName::Custom(function) => {
                 let args_ty = function
@@ -1200,10 +1294,10 @@ impl AbstractSyntaxTree for Call {
                     .map(FunctionParam::ty)
                     .cloned()
                     .collect::<Vec<ResolvedType>>();
-                check_argument_types(from.args(), &args_ty).with_span(from)?;
+                check_argument_types(from.args(), &args_ty, scope, from);
                 let out_ty = function.body().ty();
                 check_output_type(out_ty, ty).with_span(from)?;
-                analyze_arguments(from.args(), &args_ty, scope)?
+                analyze_arguments(from.args(), &args_ty, scope)
             }
             CallName::Fold(function, bound) => {
                 // A list fold has the signature:
@@ -1220,10 +1314,10 @@ impl AbstractSyntaxTree for Call {
                     .clone();
                 let args_ty = [list_ty, accumulator_ty];
 
-                check_argument_types(from.args(), &args_ty).with_span(from)?;
+                check_argument_types(from.args(), &args_ty, scope, from);
                 let out_ty = function.body().ty();
                 check_output_type(out_ty, ty).with_span(from)?;
-                analyze_arguments(from.args(), &args_ty, scope)?
+                analyze_arguments(from.args(), &args_ty, scope)
             }
             CallName::ArrayFold(function, size) => {
                 // An array fold has the signature:
@@ -1240,10 +1334,10 @@ impl AbstractSyntaxTree for Call {
                     .clone();
                 let args_ty = [array_ty, accumulator_ty];
 
-                check_argument_types(from.args(), &args_ty).with_span(from)?;
+                check_argument_types(from.args(), &args_ty, scope, from);
                 let out_ty = function.body().ty();
                 check_output_type(out_ty, ty).with_span(from)?;
-                analyze_arguments(from.args(), &args_ty, scope)?
+                analyze_arguments(from.args(), &args_ty, scope)
             }
             CallName::ForWhile(function, _bit_width) => {
                 // A for-while loop has the signature:
@@ -1265,10 +1359,10 @@ impl AbstractSyntaxTree for Call {
                     .clone();
                 let args_ty = [accumulator_ty, context_ty];
 
-                check_argument_types(from.args(), &args_ty).with_span(from)?;
+                check_argument_types(from.args(), &args_ty, scope, from);
                 let out_ty = function.body().ty();
                 check_output_type(out_ty, ty).with_span(from)?;
-                analyze_arguments(from.args(), &args_ty, scope)?
+                analyze_arguments(from.args(), &args_ty, scope)
             }
         };
 
