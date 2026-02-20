@@ -22,7 +22,7 @@ pub mod value;
 mod witness;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use simplicity::jet::elements::ElementsEnv;
@@ -40,38 +40,44 @@ pub use crate::types::ResolvedType;
 pub use crate::value::Value;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 
-#[derive(Debug, Clone)]
-pub struct LibConfig {
-    pub libraries: HashMap<String, PathBuf>,
-    pub root_path: PathBuf,
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum SourceName {
+    Real(PathBuf),
+    Virtual(String),
 }
 
-impl LibConfig {
-    pub fn new(libraries: HashMap<String, PathBuf>, raw_root_path: &Path) -> Self {
-        let root_path = raw_root_path.with_extension("");
-
-        Self {
-            libraries,
-            root_path,
+impl SourceName {
+    pub fn without_extension(&self) -> SourceName {
+        match self {
+            SourceName::Real(path) => SourceName::Real(path.with_extension("")),
+            SourceName::Virtual(name) => SourceName::Virtual(name.clone()),
         }
     }
+}
 
-    pub fn get_full_path(&self, use_decl: &UseDecl) -> Result<PathBuf, String> {
-        let parts: Vec<&str> = use_decl.path().iter().map(|s| s.as_ref()).collect();
-        let first_segment = parts[0];
-
-        if let Some(lib_root) = self.libraries.get(first_segment) {
-            let mut full_path = lib_root.clone();
-            full_path.extend(&parts[1..]);
-
-            return Ok(full_path);
-        }
-
-        Err(format!(
-            "Unknown module or library '{}'. Did you forget to pass --lib {}=...?",
-            first_segment, first_segment,
-        ))
+impl Default for SourceName {
+    fn default() -> Self {
+        SourceName::Virtual("<unnkown>".to_string())
     }
+}
+
+pub type LibTable = HashMap<String, PathBuf>;
+
+pub fn get_full_path(libraries: &LibTable, use_decl: &UseDecl) -> Result<PathBuf, String> {
+    let parts: Vec<&str> = use_decl.path().iter().map(|s| s.as_ref()).collect();
+    let first_segment = parts[0];
+
+    if let Some(lib_root) = libraries.get(first_segment) {
+        let mut full_path = lib_root.clone();
+        full_path.extend(&parts[1..]);
+
+        return Ok(full_path);
+    }
+
+    Err(format!(
+        "Unknown module or library '{}'. Did you forget to pass --lib {}=...?",
+        first_segment, first_segment,
+    ))
 }
 
 /// The template of a SimplicityHL program.
@@ -89,24 +95,28 @@ impl TemplateProgram {
     /// ## Errors
     ///
     /// The string is not a valid SimplicityHL program.
-    pub fn new<Str: Into<Arc<str>>>(lib_cfg: Option<&LibConfig>, s: Str) -> Result<Self, String> {
+    pub fn new<Str: Into<Arc<str>>>(
+        source_name: SourceName,
+        libraries: Arc<LibTable>,
+        s: Str,
+    ) -> Result<Self, String> {
         let file = s.into();
         let mut error_handler = ErrorCollector::new(Arc::clone(&file));
         let parse_program = parse::Program::parse_from_str_with_errors(&file, &mut error_handler);
 
         if let Some(program) = parse_program {
             // TODO: Consider a proper resolution strategy later.
-            let _: Option<driver::Program> = if let Some(cfg) = lib_cfg {
-                let config_arc = Arc::new(cfg.clone());
-                let graph = ProjectGraph::new(config_arc, &program)?;
+            let driver_program: driver::Program = if libraries.is_empty() {
+                driver::Program::from_parse(&program, source_name)?
+            } else {
+                let graph = ProjectGraph::new(source_name, libraries, &program)?;
 
                 // TODO: Perhaps add an `error_handler` here, too.
-                Some(graph.resolve_complication_order()?)
-            } else {
-                None
+                graph.resolve_complication_order()?
             };
 
-            let ast_program = ast::Program::analyze(&program).with_file(Arc::clone(&file))?;
+            let ast_program =
+                ast::Program::analyze(&driver_program).with_file(Arc::clone(&file))?;
             Ok(Self {
                 simfony: ast_program,
                 file,
@@ -165,12 +175,13 @@ impl CompiledProgram {
     /// - [`TemplateProgram::new`]
     /// - [`TemplateProgram::instantiate`]
     pub fn new<Str: Into<Arc<str>>>(
-        lib_cfg: Option<&LibConfig>,
+        source_name: SourceName,
+        libraries: Arc<LibTable>,
         s: Str,
         arguments: Arguments,
         include_debug_symbols: bool,
     ) -> Result<Self, String> {
-        TemplateProgram::new(lib_cfg, s)
+        TemplateProgram::new(source_name, libraries, s)
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -237,13 +248,15 @@ impl SatisfiedProgram {
     /// - [`TemplateProgram::instantiate`]
     /// - [`CompiledProgram::satisfy`]
     pub fn new<Str: Into<Arc<str>>>(
-        lib_cfg: Option<&LibConfig>,
+        source_name: SourceName,
+        libraries: Arc<LibTable>,
         s: Str,
         arguments: Arguments,
         witness_values: WitnessValues,
         include_debug_symbols: bool,
     ) -> Result<Self, String> {
-        let compiled = CompiledProgram::new(lib_cfg, s, arguments, include_debug_symbols)?;
+        let compiled =
+            CompiledProgram::new(source_name, libraries, s, arguments, include_debug_symbols)?;
         compiled.satisfy(witness_values)
     }
 
@@ -342,11 +355,29 @@ pub(crate) mod tests {
     impl TestCase<TemplateProgram> {
         pub fn template_file<P: AsRef<Path>>(program_file_path: P) -> Self {
             let program_text = std::fs::read_to_string(program_file_path).unwrap();
-            Self::template_text(Cow::Owned(program_text))
+            Self::template_text(
+                SourceName::default(),
+                Arc::from(HashMap::new()),
+                Cow::Owned(program_text),
+            )
         }
 
-        pub fn template_text(program_text: Cow<str>) -> Self {
-            let program = match TemplateProgram::new(None, program_text.as_ref()) {
+        pub fn template_lib(
+            source_name: SourceName,
+            libraries: Arc<LibTable>,
+            program_file: &Path,
+        ) -> Self {
+            let program_text = std::fs::read_to_string(program_file).unwrap();
+            Self::template_text(source_name, libraries, Cow::Owned(program_text))
+        }
+
+        pub fn template_text(
+            source_name: SourceName,
+            libraries: Arc<LibTable>,
+            program_text: Cow<str>,
+        ) -> Self {
+            let program = match TemplateProgram::new(source_name, libraries, program_text.as_ref())
+            {
                 Ok(x) => x,
                 Err(error) => panic!("{error}"),
             };
@@ -386,13 +417,69 @@ pub(crate) mod tests {
     }
 
     impl TestCase<CompiledProgram> {
+        pub fn temp_env(
+            main_content: &str,
+            libs: Vec<(&str, &str, &str)>,
+        ) -> (Self, tempfile::TempDir) {
+            let temp_dir = tempfile::TempDir::new().unwrap();
+            let main_path =
+                driver::tests::create_simf_file(temp_dir.path(), "main.simf", main_content);
+            let mut lib_paths = Vec::new();
+
+            for (lib_name, rel_path, content) in libs {
+                driver::tests::create_simf_file(temp_dir.path(), rel_path, content);
+
+                let lib_root = temp_dir
+                    .path()
+                    .join(rel_path)
+                    .parent()
+                    .unwrap()
+                    .to_path_buf();
+                lib_paths.push((lib_name.to_string(), lib_root));
+            }
+
+            let libs_refs: Vec<(&str, &std::path::Path)> = lib_paths
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_path()))
+                .collect();
+
+            let test_case = Self::program_file_with_libs(&main_path, libs_refs);
+            (test_case, temp_dir)
+        }
+
         pub fn program_file<P: AsRef<Path>>(program_file_path: P) -> Self {
             TestCase::<TemplateProgram>::template_file(program_file_path)
                 .with_arguments(Arguments::default())
         }
 
         pub fn program_text(program_text: Cow<str>) -> Self {
-            TestCase::<TemplateProgram>::template_text(program_text)
+            TestCase::<TemplateProgram>::template_text(
+                SourceName::default(),
+                Arc::from(HashMap::new()),
+                program_text,
+            )
+            .with_arguments(Arguments::default())
+        }
+
+        pub fn program_file_with_libs<P, I, K, V>(program_file_path: P, libs: I) -> Self
+        where
+            P: AsRef<Path>,
+            I: IntoIterator<Item = (K, V)>, // Magic trait: accepts anything we can iterate over
+            K: Into<String>,
+            V: AsRef<Path>,
+        {
+            let path_ref = program_file_path.as_ref();
+
+            let mut libraries = HashMap::new();
+            for (k, v) in libs {
+                libraries.insert(k.into(), v.as_ref().to_path_buf());
+            }
+
+            let source_name =
+                SourceName::Real(path_ref.parent().unwrap_or(Path::new("")).to_path_buf());
+
+            // 3. Delegate to your existing template_lib method
+            TestCase::<TemplateProgram>::template_lib(source_name, Arc::from(libraries), path_ref)
                 .with_arguments(Arguments::default())
         }
 
@@ -493,6 +580,29 @@ pub(crate) mod tests {
                 Base64Display::new(&witness_bytes, &STANDARD).to_string(),
             )
         }
+    }
+
+    // Real test cases
+    #[test]
+    fn module_simple() {
+        let (test, _dir) = TestCase::temp_env(
+            "use temp::math::add; fn main() {}",
+            vec![("temp", "temp/math.simf", "pub fn add() {}")],
+        );
+
+        test.with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    // Demonstration of functionality for the user
+    #[test]
+    fn single_lib() {
+        TestCase::program_file_with_libs(
+            "./examples/single_lib/main.simf",
+            [("temp", "./examples/single_lib/temp")],
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
     }
 
     #[test]
@@ -683,7 +793,8 @@ fn main() {
 }
 "#;
         match SatisfiedProgram::new(
-            None,
+            SourceName::default(),
+            Arc::from(HashMap::new()),
             prog_text,
             Arguments::default(),
             WitnessValues::default(),

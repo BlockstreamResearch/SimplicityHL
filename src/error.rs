@@ -1,5 +1,6 @@
 use std::fmt;
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chumsky::error::Error as ChumskyError;
@@ -415,11 +416,13 @@ pub enum Error {
     CannotCompile(String),
     JetDoesNotExist(JetName),
     InvalidCast(ResolvedType, ResolvedType),
+    FileNotFound(PathBuf),
     MainNoInputs,
     MainNoOutput,
     MainRequired,
     FunctionRedefined(FunctionName),
     FunctionUndefined(FunctionName),
+    FunctionIsPrivate(FunctionName),
     InvalidNumberOfArguments(usize, usize),
     FunctionNotFoldable(FunctionName),
     FunctionNotLoopable(FunctionName),
@@ -494,6 +497,10 @@ impl fmt::Display for Error {
                 f,
                 "Cannot cast values of type `{source}` as values of type `{target}`"
             ),
+            Error::FileNotFound(path) => write!(
+                f,
+                "File `{}` not found", path.to_string_lossy()
+            ),
             Error::MainNoInputs => write!(
                 f,
                 "Main function takes no input parameters"
@@ -513,6 +520,10 @@ impl fmt::Display for Error {
             Error::FunctionUndefined(name) => write!(
                 f,
                 "Function `{name}` was called but not defined"
+            ),
+            Error::FunctionIsPrivate(name) => write!(
+                f,
+                "Function `{name}` is private"
             ),
             Error::InvalidNumberOfArguments(expected, found) => write!(
                 f,

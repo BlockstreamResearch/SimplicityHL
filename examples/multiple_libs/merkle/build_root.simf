@@ -1,0 +1,5 @@
+use math::simple_op::hash;
+
+pub fn get_root(tx1: u32, tx2: u32) -> u32 {
+    hash(tx1, tx2)
+}

@@ -9,9 +9,10 @@ use miniscript::iter::{Tree, TreeLike};
 use simplicity::jet::Elements;
 
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
+use crate::driver::ProgramResolutions;
 use crate::error::{Error, RichError, Span, WithSpan};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
-use crate::parse::{MatchPattern, UseDecl, Visibility};
+use crate::parse::MatchPattern;
 use crate::pattern::Pattern;
 use crate::str::{AliasName, FunctionName, Identifier, ModuleName, WitnessName};
 use crate::types::{
@@ -19,7 +20,7 @@ use crate::types::{
 };
 use crate::value::{UIntValue, Value};
 use crate::witness::{Parameters, WitnessTypes, WitnessValues};
-use crate::{impl_eq_hash, parse};
+use crate::{driver, impl_eq_hash, parse, SourceName};
 
 /// A program consists of the main function.
 ///
@@ -73,8 +74,6 @@ pub enum Item {
     TypeAlias,
     /// A function.
     Function(Function),
-    /// A use declaration
-    Use(UseDecl),
     /// A module, which is ignored.
     Module,
 }
@@ -307,7 +306,6 @@ pub enum CallName {
 /// Definition of a custom function.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct CustomFunction {
-    visibility: Visibility,
     params: Arc<[FunctionParam]>,
     body: Arc<Expression>,
 }
@@ -525,6 +523,10 @@ impl TreeLike for ExprTree<'_> {
 /// 4. Resolving calls to custom functions
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 struct Scope {
+    resolutions: ProgramResolutions,
+    paths: Arc<[SourceName]>,
+    file_id: usize, // ID of the file from which the function is called.
+
     variables: Vec<HashMap<Identifier, ResolvedType>>,
     aliases: HashMap<AliasName, ResolvedType>,
     parameters: HashMap<WitnessName, ResolvedType>,
@@ -535,6 +537,26 @@ struct Scope {
 }
 
 impl Scope {
+    pub fn new(resolutions: ProgramResolutions, paths: Arc<[SourceName]>) -> Self {
+        Self {
+            resolutions,
+            paths,
+            file_id: 0,
+            variables: Vec::new(),
+            aliases: HashMap::new(),
+            parameters: HashMap::new(),
+            witnesses: HashMap::new(),
+            functions: HashMap::new(),
+            is_main: false,
+            call_tracker: CallTracker::default(),
+        }
+    }
+
+    /// Access to current function file id.
+    pub fn file_id(&self) -> usize {
+        self.file_id
+    }
+
     /// Check if the current scope is topmost.
     pub fn is_topmost(&self) -> bool {
         self.variables.is_empty()
@@ -543,6 +565,11 @@ impl Scope {
     /// Push a new scope onto the stack.
     pub fn push_scope(&mut self) {
         self.variables.push(HashMap::new());
+    }
+
+    pub fn push_function_scope(&mut self, file_id: usize) {
+        self.push_scope();
+        self.file_id = file_id;
     }
 
     /// Push the scope of the main function onto the stack.
@@ -565,6 +592,11 @@ impl Scope {
     /// The stack is empty.
     pub fn pop_scope(&mut self) {
         self.variables.pop().expect("Stack is empty");
+    }
+
+    pub fn pop_function_scope(&mut self, previous_file_id: usize) {
+        self.pop_scope();
+        self.file_id = previous_file_id;
     }
 
     /// Pop the scope of the main function from the stack.
@@ -693,9 +725,39 @@ impl Scope {
         }
     }
 
-    /// Get the definition of a custom function.
-    pub fn get_function(&self, name: &FunctionName) -> Option<&CustomFunction> {
-        self.functions.get(name)
+    /// Get the definition of a custom function with visibility and existence checks.
+    ///
+    /// # Errors
+    ///
+    /// - `Error::FileNotFound`: The specified `file_id` does not exist in the resolutions.
+    /// - `Error::FunctionUndefined`: The function is not found in the file's scope OR not defined globally.
+    /// - `Error::FunctionIsPrivate`: The function exists but is private (and thus not accessible).
+    pub fn get_function(&self, name: &FunctionName) -> Result<&CustomFunction, Error> {
+        // The order of the errors is important!
+        let function = self
+            .functions
+            .get(name)
+            .ok_or_else(|| Error::FunctionUndefined(name.clone()))?;
+
+        let source_name = self.paths[self.file_id].clone();
+
+        let file_scope = match source_name {
+            SourceName::Real(path) => self
+                .resolutions
+                .get(self.file_id)
+                .ok_or(Error::FileNotFound(path))?, // TODO: File or pub type
+            SourceName::Virtual(_) => {
+                return Ok(function);
+            }
+        };
+
+        let identifier: Identifier = name.clone().into();
+
+        if file_scope.contains_key(&identifier) {
+            Ok(function)
+        } else {
+            Err(Error::FunctionIsPrivate(name.clone()))
+        }
     }
 
     /// Track a call expression with its span.
@@ -718,9 +780,10 @@ trait AbstractSyntaxTree: Sized {
 }
 
 impl Program {
-    pub fn analyze(from: &parse::Program) -> Result<Self, RichError> {
+    // TODO: Add visibility check inside program
+    pub fn analyze(from: &driver::Program) -> Result<Self, RichError> {
         let unit = ResolvedType::unit();
-        let mut scope = Scope::default();
+        let mut scope = Scope::new(Arc::from(from.resolutions()), Arc::from(from.paths()));
         let items = from
             .items()
             .iter()
@@ -746,42 +809,37 @@ impl Program {
 }
 
 impl AbstractSyntaxTree for Item {
-    type From = parse::Item;
+    type From = driver::Item;
 
     fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
         assert!(ty.is_unit(), "Items cannot return anything");
         assert!(scope.is_topmost(), "Items live in the topmost scope only");
 
         match from {
-            parse::Item::TypeAlias(alias) => {
+            driver::Item::TypeAlias(alias) => {
                 scope
                     .insert_alias(alias.name().clone(), alias.ty().clone())
                     .with_span(alias)?;
                 Ok(Self::TypeAlias)
             }
-            parse::Item::Function(function) => {
+            driver::Item::Function(function) => {
                 Function::analyze(function, ty, scope).map(Self::Function)
             }
-            parse::Item::Use(_) => {
-                println!("WARN: Skipping use declaration (not implemented yet)");
-                Ok(Self::Module)
-                //todo!()
-                //Use::analyze(use_declaration).map(Self::Use)
-            }
-            parse::Item::Module => Ok(Self::Module),
+            driver::Item::Module => Ok(Self::Module),
         }
     }
 }
 
 impl AbstractSyntaxTree for Function {
-    type From = parse::Function;
+    type From = driver::Function;
 
     fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
         assert!(ty.is_unit(), "Function definitions cannot return anything");
         assert!(scope.is_topmost(), "Items live in the topmost scope only");
+        let previous_file_id = scope.file_id();
 
         if from.name().as_inner() != "main" {
-            let visibility = from.visibility().clone();
+            let file_id = from.file_id();
             let params = from
                 .params()
                 .iter()
@@ -798,73 +856,12 @@ impl AbstractSyntaxTree for Function {
                 .map(|aliased| scope.resolve(aliased).with_span(from))
                 .transpose()?
                 .unwrap_or_else(ResolvedType::unit);
-            scope.push_scope();
+            scope.push_function_scope(file_id);
             for param in params.iter() {
                 scope.insert_variable(param.identifier().clone(), param.ty().clone());
             }
             let body = Expression::analyze(from.body(), &ret, scope).map(Arc::new)?;
-            scope.pop_scope();
-            debug_assert!(scope.is_topmost());
-            let function = CustomFunction {
-                visibility,
-                params,
-                body,
-            };
-            scope
-                .insert_function(from.name().clone(), function)
-                .with_span(from)?;
-
-            return Ok(Self::Custom);
-        }
-
-        if !from.params().is_empty() {
-            return Err(Error::MainNoInputs).with_span(from);
-        }
-        if let Some(aliased) = from.ret() {
-            let resolved = scope.resolve(aliased).with_span(from)?;
-            if !resolved.is_unit() {
-                return Err(Error::MainNoOutput).with_span(from);
-            }
-        }
-
-        scope.push_main_scope();
-        let body = Expression::analyze(from.body(), ty, scope)?;
-        scope.pop_main_scope();
-        Ok(Self::Main(body))
-    }
-}
-
-/*
-impl AbstractSyntaxTree for UseDecl {
-    type From = parse::UseDecl;
-
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
-        assert!(ty.is_unit(), "Function definitions cannot return anything");
-        assert!(scope.is_topmost(), "Items live in the topmost scope only");
-
-        if from.name().as_inner() != "main" {
-            let params = from
-                .params()
-                .iter()
-                .map(|param| {
-                    let identifier = param.identifier().clone();
-                    let ty = scope.resolve(param.ty())?;
-                    Ok(FunctionParam { identifier, ty })
-                })
-                .collect::<Result<Arc<[FunctionParam]>, Error>>()
-                .with_span(from)?;
-            let ret = from
-                .ret()
-                .as_ref()
-                .map(|aliased| scope.resolve(aliased).with_span(from))
-                .transpose()?
-                .unwrap_or_else(ResolvedType::unit);
-            scope.push_scope();
-            for param in params.iter() {
-                scope.insert_variable(param.identifier().clone(), param.ty().clone());
-            }
-            let body = Expression::analyze(from.body(), &ret, scope).map(Arc::new)?;
-            scope.pop_scope();
+            scope.pop_function_scope(previous_file_id);
             debug_assert!(scope.is_topmost());
             let function = CustomFunction { params, body };
             scope
@@ -890,7 +887,6 @@ impl AbstractSyntaxTree for UseDecl {
         Ok(Self::Main(body))
     }
 }
-*/
 
 impl AbstractSyntaxTree for Statement {
     type From = parse::Statement;
@@ -1390,14 +1386,9 @@ impl AbstractSyntaxTree for CallName {
                 .get_function(name)
                 .cloned()
                 .map(Self::Custom)
-                .ok_or(Error::FunctionUndefined(name.clone()))
                 .with_span(from),
             parse::CallName::ArrayFold(name, size) => {
-                let function = scope
-                    .get_function(name)
-                    .cloned()
-                    .ok_or(Error::FunctionUndefined(name.clone()))
-                    .with_span(from)?;
+                let function = scope.get_function(name).cloned().with_span(from)?;
                 // A function that is used in a array fold has the signature:
                 //   fn f(element: E, accumulator: A) -> A
                 if function.params().len() != 2 || function.params()[1].ty() != function.body().ty()
@@ -1408,11 +1399,7 @@ impl AbstractSyntaxTree for CallName {
                 }
             }
             parse::CallName::Fold(name, bound) => {
-                let function = scope
-                    .get_function(name)
-                    .cloned()
-                    .ok_or(Error::FunctionUndefined(name.clone()))
-                    .with_span(from)?;
+                let function = scope.get_function(name).cloned().with_span(from)?;
                 // A function that is used in a list fold has the signature:
                 //   fn f(element: E, accumulator: A) -> A
                 if function.params().len() != 2 || function.params()[1].ty() != function.body().ty()
@@ -1423,11 +1410,7 @@ impl AbstractSyntaxTree for CallName {
                 }
             }
             parse::CallName::ForWhile(name) => {
-                let function = scope
-                    .get_function(name)
-                    .cloned()
-                    .ok_or(Error::FunctionUndefined(name.clone()))
-                    .with_span(from)?;
+                let function = scope.get_function(name).cloned().with_span(from)?;
                 // A function that is used in a for-while loop has the signature:
                 //   fn f(accumulator: A, readonly_context: C, counter: u{N}) -> Either<B, A>
                 // where
@@ -1503,6 +1486,9 @@ fn analyze_named_module(
     from: &parse::ModuleProgram,
 ) -> Result<HashMap<WitnessName, Value>, RichError> {
     let unit = ResolvedType::unit();
+
+    // IMPORTANT! If modules allow imports, then we need to consider
+    // passing the resolution conetxt by calling `Scope::new(resolutions)`
     let mut scope = Scope::default();
     let items = from
         .items()

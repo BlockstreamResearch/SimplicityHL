@@ -2,8 +2,8 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
-use simplicityhl::{Arguments, CompiledProgram, LibConfig};
-use std::{collections::HashMap, env, fmt, path::PathBuf};
+use simplicityhl::{Arguments, CompiledProgram, LibTable, SourceName};
+use std::{env, fmt, sync::Arc};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 /// The compilation output.
@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let lib_args = matches.get_many::<String>("library").unwrap_or_default();
 
-    let library_map: HashMap<String, PathBuf> = lib_args
+    let libraries: LibTable = lib_args
         .map(|arg| {
             let parts: Vec<&str> = arg.splitn(2, '=').collect();
 
@@ -95,9 +95,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    let config = LibConfig::new(library_map, prog_path);
     let compiled = match CompiledProgram::new(
-        Some(&config),
+        SourceName::Real(prog_path.to_path_buf()),
+        Arc::from(libraries),
         prog_text,
         Arguments::default(),
         include_debug_symbols,
