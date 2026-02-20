@@ -107,6 +107,7 @@ pub enum UseItems {
 /// Definition of a function.
 #[derive(Clone, Debug)]
 pub struct Function {
+    file_id: usize, // The type required for the driver
     visibility: Visibility,
     name: FunctionName,
     params: Arc<[FunctionParam]>,
@@ -124,6 +125,11 @@ pub enum Visibility {
 }
 
 impl Function {
+    /// Access the file ID of the function.
+    pub fn file_id(&self) -> usize {
+        self.file_id
+    }
+
     /// Access the visibility of the function.
     pub fn visibility(&self) -> &Visibility {
         &self.visibility
@@ -157,7 +163,7 @@ impl Function {
     }
 }
 
-impl_eq_hash!(Function; visibility, name, params, ret, body);
+impl_eq_hash!(Function; file_id, visibility, name, params, ret, body);
 
 /// Parameter of a function.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -315,7 +321,7 @@ impl TypeAlias {
     }
 }
 
-impl_eq_hash!(TypeAlias; name, ty);
+impl_eq_hash!(TypeAlias; visibility, name, ty);
 
 /// An expression is something that returns a value.
 #[derive(Clone, Debug)]
@@ -337,7 +343,7 @@ impl Expression {
 
     /// Convert the expression into a block expression.
     #[cfg(feature = "arbitrary")]
-    fn into_block(self) -> Self {
+    pub(crate) fn into_block(self) -> Self {
         match self.inner {
             ExpressionInner::Single(_) => Expression {
                 span: self.span,
@@ -633,15 +639,30 @@ impl fmt::Display for Item {
     }
 }
 
+impl fmt::Display for Visibility {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Private => write!(f, ""),
+            Self::Public => write!(f, "pub "),
+        }
+    }
+}
+
 impl fmt::Display for TypeAlias {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "type {} = {};", self.name(), self.ty())
+        write!(
+            f,
+            "{}type {} = {};",
+            self.visibility(),
+            self.name(),
+            self.ty()
+        )
     }
 }
 
 impl fmt::Display for Function {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "fn {}(", self.name())?;
+        write!(f, "{}fn {}(", self.visibility(), self.name())?;
         for (i, param) in self.params().iter().enumerate() {
             if 0 < i {
                 write!(f, ", ")?;
@@ -658,11 +679,7 @@ impl fmt::Display for Function {
 
 impl fmt::Display for UseDecl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Visibility::Public = self.visibility {
-            write!(f, "pub ")?;
-        }
-
-        let _ = write!(f, "use ");
+        let _ = write!(f, "{}use ", self.visibility());
 
         for (i, segment) in self.path.iter().enumerate() {
             if i > 0 {
@@ -1280,6 +1297,7 @@ impl ChumskyParse for Function {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
+        let file_id = 0usize;
         let visibility = just(Token::Pub)
             .to(Visibility::Public)
             .or_not()
@@ -1323,7 +1341,8 @@ impl ChumskyParse for Function {
             .then(params)
             .then(ret)
             .then(body)
-            .map_with(|((((visibility, name), params), ret), body), e| Self {
+            .map_with(move |((((visibility, name), params), ret), body), e| Self {
+                file_id,
                 visibility,
                 name,
                 params,
@@ -2132,6 +2151,7 @@ impl crate::ArbitraryRec for Function {
     fn arbitrary_rec(u: &mut arbitrary::Unstructured, budget: usize) -> arbitrary::Result<Self> {
         use arbitrary::Arbitrary;
 
+        let file_id: usize = u.int_in_range(0..=3)?;
         let visibility = Visibility::arbitrary(u)?;
         let name = FunctionName::arbitrary(u)?;
         let len = u.int_in_range(0..=3)?;
@@ -2141,6 +2161,7 @@ impl crate::ArbitraryRec for Function {
         let ret = Option::<AliasedType>::arbitrary(u)?;
         let body = Expression::arbitrary_rec(u, budget).map(Expression::into_block)?;
         Ok(Self {
+            file_id,
             visibility,
             name,
             params,

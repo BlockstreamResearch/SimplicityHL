@@ -35,7 +35,7 @@ use crate::debug::DebugSymbols;
 use crate::driver::ProjectGraph;
 use crate::error::{ErrorCollector, WithFile};
 use crate::parse::ParseFromStrWithErrors;
-use crate::resolution::LibConfig;
+use crate::resolution::{LibTable, SourceName};
 pub use crate::types::ResolvedType;
 pub use crate::value::Value;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
@@ -51,7 +51,8 @@ pub struct TemplateProgram {
 
 impl TemplateProgram {
     pub fn new_with_dep<Str: Into<Arc<str>>>(
-        lib_cfg: Option<&LibConfig>,
+        source_name: SourceName,
+        libraries: Arc<LibTable>,
         s: Str,
     ) -> Result<Self, String> {
         let file = s.into();
@@ -60,17 +61,17 @@ impl TemplateProgram {
 
         if let Some(program) = parse_program {
             // TODO: Consider a proper resolution strategy later.
-            let _: Option<driver::Program> = if let Some(cfg) = lib_cfg {
-                let config_arc = Arc::new(cfg.clone());
-                let graph = ProjectGraph::new(config_arc, &program)?;
+            let driver_program: driver::Program = if libraries.is_empty() {
+                driver::Program::from_parse(&program, source_name)?
+            } else {
+                let graph = ProjectGraph::new(source_name, libraries, &program)?;
 
                 // TODO: Perhaps add an `error_handler` here, too.
-                Some(graph.resolve_complication_order()?)
-            } else {
-                None
+                graph.resolve_complication_order()?
             };
 
-            let ast_program = ast::Program::analyze(&program).with_file(Arc::clone(&file))?;
+            let ast_program =
+                ast::Program::analyze(&driver_program).with_file(Arc::clone(&file))?;
             Ok(Self {
                 simfony: ast_program,
                 file,
@@ -90,7 +91,12 @@ impl TemplateProgram {
         let mut error_handler = ErrorCollector::new(Arc::clone(&file));
         let parse_program = parse::Program::parse_from_str_with_errors(&file, &mut error_handler);
         if let Some(program) = parse_program {
-            let ast_program = ast::Program::analyze(&program).with_file(Arc::clone(&file))?;
+            let driver_program = driver::Program::from_parse(
+                &program,
+                SourceName::Virtual("script.simf".to_string()),
+            )?;
+            let ast_program =
+                ast::Program::analyze(&driver_program).with_file(Arc::clone(&file))?;
             Ok(Self {
                 simfony: ast_program,
                 file,
@@ -157,12 +163,13 @@ pub struct CompiledProgram {
 
 impl CompiledProgram {
     pub fn new_with_dep<Str: Into<Arc<str>>>(
-        lib_cfg: Option<&LibConfig>,
+        source_name: SourceName,
+        lib_cfg: Arc<LibTable>,
         s: Str,
         arguments: Arguments,
         include_debug_symbols: bool,
     ) -> Result<Self, String> {
-        TemplateProgram::new_with_dep(lib_cfg, s)
+        TemplateProgram::new_with_dep(source_name, lib_cfg, s)
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -250,13 +257,20 @@ pub struct SatisfiedProgram {
 
 impl SatisfiedProgram {
     pub fn new_with_dep<Str: Into<Arc<str>>>(
-        lib_cfg: Option<&LibConfig>,
+        source_name: SourceName,
+        lib_cfg: Arc<LibTable>,
         s: Str,
         arguments: Arguments,
         witness_values: WitnessValues,
         include_debug_symbols: bool,
     ) -> Result<Self, String> {
-        let compiled = CompiledProgram::new_with_dep(lib_cfg, s, arguments, include_debug_symbols)?;
+        let compiled = CompiledProgram::new_with_dep(
+            source_name,
+            lib_cfg,
+            s,
+            arguments,
+            include_debug_symbols,
+        )?;
         compiled.satisfy(witness_values)
     }
 
@@ -358,6 +372,7 @@ pub(crate) mod tests {
     use base64::engine::general_purpose::STANDARD;
     use simplicity::BitMachine;
     use std::borrow::Cow;
+    use std::collections::HashMap;
     use std::path::Path;
 
     use crate::*;
@@ -373,6 +388,29 @@ pub(crate) mod tests {
         pub fn template_file<P: AsRef<Path>>(program_file_path: P) -> Self {
             let program_text = std::fs::read_to_string(program_file_path).unwrap();
             Self::template_text(Cow::Owned(program_text))
+        }
+
+        pub fn template_lib(
+            source_name: SourceName,
+            libraries: Arc<LibTable>,
+            program_file: &Path,
+        ) -> Self {
+            let program_text = std::fs::read_to_string(program_file).unwrap();
+
+            let program = match TemplateProgram::new_with_dep(
+                source_name,
+                libraries,
+                program_text.as_ref(),
+            ) {
+                Ok(x) => x,
+                Err(error) => panic!("{error}"),
+            };
+            Self {
+                program,
+                lock_time: elements::LockTime::ZERO,
+                sequence: elements::Sequence::MAX,
+                include_fee_output: false,
+            }
         }
 
         pub fn template_text(program_text: Cow<str>) -> Self {
@@ -416,6 +454,36 @@ pub(crate) mod tests {
     }
 
     impl TestCase<CompiledProgram> {
+        pub fn temp_env(
+            main_content: &str,
+            libs: Vec<(&str, &str, &str)>,
+        ) -> (Self, tempfile::TempDir) {
+            let temp_dir = tempfile::TempDir::new().unwrap();
+            let main_path =
+                driver::tests::create_simf_file(temp_dir.path(), "main.simf", main_content);
+            let mut lib_paths = Vec::new();
+
+            for (lib_name, rel_path, content) in libs {
+                driver::tests::create_simf_file(temp_dir.path(), rel_path, content);
+
+                let lib_root = temp_dir
+                    .path()
+                    .join(rel_path)
+                    .parent()
+                    .unwrap()
+                    .to_path_buf();
+                lib_paths.push((lib_name.to_string(), lib_root));
+            }
+
+            let libs_refs: Vec<(&str, &std::path::Path)> = lib_paths
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_path()))
+                .collect();
+
+            let test_case = Self::program_file_with_libs(&main_path, libs_refs);
+            (test_case, temp_dir)
+        }
+
         pub fn program_file<P: AsRef<Path>>(program_file_path: P) -> Self {
             TestCase::<TemplateProgram>::template_file(program_file_path)
                 .with_arguments(Arguments::default())
@@ -423,6 +491,28 @@ pub(crate) mod tests {
 
         pub fn program_text(program_text: Cow<str>) -> Self {
             TestCase::<TemplateProgram>::template_text(program_text)
+                .with_arguments(Arguments::default())
+        }
+
+        pub fn program_file_with_libs<P, I, K, V>(program_file_path: P, libs: I) -> Self
+        where
+            P: AsRef<Path>,
+            I: IntoIterator<Item = (K, V)>, // Magic trait: accepts anything we can iterate over
+            K: Into<String>,
+            V: AsRef<Path>,
+        {
+            let path_ref = program_file_path.as_ref();
+
+            let mut libraries = HashMap::new();
+            for (k, v) in libs {
+                libraries.insert(k.into(), v.as_ref().to_path_buf());
+            }
+
+            let source_name =
+                SourceName::Real(path_ref.parent().unwrap_or(Path::new("")).to_path_buf());
+
+            // 3. Delegate to your existing template_lib method
+            TestCase::<TemplateProgram>::template_lib(source_name, Arc::from(libraries), path_ref)
                 .with_arguments(Arguments::default())
         }
 
@@ -523,6 +613,157 @@ pub(crate) mod tests {
                 Base64Display::new(&witness_bytes, &STANDARD).to_string(),
             )
         }
+    }
+
+    // Real test cases
+    #[test]
+    fn module_simple() {
+        let (test, _dir) = TestCase::temp_env(
+            "use temp::math::add; fn main() {}",
+            vec![("temp", "temp/math.simf", "pub fn add() {}")],
+        );
+
+        test.with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    fn diamond_dependency_resolution() {
+        let main_code = r#"
+            use temp::left::get_left;
+            use temp::right::get_right;
+
+            fn main() {
+                let a: BaseType = get_left();
+                let b: BaseType = get_right();
+                let (_, c): (bool, BaseType) = jet::add_32(a, b);
+                assert!(jet::eq_32(c, 3));
+            }
+        "#;
+
+        let libs = vec![
+            ("temp", "temp/base.simf", "pub type BaseType = u32;"),
+            (
+                "temp",
+                "temp/left.simf",
+                "pub use temp::base::BaseType; pub fn get_left() -> BaseType { 1 }",
+            ),
+            (
+                "temp",
+                "temp/right.simf",
+                "pub use temp::base::BaseType; pub fn get_right() -> BaseType { 2 }",
+            ),
+        ];
+
+        let (test, _dir) = TestCase::temp_env(main_code, libs);
+        test.with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    #[should_panic(expected = "CycleDetected")]
+    fn cyclic_dependency_error() {
+        let main_code = "use temp::module_a::TypeA; fn main() {}";
+
+        let libs = vec![
+            (
+                "temp",
+                "temp/module_a.simf",
+                "pub use temp::module_b::TypeB; pub type TypeA = u32;",
+            ),
+            (
+                "temp",
+                "temp/module_b.simf",
+                "pub use temp::module_a::TypeA; pub type TypeB = u32;",
+            ),
+        ];
+
+        let (test, _dir) = TestCase::temp_env(main_code, libs);
+        test.with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    fn deep_reexport_chain() {
+        let main_code = r#"
+            use temp::level1::{CoreSmth, core_val};
+
+            fn main() {
+                let val: CoreSmth = core_val();
+                assert!(jet::eq_32(val, 42));
+            }
+        "#;
+
+        let libs = vec![
+            (
+                "temp",
+                "temp/level3.simf",
+                "pub type CoreSmth = u32; pub fn core_val() -> CoreSmth { 42 }",
+            ),
+            (
+                "temp",
+                "temp/level2.simf",
+                "pub use temp::level3::{CoreSmth, core_val};",
+            ),
+            (
+                "temp",
+                "temp/level1.simf",
+                "pub use temp::level2::{CoreSmth, core_val};",
+            ),
+        ];
+
+        let (test, _dir) = TestCase::temp_env(main_code, libs);
+        test.with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    #[should_panic(expected = "Function SecretType is private and cannot be used")]
+    fn private_type_visibility_error() {
+        let main_code = r#"
+            use temp::hidden::SecretType;
+            fn main() {}
+        "#;
+
+        let libs = vec![(
+            "temp",
+            "temp/hidden.simf",
+            "type SecretType = u32; pub fn ok() {}",
+        )];
+
+        let (test, _dir) = TestCase::temp_env(main_code, libs);
+        test.with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    #[should_panic(expected = "was defined multiple times")]
+    fn name_collision_error() {
+        let main_code = r#"
+            use temp::mod_a::Value;
+            use temp::mod_b::Value;
+
+            fn main() {}
+        "#;
+
+        let libs = vec![
+            ("temp", "temp/mod_a.simf", "pub type Value = u32;"),
+            ("temp", "temp/mod_b.simf", "pub type Value = u32;"),
+        ];
+
+        let (test, _dir) = TestCase::temp_env(main_code, libs);
+        test.with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    fn single_lib() {
+        TestCase::program_file_with_libs(
+            "./examples/single_lib/main.simf",
+            [("temp", "./examples/single_lib/temp")],
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
     }
 
     #[test]

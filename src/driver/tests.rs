@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use tempfile::TempDir;
 
-fn create_simf_file(dir: &Path, rel_path: &str, content: &str) -> PathBuf {
+pub fn create_simf_file(dir: &Path, rel_path: &str, content: &str) -> PathBuf {
     let full_path = dir.join(rel_path);
 
     // Ensure parent directories exist
@@ -51,13 +51,16 @@ fn setup_graph(files: Vec<(&str, &str)>) -> (ProjectGraph, HashMap<String, usize
     let root_p = root_path.expect("main.simf must be defined in file list");
     let root_program = parse_root(&root_p);
 
-    let config = Arc::from(LibConfig::new(lib_map, &root_p));
-    let graph = ProjectGraph::new(config, &root_program).unwrap();
+    let source_name = SourceName::Real(root_p);
+    let graph = ProjectGraph::new(source_name, Arc::from(lib_map), &root_program).unwrap();
 
     // Create a lookup map for tests: "A.simf" -> FileID
     let mut file_ids = HashMap::new();
     for (path, id) in &graph.lookup {
-        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+        let file_name = match path {
+            SourceName::Real(path) => path.file_name().unwrap().to_string_lossy().to_string(),
+            SourceName::Virtual(name) => name.clone(),
+        };
         file_ids.insert(file_name, *id);
     }
 
@@ -251,19 +254,19 @@ mod visibility_and_access_control {
         let program = graph
             .build_program(&order)
             .expect("Failed to build program");
-        let scope = &program.scope_items[root_id];
+        let scope = &program.resolutions[root_id];
 
         // Check private function
         let private_res = scope
             .get(&Identifier::from("private_fn"))
             .expect("private_fn missing");
-        assert_eq!(private_res.visibility, Visibility::Private);
+        assert_eq!(*private_res, Visibility::Private);
 
         // Check public function
         let public_res = scope
             .get(&Identifier::from("public_fn"))
             .expect("public_fn missing");
-        assert_eq!(public_res.visibility, Visibility::Public);
+        assert_eq!(*public_res, Visibility::Public);
     }
 
     #[test]
@@ -292,27 +295,27 @@ mod visibility_and_access_control {
             .expect("Failed to build program");
 
         // Check B's scope
-        let scope_b = &program.scope_items[id_b];
+        let scope_b = &program.resolutions[id_b];
         let foo_in_b = scope_b
             .get(&Identifier::from("foo"))
             .expect("foo missing in B");
 
         // This is the critical check: Did `pub use` make it Public in B?
         assert_eq!(
-            foo_in_b.visibility,
+            *foo_in_b,
             Visibility::Public,
             "B should re-export foo as Public"
         );
 
         // Check Root's scope
-        let scope_root = &program.scope_items[id_root];
+        let scope_root = &program.resolutions[id_root];
         let foo_in_root = scope_root
             .get(&Identifier::from("foo"))
             .expect("foo missing in Root");
 
         // Root imported it via `use` (not pub use), so it should be Private in Root
         assert_eq!(
-            foo_in_root.visibility,
+            *foo_in_root,
             Visibility::Private,
             "Root should have foo as Private"
         );
@@ -365,9 +368,8 @@ mod error_diganostic_and_terminal_formatting {
         lib_map.insert("std".to_string(), temp_dir.path().join("libs/std"));
 
         let root_program = parse_root(&root_path);
-        let config = Arc::from(LibConfig::new(lib_map, &root_path));
-        let result = ProjectGraph::new(config, &root_program);
-
+        let source_name = SourceName::Real(root_path);
+        let result = ProjectGraph::new(source_name, Arc::from(lib_map), &root_program);
         assert!(result.is_err(), "Should fail for missing file");
         let err_msg = result.err().unwrap();
         assert!(

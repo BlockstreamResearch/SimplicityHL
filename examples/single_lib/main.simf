@@ -1,0 +1,11 @@
+pub use temp::two::two;
+use temp::funcs::{get_five, Smth};
+
+fn seven() -> u32 {
+    7
+}
+
+fn main() {
+    let (_, temp): (bool, u32) = jet::add_32(two(), get_five());
+    assert!(jet::eq_32(temp, seven()));
+}
