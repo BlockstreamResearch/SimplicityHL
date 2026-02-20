@@ -399,6 +399,7 @@ mod tests {
     use crate::elements::hashes::Hash;
     use crate::elements::pset::Input;
     use crate::elements::{AssetId, OutPoint, Script, Txid};
+    use crate::SourceName;
     use crate::{Arguments, TemplateProgram, WitnessValues};
 
     use super::*;
@@ -472,7 +473,12 @@ mod tests {
 
     #[test]
     fn test_debug_and_jet_tracing() {
-        let program = TemplateProgram::new(None, TEST_PROGRAM).unwrap();
+        let program = TemplateProgram::new(
+            SourceName::default(),
+            Arc::from(HashMap::new()),
+            TEST_PROGRAM,
+        )
+        .unwrap();
         let program = program.instantiate(Arguments::default(), true).unwrap();
         let satisfied = program.satisfy(WitnessValues::default()).unwrap();
 
@@ -541,7 +547,12 @@ mod tests {
     fn test_arith_jet_trace_regression() {
         let env = create_test_env();
 
-        let program = TemplateProgram::new(None, TEST_ARITHMETIC_JETS).unwrap();
+        let program = TemplateProgram::new(
+            SourceName::default(),
+            Arc::from(HashMap::new()),
+            TEST_ARITHMETIC_JETS,
+        )
+        .unwrap();
         let program = program.instantiate(Arguments::default(), true).unwrap();
         let satisfied = program.satisfy(WitnessValues::default()).unwrap();
 

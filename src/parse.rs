@@ -314,7 +314,7 @@ impl TypeAlias {
     }
 }
 
-impl_eq_hash!(TypeAlias; name, ty);
+impl_eq_hash!(TypeAlias; visibility, name, ty);
 
 /// An expression is something that returns a value.
 #[derive(Clone, Debug)]
@@ -336,7 +336,7 @@ impl Expression {
 
     /// Convert the expression into a block expression.
     #[cfg(feature = "arbitrary")]
-    fn into_block(self) -> Self {
+    pub(crate) fn into_block(self) -> Self {
         match self.inner {
             ExpressionInner::Single(_) => Expression {
                 span: self.span,
@@ -632,15 +632,30 @@ impl fmt::Display for Item {
     }
 }
 
+impl fmt::Display for Visibility {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Private => write!(f, ""),
+            Self::Public => write!(f, "pub "),
+        }
+    }
+}
+
 impl fmt::Display for TypeAlias {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "type {} = {};", self.name(), self.ty())
+        write!(
+            f,
+            "{}type {} = {};",
+            self.visibility(),
+            self.name(),
+            self.ty()
+        )
     }
 }
 
 impl fmt::Display for Function {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "fn {}(", self.name())?;
+        write!(f, "{}fn {}(", self.visibility(), self.name())?;
         for (i, param) in self.params().iter().enumerate() {
             if 0 < i {
                 write!(f, ", ")?;
@@ -657,11 +672,7 @@ impl fmt::Display for Function {
 
 impl fmt::Display for UseDecl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Visibility::Public = self.visibility {
-            write!(f, "pub ")?;
-        }
-
-        let _ = write!(f, "use ");
+        let _ = write!(f, "{}use ", self.visibility());
 
         for (i, segment) in self.path.iter().enumerate() {
             if i > 0 {
