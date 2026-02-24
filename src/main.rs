@@ -137,7 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     let compiled = match CompiledProgram::new(
-        SourceName::Real(prog_path.to_path_buf()),
+        SourceName::Real(Arc::from(prog_path)),
         Arc::from(libraries),
         prog_text,
         args_opt,

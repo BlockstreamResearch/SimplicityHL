@@ -748,7 +748,7 @@ impl Scope {
             SourceName::Real(path) => self
                 .resolutions
                 .get(self.file_id)
-                .ok_or(Error::FileNotFound(path))?, // TODO: File or pub type
+                .ok_or(Error::FileNotFound(path.to_path_buf()))?, // TODO: File or pub type
             SourceName::Virtual(_) => {
                 return Ok(function);
             }

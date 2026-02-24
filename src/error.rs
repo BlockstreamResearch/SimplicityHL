@@ -1,7 +1,6 @@
 use std::fmt;
 use std::ops::Range;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use chumsky::error::Error as ChumskyError;
 use chumsky::input::ValueInput;
@@ -16,6 +15,7 @@ use crate::lexer::Token;
 use crate::parse::MatchPattern;
 use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName, WitnessName};
 use crate::types::{ResolvedType, UIntType};
+use crate::SourceFile;
 
 /// Area that an object spans inside a file.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -118,16 +118,16 @@ impl<T, E: Into<Error>> WithSpan<T> for Result<T, E> {
 }
 
 /// Helper trait to update `Result<A, RichError>` with the affected source file.
-pub trait WithFile<T> {
+pub trait WithSource<T> {
     /// Update the result with the affected source file.
     ///
     /// Enable pretty errors.
-    fn with_file<F: Into<Arc<str>>>(self, file: F) -> Result<T, RichError>;
+    fn with_source<S: Into<SourceFile>>(self, source: S) -> Result<T, RichError>;
 }
 
-impl<T> WithFile<T> for Result<T, RichError> {
-    fn with_file<F: Into<Arc<str>>>(self, file: F) -> Result<T, RichError> {
-        self.map_err(|e| e.with_file(file.into()))
+impl<T> WithSource<T> for Result<T, RichError> {
+    fn with_source<S: Into<SourceFile>>(self, source: S) -> Result<T, RichError> {
+        self.map_err(|e| e.with_source(source.into()))
     }
 }
 
@@ -140,10 +140,10 @@ pub struct RichError {
     error: Error,
     /// Area that the error spans inside the file.
     span: Span,
-    /// File in which the error occurred.
+    /// File context in which the error occurred.
     ///
     /// Required to print pretty errors.
-    file: Option<Arc<str>>,
+    source: Option<SourceFile>,
 }
 
 impl RichError {
@@ -152,18 +152,18 @@ impl RichError {
         RichError {
             error,
             span,
-            file: None,
+            source: None,
         }
     }
 
     /// Add the source file where the error occurred.
     ///
     /// Enable pretty errors.
-    pub fn with_file(self, file: Arc<str>) -> Self {
+    pub fn with_source(self, source: SourceFile) -> Self {
         Self {
             error: self.error,
             span: self.span,
-            file: Some(file),
+            source: Some(source),
         }
     }
 
@@ -173,12 +173,12 @@ impl RichError {
         Self {
             error: Error::CannotParse(reason.to_string()),
             span: Span::new(0, 0),
-            file: None,
+            source: None,
         }
     }
 
-    pub fn file(&self) -> &Option<Arc<str>> {
-        &self.file
+    pub fn source(&self) -> &Option<SourceFile> {
+        &self.source
     }
 
     pub fn error(&self) -> &Error {
@@ -209,8 +209,10 @@ impl fmt::Display for RichError {
             (line, col)
         }
 
-        match self.file {
-            Some(ref file) if !file.is_empty() => {
+        match self.source {
+            Some(ref source) if !source.content.is_empty() => {
+                let file = &source.content();
+
                 let (start_line, start_col) = get_line_col(file, self.span.start);
                 let (end_line, end_col) = get_line_col(file, self.span.end);
 
@@ -218,6 +220,16 @@ impl fmt::Display for RichError {
 
                 let n_spanned_lines = end_line - start_line_index;
                 let line_num_width = end_line.to_string().len();
+
+                writeln!(
+                    f,
+                    "{:>width$}--> {}:{}:{}",
+                    "",
+                    source.name,
+                    start_line,
+                    start_col,
+                    width = line_num_width
+                )?;
 
                 writeln!(f, "{:width$} |", " ", width = line_num_width)?;
 
@@ -309,7 +321,7 @@ where
                 found: found_string,
             },
             span,
-            file: None,
+            source: None,
         }
     }
 }
@@ -336,7 +348,7 @@ where
                 found: found_string,
             },
             span,
-            file: None,
+            source: None,
         }
     }
 
@@ -352,17 +364,17 @@ where
 
 #[derive(Debug, Clone, Hash)]
 pub struct ErrorCollector {
-    /// File in which the error occurred.
-    file: Arc<str>,
+    /// File context in which the error occurred.
+    source: SourceFile,
 
     /// Collected errors.
     errors: Vec<RichError>,
 }
 
 impl ErrorCollector {
-    pub fn new(file: Arc<str>) -> Self {
+    pub fn new(source: SourceFile) -> Self {
         Self {
-            file,
+            source: source.clone(),
             errors: Vec::new(),
         }
     }
@@ -371,7 +383,7 @@ impl ErrorCollector {
     pub fn update(&mut self, errors: impl IntoIterator<Item = RichError>) {
         let new_errors = errors
             .into_iter()
-            .map(|err| err.with_file(Arc::clone(&self.file)));
+            .map(|err| err.with_source(self.source.clone()));
 
         self.errors.extend(new_errors);
     }
@@ -399,6 +411,7 @@ impl fmt::Display for ErrorCollector {
 /// Records _what_ happened but not where.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Error {
+    UnknownLibrary(String),
     ArraySizeNonZero(usize),
     ListBoundPow2(usize),
     BitStringPow2(usize),
@@ -447,6 +460,10 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::UnknownLibrary(name) => write!(
+                f,
+                "Unknown module or library '{name}'"
+            ),
             Error::ArraySizeNonZero(size) => write!(
                 f,
                 "Expected a non-negative integer as array size, found {size}"
@@ -637,6 +654,10 @@ impl From<simplicity::types::Error> for Error {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use crate::SourceName;
+
     use super::*;
 
     const FILE: &str = r#"let a1: List<u32, 5> = None;
@@ -644,47 +665,61 @@ let x: u32 = Left(
     Right(0)
 );"#;
     const EMPTY_FILE: &str = "";
+    const FILENAME: &str = "<test>";
 
     #[test]
     fn display_single_line() {
+        let source = SourceFile::new(SourceName::Virtual(Arc::from(FILENAME)), Arc::from(FILE));
+
         let error = Error::ListBoundPow2(5)
             .with_span(Span::new(13, 19))
-            .with_file(Arc::from(FILE));
-        let expected = r#"
+            .with_source(source);
+        let expected = format!(
+            r#"
+ --> {FILENAME}:1:14
   |
 1 | let a1: List<u32, 5> = None;
-  |              ^^^^^^ Expected a power of two greater than one (2, 4, 8, 16, 32, ...) as list bound, found 5"#;
+  |              ^^^^^^ Expected a power of two greater than one (2, 4, 8, 16, 32, ...) as list bound, found 5"#
+        );
         assert_eq!(&expected[1..], &error.to_string());
     }
 
     #[test]
     fn display_multi_line() {
+        let source = SourceFile::new(SourceName::Virtual(Arc::from(FILENAME)), Arc::from(FILE));
         let error = Error::CannotParse(
             "Expected value of type `u32`, got `Either<Either<_, u32>, _>`".to_string(),
         )
         .with_span(Span::new(41, FILE.len()))
-        .with_file(Arc::from(FILE));
-        let expected = r#"
+        .with_source(source);
+        let expected = format!(
+            r#"
+ --> {FILENAME}:2:14
   |
 2 | let x: u32 = Left(
 3 |     Right(0)
 4 | );
-  | ^^^^^^^^^^^^^^^^^^ Cannot parse: Expected value of type `u32`, got `Either<Either<_, u32>, _>`"#;
+  | ^^^^^^^^^^^^^^^^^^ Cannot parse: Expected value of type `u32`, got `Either<Either<_, u32>, _>`"#
+        );
         assert_eq!(&expected[1..], &error.to_string());
     }
 
     #[test]
     fn display_entire_file() {
+        let source = SourceFile::new(SourceName::Virtual(Arc::from(FILENAME)), Arc::from(FILE));
         let error = Error::CannotParse("This span covers the entire file".to_string())
             .with_span(Span::from(FILE))
-            .with_file(Arc::from(FILE));
-        let expected = r#"
+            .with_source(source);
+        let expected = format!(
+            r#"
+ --> {FILENAME}:1:1
   |
 1 | let a1: List<u32, 5> = None;
 2 | let x: u32 = Left(
 3 |     Right(0)
 4 | );
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Cannot parse: This span covers the entire file"#;
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Cannot parse: This span covers the entire file"#
+        );
         assert_eq!(&expected[1..], &error.to_string());
     }
 
@@ -702,9 +737,13 @@ let x: u32 = Left(
 
     #[test]
     fn display_empty_file() {
+        let source = SourceFile::new(
+            SourceName::Virtual(Arc::from(FILENAME)),
+            Arc::from(EMPTY_FILE),
+        );
         let error = Error::CannotParse("This error has an empty file".to_string())
             .with_span(Span::from(EMPTY_FILE))
-            .with_file(Arc::from(EMPTY_FILE));
+            .with_source(source);
         let expected = "Cannot parse: This error has an empty file";
         assert_eq!(&expected, &error.to_string());
     }

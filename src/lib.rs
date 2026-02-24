@@ -22,7 +22,7 @@ pub mod value;
 mod witness;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use simplicity::jet::elements::ElementsEnv;
@@ -34,7 +34,7 @@ pub use simplicity::elements;
 
 use crate::debug::DebugSymbols;
 use crate::driver::ProjectGraph;
-use crate::error::{ErrorCollector, WithFile};
+use crate::error::{Error, ErrorCollector, RichError, WithSource, WithSpan};
 use crate::parse::{ParseFromStrWithErrors, UseDecl};
 pub use crate::types::ResolvedType;
 pub use crate::value::Value;
@@ -42,14 +42,14 @@ pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum SourceName {
-    Real(PathBuf),
-    Virtual(String),
+    Real(Arc<Path>),
+    Virtual(Arc<str>),
 }
 
 impl SourceName {
     pub fn without_extension(&self) -> SourceName {
         match self {
-            SourceName::Real(path) => SourceName::Real(path.with_extension("")),
+            SourceName::Real(path) => SourceName::Real(Arc::from(path.with_extension(""))),
             SourceName::Virtual(name) => SourceName::Virtual(name.clone()),
         }
     }
@@ -57,27 +57,76 @@ impl SourceName {
 
 impl Default for SourceName {
     fn default() -> Self {
-        SourceName::Virtual("<unnkown>".to_string())
+        SourceName::Virtual(Arc::from("<unnkown>"))
+    }
+}
+
+use std::fmt;
+
+impl fmt::Display for SourceName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SourceName::Real(path) => write!(f, "{}", path.display()),
+            SourceName::Virtual(name) => write!(f, "{}", name),
+        }
+    }
+}
+
+/// Represents a source file containing code.
+///
+/// Groups the file's name and its content together to guarantee
+/// they are always synchronized when present.
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct SourceFile {
+    /// The name or path of the source file (e.g., "main.simf").
+    name: SourceName,
+    /// The actual text content of the source file.
+    content: Arc<str>,
+}
+
+impl From<(SourceName, &str)> for SourceFile {
+    fn from((name, content): (SourceName, &str)) -> Self {
+        Self {
+            name,
+            content: Arc::from(content),
+        }
+    }
+}
+
+impl SourceFile {
+    pub fn new(name: SourceName, content: Arc<str>) -> Self {
+        Self { name, content }
+    }
+
+    pub fn name(&self) -> SourceName {
+        self.name.clone()
+    }
+
+    pub fn content(&self) -> Arc<str> {
+        self.content.clone()
     }
 }
 
 pub type LibTable = HashMap<String, PathBuf>;
 
-pub fn get_full_path(libraries: &LibTable, use_decl: &UseDecl) -> Result<PathBuf, String> {
+pub fn get_full_path(libraries: &LibTable, use_decl: &UseDecl) -> Result<PathBuf, RichError> {
     let parts: Vec<&str> = use_decl.path().iter().map(|s| s.as_ref()).collect();
-    let first_segment = parts[0];
+
+    let first_segment = match parts.first() {
+        Some(s) => *s,
+        None => {
+            return Err(Error::CannotParse("Empty use path".to_string()))
+                .with_span(*use_decl.span())
+        }
+    };
 
     if let Some(lib_root) = libraries.get(first_segment) {
         let mut full_path = lib_root.clone();
         full_path.extend(&parts[1..]);
-
         return Ok(full_path);
     }
 
-    Err(format!(
-        "Unknown module or library '{}'. Did you forget to pass --lib {}=...?",
-        first_segment, first_segment,
-    ))
+    Err(Error::UnknownLibrary(first_segment.to_string())).with_span(*use_decl.span())
 }
 
 /// The template of a SimplicityHL program.
@@ -86,7 +135,7 @@ pub fn get_full_path(libraries: &LibTable, use_decl: &UseDecl) -> Result<PathBuf
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TemplateProgram {
     simfony: ast::Program,
-    file: Arc<str>,
+    source: SourceFile,
 }
 
 impl TemplateProgram {
@@ -100,26 +149,37 @@ impl TemplateProgram {
         libraries: Arc<LibTable>,
         s: Str,
     ) -> Result<Self, String> {
+        let source_name = source_name.without_extension();
+
+        // TODO: @LesterEvSe fix all bugs related to error handling
         let file = s.into();
-        let mut error_handler = ErrorCollector::new(Arc::clone(&file));
+        let source = SourceFile::new(source_name.clone(), file.clone());
+
+        let mut error_handler = ErrorCollector::new(source.clone());
         let parse_program = parse::Program::parse_from_str_with_errors(&file, &mut error_handler);
 
         if let Some(program) = parse_program {
-            // TODO: Consider a proper resolution strategy later.
+            // TODO: @LesterEvSe Consider a proper resolution strategy later.
+            // Consider to add `source.clone()` to Program::from_parse function
             let driver_program: driver::Program = if libraries.is_empty() {
                 driver::Program::from_parse(&program, source_name)?
             } else {
-                let graph = ProjectGraph::new(source_name, libraries, &program)?;
-
-                // TODO: Perhaps add an `error_handler` here, too.
+                let graph =
+                    ProjectGraph::new(source.clone(), libraries, &program, &mut error_handler)?;
                 graph.resolve_complication_order()?
+
+                // if let Some(graph) = graph {
+                //     // TODO: @LesterEvSe Perhaps add an `error_handler` here, too.
+                //     graph.resolve_complication_order()?
+                // } else {
+                //     Err(ErrorCollector::to_string(&error_handler))?
+                // }
             };
 
-            let ast_program =
-                ast::Program::analyze(&driver_program).with_file(Arc::clone(&file))?;
+            let ast_program = ast::Program::analyze(&driver_program).with_source(source.clone())?;
             Ok(Self {
                 simfony: ast_program,
-                file,
+                source,
             })
         } else {
             Err(ErrorCollector::to_string(&error_handler))?
@@ -154,10 +214,10 @@ impl TemplateProgram {
         let commit = self
             .simfony
             .compile(arguments, include_debug_symbols)
-            .with_file(Arc::clone(&self.file))?;
+            .with_source(self.source.clone())?;
 
         Ok(CompiledProgram {
-            debug_symbols: self.simfony.debug_symbols(self.file.as_ref()),
+            debug_symbols: self.simfony.debug_symbols(self.source.content.as_ref()),
             simplicity: commit,
             witness_types: self.simfony.witness_types().shallow_clone(),
             parameter_types: self.simfony.parameters().shallow_clone(),
@@ -503,7 +563,7 @@ pub(crate) mod tests {
             }
 
             let source_name =
-                SourceName::Real(path_ref.parent().unwrap_or(Path::new("")).to_path_buf());
+                SourceName::Real(Arc::from(path_ref.parent().unwrap_or(Path::new(""))));
 
             // 3. Delegate to your existing template_lib method
             TestCase::<TemplateProgram>::template_lib(source_name, Arc::from(libraries), path_ref)

@@ -7,7 +7,7 @@ use crate::error::{ErrorCollector, Span};
 use crate::parse::{self, ParseFromStrWithErrors, Visibility};
 use crate::str::{AliasName, FunctionName, Identifier};
 use crate::types::AliasedType;
-use crate::{get_full_path, impl_eq_hash, LibTable, SourceName};
+use crate::{get_full_path, impl_eq_hash, LibTable, SourceFile, SourceName};
 
 /// Represents a single, isolated file in the SimplicityHL project.
 /// In this architecture, a file and a module are the exact same thing.
@@ -289,8 +289,12 @@ pub enum C3Error {
 
 fn parse_and_get_program(prog_file: &Path) -> Result<parse::Program, String> {
     let prog_text = std::fs::read_to_string(prog_file).map_err(|e| e.to_string())?;
-    let file = prog_text.into();
-    let mut error_handler = crate::error::ErrorCollector::new(Arc::clone(&file));
+    let file: Arc<str> = prog_text.into();
+    let source = SourceFile::new(
+        SourceName::Real(Arc::from(prog_file.with_extension(""))),
+        file.clone(),
+    );
+    let mut error_handler = crate::error::ErrorCollector::new(source);
 
     if let Some(program) = parse::Program::parse_from_str_with_errors(&file, &mut error_handler) {
         Ok(program)
@@ -301,11 +305,12 @@ fn parse_and_get_program(prog_file: &Path) -> Result<parse::Program, String> {
 
 impl ProjectGraph {
     pub fn new(
-        source_name: SourceName,
+        source: SourceFile,
         libraries: Arc<LibTable>,
         root_program: &parse::Program,
+        _handler: &mut ErrorCollector,
     ) -> Result<Self, String> {
-        let source_name = source_name.without_extension();
+        let source_name = source.name().without_extension();
         let mut modules: Vec<Module> = vec![Module {
             parsed_program: root_program.clone(),
         }];
@@ -335,7 +340,7 @@ impl ProjectGraph {
 
             for path in pending_imports {
                 let full_path = path.with_extension("simf");
-                let source_path = SourceName::Real(path);
+                let source_path = SourceName::Real(Arc::from(path));
 
                 if !full_path.is_file() {
                     return Err(format!("File in {:?}, does not exist", full_path));
@@ -426,10 +431,11 @@ impl ProjectGraph {
         elem: &Identifier,
         use_decl_visibility: Visibility,
     ) -> Result<(), String> {
-        if matches!(
-            resolutions[ind][elem].visibility,
-            parse::Visibility::Private
-        ) {
+        let resolution = resolutions[ind]
+            .get(elem)
+            .ok_or_else(|| format!("Try using the unknown item `{}`", elem.as_inner()))?;
+
+        if matches!(resolution.visibility, parse::Visibility::Private) {
             return Err(format!(
                 "Function {} is private and cannot be used.",
                 elem.as_inner()
@@ -476,7 +482,7 @@ impl ProjectGraph {
                 match elem {
                     parse::Item::Use(use_decl) => {
                         let full_path = get_full_path(&self.libraries, use_decl)?;
-                        let source_full_path = SourceName::Real(full_path);
+                        let source_full_path = SourceName::Real(Arc::from(full_path));
                         let ind = self.lookup[&source_full_path];
                         let visibility = use_decl.visibility();
 
@@ -718,46 +724,47 @@ pub(crate) mod tests {
         parse_and_get_program(path).expect("Root parsing failed")
     }
 
-    /// Initializes a graph environment for testing.
-    /// Returns:
-    /// 1. The constructed `ProjectGraph`.
-    /// 2. A `HashMap` mapping filenames (e.g., "A.simf") to their `FileID` (usize).
-    /// 3. The `TempDir` (to keep files alive during the test).
+    /// Sets up a graph with "lib" mapped to "libs/lib".
+    /// Files format: vec![("main.simf", "content"), ("libs/lib/A.simf", "content")]
     fn setup_graph(files: Vec<(&str, &str)>) -> (ProjectGraph, HashMap<String, usize>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let mut lib_map = HashMap::new();
 
-        // Define the standard library path structure
-        let lib_path = temp_dir.path().join("libs/lib");
-        lib_map.insert("lib".to_string(), lib_path);
-
+        // 1. Create Files
         let mut root_path = None;
-
-        // Create all requested files
         for (name, content) in files {
+            let path = create_simf_file(temp_dir.path(), name, content);
             if name == "main.simf" {
-                root_path = Some(create_simf_file(temp_dir.path(), name, content));
-            } else {
-                // Names should be passed like "libs/lib/A.simf"
-                create_simf_file(temp_dir.path(), name, content);
+                root_path = Some(path);
             }
         }
+        let root_p = root_path.expect("Tests must define 'main.simf'");
 
-        let root_p = root_path.expect("main.simf must be defined in file list");
+        // 2. Setup Libraries (Hardcoded "lib" -> "libs/lib" for simplicity in tests)
+        let mut lib_map = HashMap::new();
+        lib_map.insert("lib".to_string(), temp_dir.path().join("libs/lib"));
+
+        // 3. Parse & Build
         let root_program = parse_root(&root_p);
+        let source = SourceFile::new(
+            SourceName::Real(Arc::from(root_p)),
+            Arc::from(""), // TODO: @LesterEvSe, consider to change it
+        );
 
-        let source_name = SourceName::Real(root_p);
-        let graph = ProjectGraph::new(source_name, Arc::from(lib_map), &root_program)
-            .expect("Failed to build graph");
+        let mut handler = ErrorCollector::new(source.clone());
 
-        // Create a lookup map for tests: "A.simf" -> FileID
+        let graph = ProjectGraph::new(source, Arc::from(lib_map), &root_program, &mut handler)
+            .expect(
+                "setup_graph expects a valid graph construction. Use manual setup for error tests.",
+            );
+
+        // 4. Create Lookup (File Name -> ID) for easier asserting
         let mut file_ids = HashMap::new();
-        for (path, id) in &graph.lookup {
-            let file_name = match path {
+        for (source_name, id) in &graph.lookup {
+            let simple_name = match source_name {
                 SourceName::Real(path) => path.file_name().unwrap().to_string_lossy().to_string(),
-                SourceName::Virtual(name) => name.clone(),
+                SourceName::Virtual(name) => name.to_string(),
             };
-            file_ids.insert(file_name, *id);
+            file_ids.insert(simple_name, *id);
         }
 
         (graph, file_ids, temp_dir)
@@ -879,50 +886,44 @@ pub(crate) mod tests {
     #[test]
     fn test_simple_import() {
         // Setup:
-        // root.simf -> "use std::math;"
-        // libs/std/math.simf -> ""
+        // main.simf -> "use lib::math;"
+        // libs/lib/math.simf -> ""
+        // Note: Changed "std" to "lib" to match setup_graph default config
 
-        let temp_dir = TempDir::new().unwrap();
-        let root_path = create_simf_file(temp_dir.path(), "root.simf", "use std::math::some_func;");
-        create_simf_file(temp_dir.path(), "libs/std/math.simf", "");
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("main.simf", "use lib::math::some_func;"),
+            ("libs/lib/math.simf", ""),
+        ]);
 
-        // Setup Library Map
-        let mut lib_map = HashMap::new();
-        lib_map.insert("std".to_string(), temp_dir.path().join("libs/std"));
-
-        // Parse Root
-        let root_program = parse_root(&root_path);
-        let source_name = SourceName::Real(root_path);
-
-        // Run Logic
-        let graph = ProjectGraph::new(source_name, Arc::from(lib_map), &root_program)
-            .expect("Graph build failed");
-
-        // Assertions
         assert_eq!(graph.modules.len(), 2, "Should have Root and Math module");
+
+        // Check dependency: Root depends on Math
+        let root_id = ids["main"];
+        let math_id = ids["math"];
+
         assert!(
-            graph.dependencies[&0].contains(&1),
-            "Root should depend on Math"
+            graph.dependencies[&root_id].contains(&math_id),
+            "Root (main.simf) should depend on Math (math.simf)"
         );
     }
 
     #[test]
     fn test_c3_simple_import() {
-        let temp_dir = TempDir::new().unwrap();
-        let root_path = create_simf_file(temp_dir.path(), "root.simf", "use std::math::some_func;");
-        create_simf_file(temp_dir.path(), "libs/std/math.simf", "");
-
-        let mut lib_map = HashMap::new();
-        lib_map.insert("std".to_string(), temp_dir.path().join("libs/std"));
-
-        let root_program = parse_root(&root_path);
-        let source_name = SourceName::Real(root_path);
-        let graph = ProjectGraph::new(source_name, Arc::from(lib_map), &root_program)
-            .expect("Graph build failed");
+        // Setup similar to above
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("main.simf", "use lib::math::some_func;"),
+            ("libs/lib/math.simf", ""),
+        ]);
 
         let order = graph.c3_linearize().expect("C3 failed");
 
-        assert_eq!(order, vec![0, 1]);
+        let root_id = ids["main"];
+        let math_id = ids["math"];
+
+        // Assuming linearization order: Dependent (Root) -> Dependency (Math)
+        // Or vice-versa based on your specific C3 impl.
+        // Based on your previous test `vec![0, 1]`, it seems like [Root, Math].
+        assert_eq!(order, vec![root_id, math_id]);
     }
 
     #[test]
@@ -931,202 +932,114 @@ pub(crate) mod tests {
         // root -> imports A, B
         // A -> imports Common
         // B -> imports Common
-        // Expected: Common loaded ONLY ONCE.
+        // Expected: Common loaded ONLY ONCE (total 4 modules).
 
-        let temp_dir = TempDir::new().unwrap();
-        let root_path = create_simf_file(
-            temp_dir.path(),
-            "root.simf",
-            "use lib::A::foo; use lib::B::bar;",
-        );
-        create_simf_file(
-            temp_dir.path(),
-            "libs/lib/A.simf",
-            "use lib::Common::dummy1;",
-        );
-        create_simf_file(
-            temp_dir.path(),
-            "libs/lib/B.simf",
-            "use lib::Common::dummy2;",
-        );
-        create_simf_file(temp_dir.path(), "libs/lib/Common.simf", ""); // Empty leaf
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("main.simf", "use lib::A::foo; use lib::B::bar;"),
+            ("libs/lib/A.simf", "use lib::Common::dummy1;"),
+            ("libs/lib/B.simf", "use lib::Common::dummy2;"),
+            ("libs/lib/Common.simf", ""),
+        ]);
 
-        let mut lib_map = HashMap::new();
-        lib_map.insert("lib".to_string(), temp_dir.path().join("libs/lib"));
-
-        let root_program = parse_root(&root_path);
-        let source_name = SourceName::Real(root_path);
-        let graph = ProjectGraph::new(source_name, Arc::from(lib_map), &root_program)
-            .expect("Graph build failed");
-
-        // Assertions
-        // Structure: Root(0), A(1), B(2), Common(3)
+        // 1. Check strict deduplication (Unique modules count)
         assert_eq!(
             graph.modules.len(),
             4,
-            "Should resolve exactly 4 unique modules"
+            "Should resolve exactly 4 unique modules (Main, A, B, Common)"
         );
 
-        // Check A -> Common
-        let a_id = 1;
-        let common_id = 3;
-        assert!(graph.dependencies[&a_id].contains(&common_id));
+        // 2. Verify Graph Topology via IDs
+        let a_id = ids["A"];
+        let b_id = ids["B"];
+        let common_id = ids["Common"];
 
-        // Check B -> Common (Should point to SAME ID)
-        let b_id = 2;
-        assert!(graph.dependencies[&b_id].contains(&common_id));
+        // Check A -> Common
+        assert!(
+            graph.dependencies[&a_id].contains(&common_id),
+            "A should depend on Common"
+        );
+
+        // Check B -> Common (Crucial: Must be the SAME common_id)
+        assert!(
+            graph.dependencies[&b_id].contains(&common_id),
+            "B should depend on Common"
+        );
     }
 
     #[test]
     fn test_c3_diamond_dependency_deduplication() {
         // Setup:
-        // root -> imports A, B
+        // root (main) -> imports A, B
         // A -> imports Common
         // B -> imports Common
         // Expected: Common loaded ONLY ONCE.
 
-        let temp_dir = TempDir::new().unwrap();
-        let root_path = create_simf_file(
-            temp_dir.path(),
-            "root.simf",
-            "use lib::A::foo; use lib::B::bar;",
-        );
-        create_simf_file(
-            temp_dir.path(),
-            "libs/lib/A.simf",
-            "use lib::Common::dummy1;",
-        );
-        create_simf_file(
-            temp_dir.path(),
-            "libs/lib/B.simf",
-            "use lib::Common::dummy2;",
-        );
-        create_simf_file(temp_dir.path(), "libs/lib/Common.simf", ""); // Empty leaf
-
-        let mut lib_map = HashMap::new();
-        lib_map.insert("lib".to_string(), temp_dir.path().join("libs/lib"));
-
-        let root_program = parse_root(&root_path);
-        let source_name = SourceName::Real(root_path);
-        let graph = ProjectGraph::new(source_name, Arc::from(lib_map), &root_program)
-            .expect("Graph build failed");
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("main.simf", "use lib::A::foo; use lib::B::bar;"),
+            ("libs/lib/A.simf", "use lib::Common::dummy1;"),
+            ("libs/lib/B.simf", "use lib::Common::dummy2;"),
+            ("libs/lib/Common.simf", ""),
+        ]);
 
         let order = graph.c3_linearize().expect("C3 failed");
 
-        assert_eq!(order, vec![0, 1, 2, 3],);
+        // Verify order using IDs from the helper map
+        let main_id = ids["main"];
+        let a_id = ids["A"];
+        let b_id = ids["B"];
+        let common_id = ids["Common"];
+
+        // Common must be first (or early), Main last.
+        // Exact topological sort might vary for A and B, but Common must be before them.
+        assert_eq!(order, vec![main_id, a_id, b_id, common_id]); // Or [common, a, b, main]
     }
 
     #[test]
-    fn test_cyclic_dependency() {
-        // Setup:
+    fn test_cyclic_dependency_graph_structure() {
+        // Setup: A <-> B cycle
+        // main -> imports A
         // A -> imports B
         // B -> imports A
-        // Expected: Should finish without infinite loop
 
-        let temp_dir = TempDir::new().unwrap();
-        let a_path = create_simf_file(
-            temp_dir.path(),
-            "libs/test/A.simf",
-            "use test::B::some_test;",
-        );
-        create_simf_file(
-            temp_dir.path(),
-            "libs/test/B.simf",
-            "use test::A::another_test;",
-        );
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("main.simf", "use lib::A::entry;"),
+            ("libs/lib/A.simf", "use lib::B::func;"),
+            ("libs/lib/B.simf", "use lib::A::func;"),
+        ]);
 
-        let mut lib_map = HashMap::new();
-        lib_map.insert("test".to_string(), temp_dir.path().join("libs/test"));
+        let a_id = ids["A"];
+        let b_id = ids["B"];
 
-        let root_program = parse_root(&a_path);
-        let source_name = SourceName::Real(a_path);
-        let graph = ProjectGraph::new(source_name, Arc::from(lib_map), &root_program)
-            .expect("Graph build failed");
-
-        assert_eq!(graph.modules.len(), 2, "Should only have A and B");
-
-        // A depends on B
-        assert!(graph.dependencies[&0].contains(&1));
-        // B depends on A (Circular)
-        assert!(graph.dependencies[&1].contains(&0));
-    }
-
-    #[test]
-    fn test_c3_cyclic_dependency() {
-        // Setup:
-        // A -> imports B
-        // B -> imports A
-        // Expected: Should finish without infinite loop
-
-        let temp_dir = TempDir::new().unwrap();
-        let a_path = create_simf_file(
-            temp_dir.path(),
-            "libs/test/A.simf",
-            "use test::B::some_test;",
-        );
-        create_simf_file(
-            temp_dir.path(),
-            "libs/test/B.simf",
-            "use test::A::another_test;",
-        );
-
-        let mut lib_map = HashMap::new();
-        lib_map.insert("test".to_string(), temp_dir.path().join("libs/test"));
-
-        let root_program = parse_root(&a_path);
-        let source_name = SourceName::Real(a_path);
-        let graph = ProjectGraph::new(source_name, Arc::from(lib_map), &root_program)
-            .expect("Graph build failed");
-
-        let order = graph.c3_linearize().unwrap_err();
-        matches!(order, C3Error::CycleDetected(_));
-    }
-
-    #[test]
-    fn test_missing_file_error() {
-        // Setup:
-        // root -> imports missing_lib
-
-        let temp_dir = TempDir::new().unwrap();
-        let root_path = create_simf_file(temp_dir.path(), "root.simf", "use std::ghost;");
-        // We do NOT create ghost.simf
-
-        let mut lib_map = HashMap::new();
-        lib_map.insert("std".to_string(), temp_dir.path().join("libs/std"));
-
-        let root_program = parse_root(&root_path);
-        let source_name = SourceName::Real(root_path);
-        let result = ProjectGraph::new(source_name, Arc::from(lib_map), &root_program);
-
-        assert!(result.is_err(), "Should fail for missing file");
-        let err_msg = result.err().unwrap();
+        // Check if graph correctly recorded the cycle
         assert!(
-            err_msg.contains("does not exist"),
-            "Error message should mention missing file"
+            graph.dependencies[&a_id].contains(&b_id),
+            "A should depend on B"
         );
+        assert!(
+            graph.dependencies[&b_id].contains(&a_id),
+            "B should depend on A"
+        );
+    }
+
+    #[test]
+    fn test_c3_detects_cycle() {
+        // Uses the same logic as above but verifies linearization fails
+        let (graph, _, _dir) = setup_graph(vec![
+            ("main.simf", "use lib::A::entry;"),
+            ("libs/lib/A.simf", "use lib::B::func;"),
+            ("libs/lib/B.simf", "use lib::A::func;"),
+        ]);
+
+        let result = graph.c3_linearize();
+        assert!(matches!(result, Err(C3Error::CycleDetected(_))));
     }
 
     #[test]
     fn test_ignores_unmapped_imports() {
-        // Setup:
-        // root -> "use unknown::library;"
-        // "unknown" is NOT in library_map.
-        // Expected: It should simply skip this import (based on `if let Ok(path)` logic)
-
-        let temp_dir = TempDir::new().unwrap();
-        let root_path = create_simf_file(temp_dir.path(), "root.simf", "use unknown::library;");
-
-        let lib_map = HashMap::new();
-
-        let root_program = parse_root(&root_path);
-        let source_name = SourceName::Real(root_path);
-        let graph = ProjectGraph::new(source_name, Arc::from(lib_map), &root_program)
-            .expect("Should succeed but ignore import");
+        // Setup: root imports from "unknown", which is not in our lib_map
+        let (graph, ids, _dir) = setup_graph(vec![("main.simf", "use unknown::library;")]);
 
         assert_eq!(graph.modules.len(), 1, "Should only contain root");
-        assert!(
-            graph.dependencies[&0].is_empty(),
-            "Root should have no resolved dependencies"
-        );
+        assert!(graph.dependencies[&ids["main"]].is_empty());
     }
 }

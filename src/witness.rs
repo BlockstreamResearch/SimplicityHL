@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::error::{Error, RichError, WithFile, WithSpan};
+use crate::error::{Error, RichError, WithSpan};
 use crate::parse;
 use crate::parse::ParseFromStr;
 use crate::str::WitnessName;
@@ -144,7 +144,7 @@ impl ParseFromStr for ResolvedType {
             .resolve_builtin()
             .map_err(Error::UndefinedAlias)
             .with_span(s)
-            .with_file(s)
+        // .with_source(s)  // TODO: @LesterEvSe think about this deletion
     }
 }
 
