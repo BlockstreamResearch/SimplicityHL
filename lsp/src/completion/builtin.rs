@@ -43,7 +43,7 @@ pub fn match_callname(call: &CallName) -> Option<FunctionTemplate> {
             Some(FunctionTemplate::new(
                 "unwrap_left",
                 vec![format!("{ty}")],
-                vec![format!("Either<{ty}, U>")],
+                vec![format!("Either<T, {ty}>")],
                 ty,
                 doc,
             ))
@@ -53,7 +53,7 @@ pub fn match_callname(call: &CallName) -> Option<FunctionTemplate> {
             Some(FunctionTemplate::new(
                 "unwrap_right",
                 vec![format!("{ty}")],
-                vec![format!("Either<T, {ty}>")],
+                vec![format!("Either<{ty}, U>")],
                 ty,
                 doc,
             ))
@@ -136,15 +136,17 @@ fn builtin_documentation(call: &CallName) -> String {
     "Extracts the left variant of an `Either` value.\n
 Returns the left-side value if it exists, otherwise panics.\n
 ```simplicityhl
-let x: Either<u8, u8> = Left(42);
-let y: u8 = unwrap_left::<u8>(x); // 42
+let x: Either<u8, u32> = Left(42);
+// We must specify the type of the right variant so the compiler knows the full type.
+let y: u8 = unwrap_left::<u32>(x); // 42
 ```",
         CallName::UnwrapRight(_) =>
     "Extracts the right variant of an `Either` value.\n
 Returns the right-side value if it exists, otherwise panics.\n
 ```simplicityhl
-let x: Either<u8, u8> = Right(128);
-let y: u8 = unwrap_right::<u8>(x); // 128
+let x: Either<u8, u32> = Right(128);
+// We must specify the type of the left variant so the compiler knows the full type.
+let y: u32 = unwrap_right::<u8>(x); // 128
 ```",
         CallName::Unwrap =>
     "Unwraps an `Option` value, panicking if it is `None`.\n
