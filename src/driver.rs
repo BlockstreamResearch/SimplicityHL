@@ -375,7 +375,10 @@ impl ProjectGraph {
                 let dep_key = dep_source_name.without_extension();
 
                 if let Some(&existing_id) = lookup.get(&dep_key) {
-                    dependencies.entry(curr_id).or_default().push(existing_id);
+                    let deps = dependencies.entry(curr_id).or_default();
+                    if !deps.contains(&existing_id) {
+                        deps.push(existing_id);
+                    }
                     continue;
                 }
 
