@@ -728,13 +728,14 @@ impl Scope {
         }
     }
 
+    // TODO: @LesterEvSe, Consider why we use this function to get type.
     /// Get the definition of a custom function with visibility and existence checks.
     ///
     /// # Errors
     ///
     /// - `Error::FileNotFound`: The specified `file_id` does not exist in the resolutions.
     /// - `Error::FunctionUndefined`: The function is not found in the file's scope OR not defined globally.
-    /// - `Error::FunctionIsPrivate`: The function exists but is private (and thus not accessible).
+    /// - `Error::PrivateItem`: The function or type exists but is private.
     pub fn get_function(&self, name: &FunctionName) -> Result<&CustomFunction, Error> {
         // The order of the errors is important!
         let function = self
@@ -759,7 +760,7 @@ impl Scope {
         if file_scope.contains_key(&identifier) {
             Ok(function)
         } else {
-            Err(Error::FunctionIsPrivate(name.clone()))
+            Err(Error::PrivateItem(name.as_inner().to_string()))
         }
     }
 

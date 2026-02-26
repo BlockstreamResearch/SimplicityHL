@@ -150,40 +150,38 @@ impl TemplateProgram {
         s: Str,
     ) -> Result<Self, String> {
         let source_name = source_name.without_extension();
-
-        // TODO: @LesterEvSe fix all bugs related to error handling
         let file = s.into();
         let source = SourceFile::new(source_name.clone(), file.clone());
 
-        let mut error_handler = ErrorCollector::new(source.clone());
-        let parse_program = parse::Program::parse_from_str_with_errors(&file, &mut error_handler);
+        // Create Global error_handler
+        let mut error_handler = ErrorCollector::new();
 
-        if let Some(program) = parse_program {
-            // TODO: @LesterEvSe Consider a proper resolution strategy later.
-            // Consider to add `source.clone()` to Program::from_parse function
-            let driver_program: driver::Program = if libraries.is_empty() {
-                driver::Program::from_parse(&program, source_name)?
-            } else {
-                let graph =
-                    ProjectGraph::new(source.clone(), libraries, &program, &mut error_handler)?;
-                graph.resolve_complication_order()?
+        // 1. Parse root file
+        let parsed_program =
+            parse::Program::parse_from_str_with_errors(&file, source.clone(), &mut error_handler)
+                .ok_or_else(|| error_handler.to_string())?;
 
-                // if let Some(graph) = graph {
-                //     // TODO: @LesterEvSe Perhaps add an `error_handler` here, too.
-                //     graph.resolve_complication_order()?
-                // } else {
-                //     Err(ErrorCollector::to_string(&error_handler))?
-                // }
-            };
-
-            let ast_program = ast::Program::analyze(&driver_program).with_source(source.clone())?;
-            Ok(Self {
-                simfony: ast_program,
-                source,
-            })
+        // 2. Create the driver program
+        let driver_program: driver::Program = if libraries.is_empty() {
+            driver::Program::from_parse(&parsed_program, source.clone(), &mut error_handler)
+                .ok_or_else(|| error_handler.to_string())?
         } else {
-            Err(ErrorCollector::to_string(&error_handler))?
-        }
+            ProjectGraph::new(
+                source.clone(),
+                libraries,
+                &parsed_program,
+                &mut error_handler,
+            )
+            .and_then(|graph| graph.resolve_complication_order(&mut error_handler))
+            .ok_or_else(|| error_handler.to_string())?
+        };
+
+        // 3. AST Analysis
+        let ast_program = ast::Program::analyze(&driver_program).with_source(source.clone())?;
+        Ok(Self {
+            simfony: ast_program,
+            source,
+        })
     }
 
     /// Access the parameters of the program.
@@ -772,7 +770,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Function SecretType is private and cannot be used")]
+    #[should_panic(expected = "Item `SecretType` is private")]
     fn private_type_visibility_error() {
         let main_code = r#"
             use temp::hidden::SecretType;

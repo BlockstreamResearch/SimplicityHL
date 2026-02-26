@@ -18,7 +18,6 @@ use miniscript::iter::{Tree, TreeLike};
 
 use crate::error::ErrorCollector;
 use crate::error::{Error, RichError, Span};
-use crate::impl_eq_hash;
 use crate::lexer::Token;
 use crate::num::NonZeroPow2Usize;
 use crate::pattern::Pattern;
@@ -27,6 +26,7 @@ use crate::str::{
     WitnessName,
 };
 use crate::types::{AliasedType, BuiltinAlias, TypeConstructible};
+use crate::{impl_eq_hash, SourceFile};
 
 /// A program is a sequence of items.
 #[derive(Clone, Debug)]
@@ -994,7 +994,11 @@ pub trait ParseFromStr: Sized {
 /// Trait for parsing with collection of errors.
 pub trait ParseFromStrWithErrors: Sized {
     /// Parse a value from the string `s` with Errors.
-    fn parse_from_str_with_errors(s: &str, handler: &mut ErrorCollector) -> Option<Self>;
+    fn parse_from_str_with_errors(
+        s: &str,
+        source: SourceFile,
+        handler: &mut ErrorCollector,
+    ) -> Option<Self>;
 }
 
 /// Trait for generating parsers of themselves.
@@ -1038,10 +1042,14 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
 }
 
 impl<A: ChumskyParse + std::fmt::Debug> ParseFromStrWithErrors for A {
-    fn parse_from_str_with_errors(s: &str, handler: &mut ErrorCollector) -> Option<Self> {
+    fn parse_from_str_with_errors(
+        s: &str,
+        source: SourceFile,
+        handler: &mut ErrorCollector,
+    ) -> Option<Self> {
         let (tokens, lex_errs) = crate::lexer::lex(s);
 
-        handler.update(lex_errs);
+        handler.update_with_source_enrichment(source.clone(), lex_errs);
         let tokens = tokens?;
 
         let (ast, parse_errs) = A::parser()
@@ -1053,14 +1061,14 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStrWithErrors for A {
             )
             .into_output_errors();
 
-        handler.update(parse_errs);
+        handler.update_with_source_enrichment(source.clone(), parse_errs);
 
         // TODO: We should return parsed result if we found errors, but because analyzing in `ast` module
         // is not handling poisoned tree right now, we don't return parsed result
-        if handler.get().is_empty() {
-            ast
-        } else {
+        if handler.has_errors() {
             None
+        } else {
+            ast
         }
     }
 }

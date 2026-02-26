@@ -220,19 +220,23 @@ impl crate::ArbitraryOfType for Arguments {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ErrorCollector;
     use crate::parse::ParseFromStr;
     use crate::value::ValueConstructible;
-    use crate::SourceName;
     use crate::{ast, driver, parse, CompiledProgram, SatisfiedProgram};
+    use crate::{SourceFile, SourceName};
 
     #[test]
     fn witness_reuse() {
         let s = r#"fn main() {
     assert!(jet::eq_32(witness::A, witness::A));
 }"#;
+        let source = SourceFile::new(SourceName::default(), Arc::from(s));
+        let mut error_handler = ErrorCollector::new();
+
         let program = parse::Program::parse_from_str(s).expect("parsing works");
-        let driver_program =
-            driver::Program::from_parse(&program, SourceName::default()).expect("driver works");
+        let driver_program = driver::Program::from_parse(&program, source, &mut error_handler)
+            .expect("driver works");
         match ast::Program::analyze(&driver_program).map_err(Error::from) {
             Ok(_) => panic!("Witness reuse was falsely accepted"),
             Err(Error::WitnessReused(..)) => {}

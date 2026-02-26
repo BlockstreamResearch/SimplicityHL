@@ -3,7 +3,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::error::{ErrorCollector, Span};
+use crate::error::{Error, ErrorCollector, RichError, Span};
 use crate::parse::{self, ParseFromStrWithErrors, Visibility};
 use crate::str::{AliasName, FunctionName, Identifier};
 use crate::types::AliasedType;
@@ -13,6 +13,7 @@ use crate::{get_full_path, impl_eq_hash, LibTable, SourceFile, SourceName};
 /// In this architecture, a file and a module are the exact same thing.
 #[derive(Debug, Clone)]
 pub struct Module {
+    pub source: SourceFile,
     /// The completely parsed program for this specific file.
     /// it contains all the functions, aliases, and imports defined inside the file.
     pub parsed_program: parse::Program,
@@ -69,62 +70,67 @@ pub struct Program {
 }
 
 impl Program {
-    pub fn from_parse(parsed: &parse::Program, root_path: SourceName) -> Result<Self, String> {
-        let root_path = root_path.without_extension();
+    pub fn from_parse(
+        parsed: &parse::Program,
+        source: SourceFile,
+        handler: &mut ErrorCollector,
+    ) -> Option<Self> {
+        let root_path = source.name().without_extension();
 
         let mut items: Vec<Item> = Vec::new();
         let mut resolutions: Vec<FileResolutions> = vec![BTreeMap::new()];
 
         let main_file_id = 0usize;
-        let mut errors: Vec<String> = Vec::new();
+        let mut errors: Vec<RichError> = Vec::new();
 
         for item in parsed.items() {
             match item {
-                parse::Item::Use(_) => {
-                    errors.push("Unsuitable Use type".to_string());
+                parse::Item::Use(use_decl) => {
+                    let bug_report = RichError::new(
+                        Error::UnknownLibrary(use_decl.path_buf().to_string_lossy().to_string()),
+                        *use_decl.span(),
+                    );
+                    handler.push(bug_report);
                 }
                 parse::Item::TypeAlias(alias) => {
-                    let res = ProjectGraph::register_def(
+                    if let Some(err) = ProjectGraph::register_def(
                         &mut items,
                         &mut resolutions,
                         main_file_id,
                         item,
                         alias.name().clone().into(),
                         &parse::Visibility::Public,
-                    );
-
-                    if let Err(e) = res {
-                        errors.push(e);
+                    ) {
+                        errors.push(err)
                     }
                 }
                 parse::Item::Function(function) => {
-                    let res = ProjectGraph::register_def(
+                    if let Some(err) = ProjectGraph::register_def(
                         &mut items,
                         &mut resolutions,
                         main_file_id,
                         item,
                         function.name().clone().into(),
                         &parse::Visibility::Public,
-                    );
-
-                    if let Err(e) = res {
-                        errors.push(e);
+                    ) {
+                        errors.push(err);
                     }
                 }
                 parse::Item::Module => {}
             }
         }
+        handler.update_with_source_enrichment(source, errors);
 
-        if !errors.is_empty() {
-            return Err(errors.join("\n"));
+        if handler.has_errors() {
+            None
+        } else {
+            Some(Program {
+                items: items.into(),
+                paths: Arc::from([root_path]),
+                resolutions: resolutions.into(),
+                span: *parsed.as_ref(),
+            })
         }
-
-        Ok(Program {
-            items: items.into(),
-            paths: Arc::from([root_path]),
-            resolutions: resolutions.into(),
-            span: *parsed.as_ref(),
-        })
     }
 
     /// Access the items of the program.
@@ -158,7 +164,7 @@ pub enum Item {
 }
 
 impl Item {
-    pub fn from_parse(parsed: &parse::Item, file_id: usize) -> Result<Self, String> {
+    pub fn from_parse(parsed: &parse::Item, file_id: usize) -> Result<Self, RichError> {
         match parsed {
             parse::Item::TypeAlias(alias) => {
                 let driver_alias = TypeAlias::from_parse(alias);
@@ -169,9 +175,12 @@ impl Item {
                 Ok(Item::Function(driver_func))
             }
             parse::Item::Module => Ok(Item::Module),
-
-            // Cannot convert Use to driver::Item
-            parse::Item::Use(_) => Err("Unsuitable Use type".to_string()),
+            parse::Item::Use(use_decl) => {
+                Err(RichError::new(
+                    Error::Internal("Encountered 'Use' item during driver generation. Imports should be resolved by ProjectGraph.".to_string()),
+                    *use_decl.span(),
+                ))
+            },
         }
     }
 }
@@ -287,39 +296,51 @@ pub enum C3Error {
     InconsistentLinearization { module: usize },
 }
 
-fn parse_and_get_program(prog_file: &Path) -> Result<parse::Program, String> {
-    let prog_text = std::fs::read_to_string(prog_file).map_err(|e| e.to_string())?;
-    let file: Arc<str> = prog_text.into();
-    let source = SourceFile::new(
-        SourceName::Real(Arc::from(prog_file.with_extension(""))),
-        file.clone(),
-    );
-    let mut error_handler = crate::error::ErrorCollector::new(source);
-
-    if let Some(program) = parse::Program::parse_from_str_with_errors(&file, &mut error_handler) {
-        Ok(program)
-    } else {
-        Err(ErrorCollector::to_string(&error_handler))?
-    }
-}
-
 impl ProjectGraph {
+    fn parse_and_get_program(
+        full_path: &Path,
+        importer_source: SourceFile,
+        span: Span,
+        handler: &mut ErrorCollector,
+    ) -> Option<Module> {
+        let dep_key = SourceName::Real(Arc::from(full_path.with_extension("")));
+        let Ok(content) = std::fs::read_to_string(full_path) else {
+            let err = RichError::new(Error::FileNotFound(PathBuf::from(full_path)), span)
+                .with_source(importer_source.clone());
+
+            handler.push(err);
+            return None;
+        };
+
+        let dep_source_file = SourceFile::new(dep_key.clone(), Arc::from(content.clone()));
+
+        parse::Program::parse_from_str_with_errors(&content, dep_source_file.clone(), handler).map(
+            |parsed_program| Module {
+                source: dep_source_file,
+                parsed_program,
+            },
+        )
+    }
+
     pub fn new(
-        source: SourceFile,
+        root_source: SourceFile,
         libraries: Arc<LibTable>,
         root_program: &parse::Program,
-        _handler: &mut ErrorCollector,
-    ) -> Result<Self, String> {
-        let source_name = source.name().without_extension();
+        handler: &mut ErrorCollector,
+    ) -> Option<Self> {
+        let root_name_no_ext = root_source.name().without_extension();
+
         let mut modules: Vec<Module> = vec![Module {
+            source: root_source,
             parsed_program: root_program.clone(),
         }];
+
         let mut lookup: HashMap<SourceName, usize> = HashMap::new();
-        let mut paths: Vec<SourceName> = vec![source_name.clone()];
+        let mut paths: Vec<SourceName> = vec![root_name_no_ext.clone()];
         let mut dependencies: HashMap<usize, Vec<usize>> = HashMap::new();
 
         let root_id = 0;
-        lookup.insert(source_name, root_id);
+        lookup.insert(root_name_no_ext, root_id);
         dependencies.insert(root_id, Vec::new());
 
         // Implementation of the standard BFS algorithm with memoization and queue
@@ -327,51 +348,68 @@ impl ProjectGraph {
         queue.push_back(root_id);
 
         while let Some(curr_id) = queue.pop_front() {
-            let mut pending_imports: Vec<PathBuf> = Vec::new();
+            // We need this to report errors inside THIS file.
+            let importer_source = modules[curr_id].source.clone();
             let current_program = &modules[curr_id].parsed_program;
 
+            // Lists to separate valid logic from errors
+            let mut valid_imports: Vec<(PathBuf, Span)> = Vec::new();
+            let mut resolution_errors: Vec<RichError> = Vec::new();
+
+            // PHASE 1: Resolve Imports
             for elem in current_program.items() {
                 if let parse::Item::Use(use_decl) = elem {
-                    if let Ok(path) = get_full_path(&libraries, use_decl) {
-                        pending_imports.push(path);
+                    match get_full_path(&libraries, use_decl) {
+                        Ok(path) => valid_imports.push((path, *use_decl.span())),
+                        Err(err) => {
+                            resolution_errors.push(err.with_source(importer_source.clone()))
+                        }
                     }
                 }
             }
 
-            for path in pending_imports {
+            // Phase 2: Load and Parse Dependencies
+            for (path, import_span) in valid_imports {
                 let full_path = path.with_extension("simf");
-                let source_path = SourceName::Real(Arc::from(path));
+                let dep_source_name = SourceName::Real(Arc::from(full_path.as_path()));
+                let dep_key = dep_source_name.without_extension();
 
-                if !full_path.is_file() {
-                    return Err(format!("File in {:?}, does not exist", full_path));
-                }
-
-                if let Some(&existing_id) = lookup.get(&source_path) {
+                if let Some(&existing_id) = lookup.get(&dep_key) {
                     dependencies.entry(curr_id).or_default().push(existing_id);
                     continue;
                 }
 
-                let last_ind = modules.len();
-                let program = parse_and_get_program(&full_path)?;
+                let Some(module) = ProjectGraph::parse_and_get_program(
+                    &full_path,
+                    importer_source.clone(),
+                    import_span,
+                    handler,
+                ) else {
+                    continue;
+                };
 
-                modules.push(Module {
-                    parsed_program: program,
-                });
-                lookup.insert(source_path.clone(), last_ind);
-                paths.push(source_path.clone());
+                let last_ind = modules.len();
+                modules.push(module);
+
+                lookup.insert(dep_key.clone(), last_ind);
+                paths.push(dep_key);
                 dependencies.entry(curr_id).or_default().push(last_ind);
 
                 queue.push_back(last_ind);
             }
         }
 
-        Ok(Self {
-            modules,
-            libraries,
-            lookup,
-            paths: paths.into(),
-            dependencies,
-        })
+        if handler.has_errors() {
+            None
+        } else {
+            Some(Self {
+                modules,
+                libraries,
+                lookup,
+                paths: paths.into(),
+                dependencies,
+            })
+        }
     }
 
     pub fn c3_linearize(&self) -> Result<Vec<usize>, C3Error> {
@@ -429,27 +467,30 @@ impl ProjectGraph {
         file_id: usize,
         ind: usize,
         elem: &Identifier,
-        use_decl_visibility: Visibility,
-    ) -> Result<(), String> {
-        let resolution = resolutions[ind]
-            .get(elem)
-            .ok_or_else(|| format!("Try using the unknown item `{}`", elem.as_inner()))?;
+        use_decl: &parse::UseDecl,
+    ) -> Option<RichError> {
+        let Some(resolution) = resolutions[ind].get(elem) else {
+            return Some(RichError::new(
+                Error::UnresolvedItem(elem.as_inner().to_string()),
+                *use_decl.span(),
+            ));
+        };
 
         if matches!(resolution.visibility, parse::Visibility::Private) {
-            return Err(format!(
-                "Function {} is private and cannot be used.",
-                elem.as_inner()
+            return Some(RichError::new(
+                Error::PrivateItem(elem.as_inner().to_string()),
+                *use_decl.span(),
             ));
         }
 
         resolutions[file_id].insert(
             elem.clone(),
             Resolution {
-                visibility: use_decl_visibility,
+                visibility: use_decl.visibility().clone(),
             },
         );
 
-        Ok(())
+        None
     }
 
     fn register_def(
@@ -459,32 +500,44 @@ impl ProjectGraph {
         item: &parse::Item,
         name: Identifier,
         vis: &parse::Visibility,
-    ) -> Result<(), String> {
-        items.push(Item::from_parse(item, file_id)?);
+    ) -> Option<RichError> {
+        let item = match Item::from_parse(item, file_id) {
+            Ok(item) => item,
+            Err(err) => return Some(err),
+        };
+
+        items.push(item);
         resolutions[file_id].insert(
             name,
             Resolution {
                 visibility: vis.clone(),
             },
         );
-        Ok(())
+
+        None
     }
 
-    // TODO: @LesterEvSe, consider processing more than one error at a time
-    fn build_program(&self, order: &Vec<usize>) -> Result<Program, String> {
+    fn build_program(&self, order: &Vec<usize>, handler: &mut ErrorCollector) -> Option<Program> {
         let mut items: Vec<Item> = Vec::new();
         let mut resolutions: Vec<FileResolutions> = vec![BTreeMap::new(); order.len()];
 
         for &file_id in order {
+            let importer_source = self.modules[file_id].source.clone();
             let program_items = self.modules[file_id].parsed_program.items();
 
             for elem in program_items {
+                let mut errors: Vec<RichError> = Vec::new();
                 match elem {
                     parse::Item::Use(use_decl) => {
-                        let full_path = get_full_path(&self.libraries, use_decl)?;
+                        let full_path = match get_full_path(&self.libraries, use_decl) {
+                            Ok(path) => path,
+                            Err(err) => {
+                                handler.push(err.with_source(importer_source.clone()));
+                                continue;
+                            }
+                        };
                         let source_full_path = SourceName::Real(Arc::from(full_path));
                         let ind = self.lookup[&source_full_path];
-                        let visibility = use_decl.visibility();
 
                         let use_targets = match use_decl.items() {
                             parse::UseItems::Single(elem) => std::slice::from_ref(elem),
@@ -492,53 +545,64 @@ impl ProjectGraph {
                         };
 
                         for target in use_targets {
-                            ProjectGraph::process_use_item(
+                            if let Some(err) = ProjectGraph::process_use_item(
                                 &mut resolutions,
                                 file_id,
                                 ind,
                                 target,
-                                visibility.clone(),
-                            )?;
+                                use_decl,
+                            ) {
+                                errors.push(err)
+                            }
                         }
                     }
                     parse::Item::TypeAlias(alias) => {
-                        Self::register_def(
+                        if let Some(err) = Self::register_def(
                             &mut items,
                             &mut resolutions,
                             file_id,
                             elem,
                             alias.name().clone().into(),
                             alias.visibility(),
-                        )?;
+                        ) {
+                            errors.push(err)
+                        }
                     }
                     parse::Item::Function(function) => {
-                        Self::register_def(
+                        if let Some(err) = Self::register_def(
                             &mut items,
                             &mut resolutions,
                             file_id,
                             elem,
                             function.name().clone().into(),
                             function.visibility(),
-                        )?;
+                        ) {
+                            errors.push(err)
+                        }
                     }
                     parse::Item::Module => {}
                 }
+                handler.update_with_source_enrichment(importer_source.clone(), errors);
             }
         }
 
-        Ok(Program {
-            items: items.into(),
-            paths: self.paths.clone(),
-            resolutions: resolutions.into(),
-            span: *self.modules[0].parsed_program.as_ref(),
-        })
+        if handler.has_errors() {
+            None
+        } else {
+            Some(Program {
+                items: items.into(),
+                paths: self.paths.clone(),
+                resolutions: resolutions.into(),
+                span: *self.modules[0].parsed_program.as_ref(),
+            })
+        }
     }
 
-    pub fn resolve_complication_order(&self) -> Result<Program, String> {
+    pub fn resolve_complication_order(&self, handler: &mut ErrorCollector) -> Option<Program> {
         // TODO: @LesterEvSe, resolve errors more appropriately
         let mut order = self.c3_linearize().unwrap();
         order.reverse();
-        self.build_program(&order)
+        self.build_program(&order, handler)
     }
 }
 
@@ -720,8 +784,33 @@ pub(crate) mod tests {
     }
 
     // Helper to mock the initial root program parsing
-    fn parse_root(path: &Path) -> parse::Program {
-        parse_and_get_program(path).expect("Root parsing failed")
+    // (Assuming your parser works via a helper function)
+    fn parse_root(path: &Path) -> (parse::Program, SourceFile) {
+        // 1. Read file
+        let content = std::fs::read_to_string(path).expect("Failed to read root file for parsing");
+
+        // 2. Create SourceFile (needed for the new parser signature)
+        // Note: We use the full path here; the logic inside `new` handles extension removal if needed
+        let source = SourceFile::new(
+            SourceName::Real(Arc::from(path)),
+            Arc::from(content.clone()),
+        );
+
+        // 3. Create a temporary handler just for this parse
+        let mut handler = ErrorCollector::new();
+
+        // 4. Parse
+        let program =
+            parse::Program::parse_from_str_with_errors(&content, source.clone(), &mut handler);
+
+        // 5. Check results
+        assert!(
+            !handler.has_errors(),
+            "Test Setup Failed: Root file syntax error: {}",
+            ErrorCollector::to_string(&handler)
+        );
+
+        (program.expect("Root parsing failed internally"), source)
     }
 
     /// Sets up a graph with "lib" mapped to "libs/lib".
@@ -744,13 +833,9 @@ pub(crate) mod tests {
         lib_map.insert("lib".to_string(), temp_dir.path().join("libs/lib"));
 
         // 3. Parse & Build
-        let root_program = parse_root(&root_p);
-        let source = SourceFile::new(
-            SourceName::Real(Arc::from(root_p)),
-            Arc::from(""), // TODO: @LesterEvSe, consider to change it
-        );
+        let (root_program, source) = parse_root(&root_p);
 
-        let mut handler = ErrorCollector::new(source.clone());
+        let mut handler = ErrorCollector::new();
 
         let graph = ProjectGraph::new(source, Arc::from(lib_map), &root_program, &mut handler)
             .expect(
@@ -784,8 +869,9 @@ pub(crate) mod tests {
         let root_id = *ids.get("main").unwrap();
         let order = vec![root_id]; // Only one file
 
+        let mut error_handler = ErrorCollector::new();
         let program = graph
-            .build_program(&order)
+            .build_program(&order, &mut error_handler)
             .expect("Failed to build program");
         let scope = &program.resolutions[root_id];
 
@@ -823,8 +909,9 @@ pub(crate) mod tests {
         // Manual topological order: A -> B -> Root
         let order = vec![id_a, id_b, id_root];
 
+        let mut error_handler = ErrorCollector::new();
         let program = graph
-            .build_program(&order)
+            .build_program(&order, &mut error_handler)
             .expect("Failed to build program");
 
         // Check B's scope
@@ -875,11 +962,24 @@ pub(crate) mod tests {
         // Order: A -> B -> Root
         let order = vec![id_a, id_b, id_root];
 
-        let result = graph.build_program(&order);
+        let mut error_handler = ErrorCollector::new();
+        let result = graph.build_program(&order, &mut error_handler);
 
         assert!(
-            result.is_err(),
+            result.is_none(),
             "Build should fail when importing a private binding"
+        );
+
+        assert!(
+            error_handler.has_errors(),
+            "Error handler should contain errors"
+        );
+
+        let err_msg = ErrorCollector::to_string(&error_handler);
+        assert!(
+            err_msg.contains("private"),
+            "Error message should mention 'private', but got: \n{}",
+            err_msg
         );
     }
 
@@ -1041,5 +1141,34 @@ pub(crate) mod tests {
 
         assert_eq!(graph.modules.len(), 1, "Should only contain root");
         assert!(graph.dependencies[&ids["main"]].is_empty());
+    }
+
+    #[test]
+    fn test_missing_file_error() {
+        // MANUAL SETUP REQUIRED
+        // We cannot use `setup_graph` here because we expect `ProjectGraph::new` to fail/return None.
+
+        let temp_dir = TempDir::new().unwrap();
+        let root_path = create_simf_file(temp_dir.path(), "main.simf", "use lib::ghost::Phantom;");
+        // We purposefully DO NOT create ghost.simf
+
+        let mut lib_map = HashMap::new();
+        lib_map.insert("lib".to_string(), temp_dir.path().join("libs/lib"));
+
+        let (root_program, root_source) = parse_root(&root_path);
+        let mut handler = ErrorCollector::new();
+
+        let result =
+            ProjectGraph::new(root_source, Arc::from(lib_map), &root_program, &mut handler);
+
+        assert!(result.is_none(), "Graph construction should fail");
+        assert!(handler.has_errors());
+
+        let error_msg = ErrorCollector::to_string(&handler);
+        assert!(
+            error_msg.contains("File not found") || error_msg.contains("ghost.simf"),
+            "Error message should mention 'ghost.simf' or 'File not found'. Got: {}",
+            error_msg
+        );
     }
 }
