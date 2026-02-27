@@ -2,7 +2,7 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
-use simplicityhl::CompiledProgram;
+use simplicityhl::{AbiMeta, CompiledProgram};
 use std::{env, fmt};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -12,6 +12,8 @@ struct Output {
     program: String,
     /// Simplicity witness result, base64 encoded, if the .wit file was provided.
     witness: Option<String>,
+    /// Simplicity program ABI metadata to the program which the user provides.
+    abi_meta: Option<AbiMeta>,
 }
 
 impl fmt::Display for Output {
@@ -19,6 +21,9 @@ impl fmt::Display for Output {
         writeln!(f, "Program:\n{}", self.program)?;
         if let Some(witness) = &self.witness {
             writeln!(f, "Witness:\n{}", witness)?;
+        }
+        if let Some(witness) = &self.abi_meta {
+            writeln!(f, "ABI meta:\n{:?}", witness)?;
         }
         Ok(())
     }
@@ -69,6 +74,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .action(ArgAction::SetTrue)
                     .help("Output in JSON"),
             )
+            .arg(
+                Arg::new("abi")
+                    .long("abi")
+                    .action(ArgAction::SetTrue)
+                    .help("Additional ABI .simf contract types"),
+            )
     };
 
     let matches = command.get_matches();
@@ -78,6 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prog_text = std::fs::read_to_string(prog_path).map_err(|e| e.to_string())?;
     let include_debug_symbols = matches.get_flag("debug");
     let output_json = matches.get_flag("json");
+    let abi_param = matches.get_flag("abi");
 
     #[cfg(feature = "serde")]
     let args_opt: simplicityhl::Arguments = match matches.get_one::<String>("args_file") {
@@ -138,9 +150,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let abi_opt = if abi_param {
+        Some(compiled.generate_abi_meta()?)
+    } else {
+        None
+    };
+
     let output = Output {
         program: Base64Display::new(&program_bytes, &STANDARD).to_string(),
         witness: witness_bytes.map(|bytes| Base64Display::new(&bytes, &STANDARD).to_string()),
+        abi_meta: abi_opt,
     };
 
     if output_json {

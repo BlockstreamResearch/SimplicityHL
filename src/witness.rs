@@ -94,6 +94,12 @@ pub struct WitnessTypes(Arc<HashMap<WitnessName, ResolvedType>>);
 
 impl_name_type_map!(WitnessTypes);
 
+impl AsRef<HashMap<WitnessName, ResolvedType>> for WitnessTypes {
+    fn as_ref(&self) -> &HashMap<WitnessName, ResolvedType> {
+        self.0.as_ref()
+    }
+}
+
 /// Map of witness values.
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -150,6 +156,12 @@ impl ParseFromStr for ResolvedType {
 pub struct Parameters(Arc<HashMap<WitnessName, ResolvedType>>);
 
 impl_name_type_map!(Parameters);
+
+impl AsRef<HashMap<WitnessName, ResolvedType>> for Parameters {
+    fn as_ref(&self) -> &HashMap<WitnessName, ResolvedType> {
+        self.0.as_ref()
+    }
+}
 
 /// Map of arguments.
 ///

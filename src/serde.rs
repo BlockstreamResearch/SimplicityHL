@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use serde::{de, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
-
 use crate::parse::ParseFromStr;
 use crate::str::WitnessName;
 use crate::types::ResolvedType;
 use crate::value::Value;
 use crate::witness::{Arguments, WitnessValues};
+use crate::{AbiMeta, Parameters, WitnessTypes};
+use serde::{de, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 
 struct WitnessMapVisitor;
 
@@ -40,6 +40,66 @@ impl<'de> Deserialize<'de> for WitnessValues {
         deserializer
             .deserialize_map(WitnessMapVisitor)
             .map(Self::from)
+    }
+}
+
+impl Serialize for ResolvedType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl Serialize for WitnessName {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_ref())
+    }
+}
+
+impl Serialize for AbiMeta {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: ::serde::Serializer,
+    {
+        use ::serde::ser::SerializeStruct;
+
+        let mut state = serializer.serialize_struct("AbiMeta", 2)?;
+        state.serialize_field("witness_types", &self.witness_types)?;
+        state.serialize_field("parameter_types", &self.param_types)?;
+        state.end()
+    }
+}
+
+impl Serialize for Parameters {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let map_ref = self.as_ref();
+        let mut map = serializer.serialize_map(Some(map_ref.len()))?;
+        for (key, value) in map_ref {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
+
+impl Serialize for WitnessTypes {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let map_ref = self.as_ref();
+        let mut map = serializer.serialize_map(Some(map_ref.len()))?;
+        for (key, value) in map_ref {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
     }
 }
 
