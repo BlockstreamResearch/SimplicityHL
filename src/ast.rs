@@ -617,8 +617,11 @@ impl Scope {
     ///
     /// There are any undefined aliases.
     pub fn insert_alias(&mut self, name: AliasName, ty: AliasedType) -> Result<(), Error> {
-        let resolved_ty = self.resolve(&ty)?;
-        self.aliases.insert(name, resolved_ty);
+        if self.aliases.contains_key(&name) {
+            return Err(Error::RedefinedAlias(name));
+        }
+
+        let _ = self.aliases.insert(name, self.resolve(&ty)?);
         Ok(())
     }
 
