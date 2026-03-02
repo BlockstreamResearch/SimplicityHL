@@ -437,6 +437,7 @@ pub enum Error {
     ModuleRedefined(ModuleName),
     ArgumentMissing(WitnessName),
     ArgumentTypeMismatch(WitnessName, ResolvedType, ResolvedType),
+    PaddingSizeZero,
 }
 
 #[rustfmt::skip]
@@ -582,6 +583,7 @@ impl fmt::Display for Error {
                 f,
                 "Parameter `{name}` was declared with type `{declared}` but its assigned argument is of type `{assigned}`"
             ),
+            Error::PaddingSizeZero => write!(f, "Padding size cannot be zero")
         }
     }
 }

@@ -216,6 +216,8 @@ pub enum CallName {
     ArrayFold(FunctionName, NonZeroUsize),
     /// Loop over the given function a bounded number of times until it returns success.
     ForWhile(FunctionName),
+    /// Padding to add to the transaction to increase the weight of the transaction to fit CPU heavy programs
+    Padding(NonZeroUsize),
 }
 
 /// A type alias.
@@ -819,6 +821,7 @@ impl fmt::Display for CallName {
             CallName::Fold(name, bound) => write!(f, "fold::<{name}, {bound}>"),
             CallName::ArrayFold(name, size) => write!(f, "array_fold::<{name}, {size}>"),
             CallName::ForWhile(name) => write!(f, "for_while::<{name}>"),
+            CallName::Padding(size) => write!(f, "padding::<{size}>"),
         }
     }
 }
@@ -1437,6 +1440,29 @@ impl ChumskyParse for CallName {
             Token::Macro("dbg!") => CallName::Debug,
         };
 
+        let padding = just(Token::Ident("padding"))
+            .ignore_then(turbofish_start.clone())
+            .then(select! { Token::DecLiteral(s) => s }.labelled("size"))
+            .then_ignore(generics_close.clone())
+            .validate(|(_, size_str), e, emit| {
+                let size = match size_str.as_inner().parse::<usize>() {
+                    Ok(0) => {
+                        emit.emit(Error::PaddingSizeZero.with_span(e.span()));
+                        NonZeroUsize::new(1).unwrap()
+                    }
+                    Ok(n) => NonZeroUsize::new(n).unwrap(),
+                    Err(_) => {
+                        emit.emit(
+                            Error::CannotParse(format!("Invalid number: {}", size_str))
+                                .with_span(e.span()),
+                        );
+                        NonZeroUsize::new(1).unwrap()
+                    }
+                };
+
+                CallName::Padding(size)
+            });
+
         let jet = select! { Token::Jet(s) => JetName::from_str_unchecked(s) }.map(CallName::Jet);
 
         let custom_func = FunctionName::parser().map(CallName::Custom);
@@ -1451,6 +1477,8 @@ impl ChumskyParse for CallName {
             for_while,
             simple_builtins,
             jet,
+            padding,
+            // Note: Add built-in functions before this, otherwise they will not be matched.
             custom_func,
         ))
     }
@@ -2161,5 +2189,48 @@ impl crate::ArbitraryRec for Match {
             },
             span: Span::DUMMY,
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+
+    fn parse_padding(input: &str) -> Result<Call, &str> {
+        // Parse the if expression
+        let parsed_expr = Expression::parse_from_str(input).map_err(|_| "Failed to parse")?;
+
+        // Extract the parsed If from the expression
+        let parsed_if = match parsed_expr.inner() {
+            ExpressionInner::Single(single) => match single.inner() {
+                SingleExpressionInner::Call(call) => match call.name() {
+                    CallName::Padding(_) => Ok(call.clone()),
+                    _ => Err("Expected padding call"),
+                },
+                _ => Err("Expected Call expression"),
+            },
+            _ => Err("Expected Single expression"),
+        };
+        parsed_if
+    }
+
+    #[test]
+    fn test_parse_padding() {
+        let input = "padding::<10>()";
+
+        parse_padding(input).unwrap();
+    }
+
+    #[test]
+    fn test_parse_padding_should_fail_with_multiple_generics() {
+        let input = "padding::<10, 22>()";
+
+        let parsed_call = parse_padding(input);
+
+        assert!(
+            parsed_call.is_err(),
+            "padding parsed correctly but should have failed"
+        );
     }
 }

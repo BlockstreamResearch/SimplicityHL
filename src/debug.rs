@@ -42,6 +42,7 @@ pub enum TrackedCallName {
     UnwrapRight(ResolvedType),
     Unwrap,
     Debug(ResolvedType),
+    Padding,
 }
 
 /// Fallible call expression with runtime input value.
@@ -60,6 +61,7 @@ pub enum FallibleCallName {
     UnwrapLeft(Value),
     UnwrapRight(Value),
     Unwrap,
+    Padding,
 }
 
 /// Debug expression with runtime input value.
@@ -188,6 +190,7 @@ impl TrackedCall {
                     })
                     .map(Either::Right)
             }
+            TrackedCallName::Padding => FallibleCallName::Padding,
         };
         Some(Either::Left(FallibleCall {
             text: Arc::clone(&self.text),
