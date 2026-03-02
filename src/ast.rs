@@ -303,6 +303,8 @@ pub enum CallName {
     Panic,
     /// [`dbg!`].
     Debug,
+    /// Padding that inflates the program without changing what it computes.
+    Padding(NonZeroUsize),
     /// Cast from the given source type.
     TypeCast(ResolvedType),
     /// A custom function that was defined previously.
@@ -332,6 +334,7 @@ impl PartialEq for CallName {
             (Self::Assert, Self::Assert) => true,
             (Self::Panic, Self::Panic) => true,
             (Self::Debug, Self::Debug) => true,
+            (Self::Padding(a), Self::Padding(b)) => a == b,
             (Self::TypeCast(a), Self::TypeCast(b)) => a == b,
             (Self::Custom(a), Self::Custom(b)) => a == b,
             (Self::Fold(a, b), Self::Fold(c, d)) => a == c && b == d,
@@ -2175,6 +2178,12 @@ impl AbstractSyntaxTree for Call {
                 scope.track_call(from, TrackedCallName::Debug(arg_ty));
                 args
             }
+            CallName::Padding(_) => {
+                let args_tys = [];
+                check_argument_types(from.args(), &args_tys).with_span(from)?;
+                check_output_type(&ResolvedType::unit(), ty).with_span(from)?;
+                analyze_arguments(from.args(), &args_tys, scope)?
+            }
             CallName::TypeCast(source) => {
                 // Casts prove structural equality, but enums are nominal:
                 // every enum must map to itself at its structural position
@@ -2310,6 +2319,19 @@ impl AbstractSyntaxTree for CallName {
             parse::CallName::Assert => Ok(Self::Assert),
             parse::CallName::Panic => Ok(Self::Panic),
             parse::CallName::Debug => Ok(Self::Debug),
+            parse::CallName::Padding(size) => {
+                // The text parser rejects oversized padding, but a `parse::Program`
+                // can also be built directly (fuzzing), so re-check it here.
+                if size.get() > parse::MAX_PADDING_SIZE {
+                    Err(Error::PaddingSizeTooLarge {
+                        size: size.get(),
+                        max: parse::MAX_PADDING_SIZE,
+                    })
+                    .with_span(from)
+                } else {
+                    Ok(Self::Padding(*size))
+                }
+            }
             parse::CallName::TypeCast(target) => {
                 scope.resolve(target).map(Self::TypeCast).with_span(from)
             }
@@ -3644,5 +3666,93 @@ mod literal_tests {
             assert_eq!(value, &expected, "unexpected value for {source:?}");
             assert_eq!(single.span().to_slice(source), Some(source));
         }
+    }
+}
+
+#[cfg(test)]
+mod padding_tests {
+    use crate::{error, parse::ParseFromStr};
+
+    use super::*;
+
+    /// Parse `input` and return the single `padding::<N>()` call it consists of.
+    fn parse_padding(input: &str) -> parse::Call {
+        let parsed = parse::Expression::parse_from_str(input).expect("Failed to parse");
+
+        match parsed.inner() {
+            parse::ExpressionInner::Single(single) => match single.inner() {
+                parse::SingleExpressionInner::Call(call) => match call.name() {
+                    parse::CallName::Padding(_) => call.clone(),
+                    name => panic!("Expected a padding call, found `{name}`"),
+                },
+                _ => panic!("Expected a call expression"),
+            },
+            _ => panic!("Expected a single expression"),
+        }
+    }
+
+    #[test]
+    fn test_ast_padding() {
+        let input = "padding::<10>()";
+
+        let parsed_call = &parse_padding(input);
+
+        let mut scope = Scope::default();
+        let ast_padding = Call::analyze(parsed_call, &ResolvedType::unit(), &mut scope)
+            .expect("Failed to analyze Padding expression");
+
+        assert_eq!(
+            ast_padding.args().len(),
+            0,
+            "Args did not analyse correctly"
+        );
+        assert_eq!(
+            ast_padding.name(),
+            &CallName::Padding(NonZeroUsize::new(10).unwrap()),
+            "Call name was not padding"
+        );
+    }
+
+    #[test]
+    fn test_ast_padding_rejects_size_above_max() {
+        // The text parser caps the size, but a parse tree can be built directly
+        // (as the fuzz targets do), so analysis has to reject it too.
+        let oversized = parse::CallName::Padding(
+            NonZeroUsize::new(parse::MAX_PADDING_SIZE + 1).expect("non-zero"),
+        );
+        let call = parse::Call::new_unparsed(oversized, Arc::from([]), Span::new(0, 0..0));
+
+        let mut scope = Scope::default();
+        let res = Call::analyze(&call, &ResolvedType::unit(), &mut scope);
+
+        assert!(
+            matches!(
+                res.unwrap_err().error(),
+                error::Error::PaddingSizeTooLarge { size, max }
+                    if *size == parse::MAX_PADDING_SIZE + 1 && *max == parse::MAX_PADDING_SIZE
+            ),
+            "oversized padding was accepted but should have been rejected"
+        );
+    }
+
+    #[test]
+    fn test_ast_padding_should_fail_with_args() {
+        let input = "padding::<10>(1)";
+
+        let parsed_call = &parse_padding(input);
+
+        let mut scope = Scope::default();
+        let res = Call::analyze(parsed_call, &ResolvedType::unit(), &mut scope);
+
+        assert!(
+            matches!(
+                res.unwrap_err().error(),
+                error::Error::InvalidNumberOfArguments {
+                    expected: 0,
+                    found: 1
+                }
+            ),
+            "padding parsed correctly but should have failed"
+        );
     }
 }

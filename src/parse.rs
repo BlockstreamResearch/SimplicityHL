@@ -475,6 +475,15 @@ pub struct Call {
 }
 
 impl Call {
+    /// Construct a call directly, bypassing the parser.
+    ///
+    /// Mirrors what `arbitrary` does for the fuzz targets, which build a
+    /// [`Program`] without going through the text parser.
+    #[cfg(test)]
+    pub(crate) fn new_unparsed(name: CallName, args: Arc<[Expression]>, span: Span) -> Self {
+        Self { name, args, span }
+    }
+
     /// Access the name of the call.
     pub fn name(&self) -> &CallName {
         &self.name
@@ -494,6 +503,16 @@ impl Call {
 impl_eq_hash!(Call; name, args);
 
 impl_require_feature!(Call {recurse: name, args; });
+
+/// Maximum number of layers that `padding::<N>()` may request.
+///
+/// Padding compiles to a chain of nodes whose depth is the layer count, and the rest
+/// of the compiler recurses over that depth, so an unbounded count overflows the stack.
+///
+/// At this limit a program compiles on the 8 MB main-thread stack in both debug and
+/// release, and on the 2 MB stack that spawned threads get by default in release. A
+/// debug build on a 2 MB thread stack is the one measured case that still runs out.
+pub const MAX_PADDING_SIZE: usize = 8192;
 
 /// Name of a call.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -525,6 +544,9 @@ pub enum CallName {
     ArrayFold(FunctionName, NonZeroUsize),
     /// Loop over the given function a bounded number of times until it returns success.
     ForWhile(FunctionName),
+    /// Padding that inflates the program, raising the transaction weight so that
+    /// CPU-heavy programs fit in the budget. At most [`MAX_PADDING_SIZE`] layers.
+    Padding(NonZeroUsize),
 }
 
 impl_require_feature!(CallName {
@@ -542,6 +564,7 @@ impl_require_feature!(CallName {
         Fold(_, _),
         ArrayFold(_, _),
         ForWhile(_),
+        Padding(_),
 });
 
 /// A type alias.
@@ -1609,6 +1632,7 @@ impl fmt::Display for CallName {
             CallName::Fold(name, bound) => write!(f, "fold::<{name}, {bound}>"),
             CallName::ArrayFold(name, size) => write!(f, "array_fold::<{name}, {size}>"),
             CallName::ForWhile(name) => write!(f, "for_while::<{name}>"),
+            CallName::Padding(size) => write!(f, "padding::<{size}>"),
         }
     }
 }
@@ -2446,6 +2470,41 @@ impl ChumskyParse for CallName {
             Token::Macro("dbg!") => CallName::Debug,
         };
 
+        let padding = just(Token::Ident("padding"))
+            .ignore_then(turbofish_start.clone())
+            .then(select! { Token::DecLiteral(s) => s }.labelled("size"))
+            .then_ignore(generics_close.clone())
+            .validate(|((), size_str), e, emit| {
+                let size = match size_str.as_inner().parse::<usize>() {
+                    Ok(0) => {
+                        emit.emit(Error::PaddingSizeZero.with_span(e.span()));
+                        NonZeroUsize::new(1).unwrap()
+                    }
+                    Ok(n) if n > MAX_PADDING_SIZE => {
+                        emit.emit(
+                            Error::PaddingSizeTooLarge {
+                                size: n,
+                                max: MAX_PADDING_SIZE,
+                            }
+                            .with_span(e.span()),
+                        );
+                        NonZeroUsize::new(1).unwrap()
+                    }
+                    Ok(n) => NonZeroUsize::new(n).unwrap(),
+                    Err(_) => {
+                        emit.emit(
+                            Error::CannotParse {
+                                msg: format!("Invalid number: {size_str}"),
+                            }
+                            .with_span(e.span()),
+                        );
+                        NonZeroUsize::new(1).unwrap()
+                    }
+                };
+
+                CallName::Padding(size)
+            });
+
         let jet = select! { Token::Jet(s) => JetName::from_str_unchecked(s) }.map(CallName::Jet);
 
         let custom_func = FunctionName::parser().map(CallName::Custom);
@@ -2460,6 +2519,8 @@ impl ChumskyParse for CallName {
             for_while,
             simple_builtins,
             jet,
+            padding,
+            // Note: Add built-in functions before this, otherwise they will not be matched.
             custom_func,
         ))
     }
@@ -4324,6 +4385,83 @@ fn main() {
         assert!(
             error.contains("Missing ',' after a match arm that isn't block expression"),
             "expected the missing-comma diagnostic, got {error:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod padding_tests {
+    use super::*;
+
+    /// Parse `input` and return the single `padding::<N>()` call it consists of.
+    fn parse_padding(input: &str) -> Result<Call, &'static str> {
+        let parsed = Expression::parse_from_str(input).map_err(|_| "Failed to parse")?;
+
+        match parsed.inner() {
+            ExpressionInner::Single(single) => match single.inner() {
+                SingleExpressionInner::Call(call) => match call.name() {
+                    CallName::Padding(_) => Ok(call.clone()),
+                    _ => Err("Expected a padding call"),
+                },
+                _ => Err("Expected a call expression"),
+            },
+            _ => Err("Expected a single expression"),
+        }
+    }
+
+    #[test]
+    fn test_parse_padding() {
+        let input = "padding::<10>()";
+
+        parse_padding(input).unwrap();
+    }
+
+    #[test]
+    fn test_parse_padding_accepts_max_size() {
+        let input = format!("padding::<{MAX_PADDING_SIZE}>()");
+
+        parse_padding(&input).unwrap();
+    }
+
+    #[test]
+    fn test_parse_padding_rejects_size_above_max() {
+        let input = format!("padding::<{}>()", MAX_PADDING_SIZE + 1);
+
+        let err = Expression::parse_from_str(&input)
+            .expect_err("padding above the maximum size should be rejected");
+
+        assert!(
+            matches!(
+                err.error(),
+                Error::PaddingSizeTooLarge {
+                    size,
+                    max: MAX_PADDING_SIZE
+                } if *size == MAX_PADDING_SIZE + 1
+            ),
+            "expected a PaddingSizeTooLarge diagnostic, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_padding_rejects_zero() {
+        let err = Expression::parse_from_str("padding::<0>()")
+            .expect_err("padding of size zero should be rejected");
+
+        assert!(
+            matches!(err.error(), Error::PaddingSizeZero),
+            "expected a PaddingSizeZero diagnostic, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_padding_should_fail_with_multiple_generics() {
+        let input = "padding::<10, 22>()";
+
+        let parsed_call = parse_padding(input);
+
+        assert!(
+            parsed_call.is_err(),
+            "padding parsed correctly but should have failed"
         );
     }
 }
