@@ -292,8 +292,21 @@ impl_eq_hash!(TypeAlias; name, ty);
 
 #[derive(Debug)]
 pub enum C3Error {
-    CycleDetected(Vec<usize>),
-    InconsistentLinearization { module: usize },
+    CycleDetected(Vec<String>),
+    InconsistentLinearization { module: String },
+}
+
+impl fmt::Display for C3Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            C3Error::CycleDetected(cycle) => {
+                write!(f, "Circular dependency detected: {:?}", cycle.join(" -> "))
+            }
+            C3Error::InconsistentLinearization { module } => {
+                write!(f, "Inconsistent resolution order for module '{:?}'", module)
+            }
+        }
+    }
 }
 
 impl ProjectGraph {
@@ -438,7 +451,11 @@ impl ProjectGraph {
 
         if visiting.contains(&module) {
             let cycle_start = visiting.iter().position(|m| *m == module).unwrap();
-            return Err(C3Error::CycleDetected(visiting[cycle_start..].to_vec()));
+            let cycle_names: Vec<String> = visiting[cycle_start..]
+                .iter()
+                .map(|&id| self.modules[id].source.name().to_string())
+                .collect();
+            return Err(C3Error::CycleDetected(cycle_names));
         }
 
         visiting.push(module);
@@ -448,14 +465,16 @@ impl ProjectGraph {
         let mut seqs: Vec<Vec<usize>> = Vec::new();
 
         for parent in &parents {
-            let lin = self.linearize_rec(*parent, memo, visiting)?;
-            seqs.push(lin);
+            let line = self.linearize_rec(*parent, memo, visiting)?;
+            seqs.push(line);
         }
 
         seqs.push(parents.clone());
 
         let mut result = vec![module];
-        let merged = merge(seqs).ok_or(C3Error::InconsistentLinearization { module })?;
+        let merged = merge(seqs).ok_or(C3Error::InconsistentLinearization {
+            module: self.modules[module].source.name().to_string(),
+        })?;
 
         result.extend(merged);
 
@@ -601,11 +620,17 @@ impl ProjectGraph {
         }
     }
 
-    pub fn resolve_complication_order(&self, handler: &mut ErrorCollector) -> Option<Program> {
-        // TODO: @LesterEvSe, resolve errors more appropriately
-        let mut order = self.c3_linearize().unwrap();
+    pub fn resolve_complication_order(
+        &self,
+        handler: &mut ErrorCollector,
+    ) -> Result<Option<Program>, String> {
+        let mut order = match self.c3_linearize() {
+            Ok(order) => order,
+            Err(err) => return Err(err.to_string()),
+        };
         order.reverse();
-        self.build_program(&order, handler)
+
+        Ok(self.build_program(&order, handler))
     }
 }
 

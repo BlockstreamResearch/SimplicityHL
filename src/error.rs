@@ -379,7 +379,7 @@ impl ErrorCollector {
         Self { errors: Vec::new() }
     }
 
-    /// Exend existing errors with concrete `RichError`.
+    /// Extend existing errors with concrete `RichError`.
     /// We assume that `RichError` contains `SourceFile`.
     pub fn push(&mut self, error: RichError) {
         self.errors.push(error);

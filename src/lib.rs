@@ -35,6 +35,7 @@ pub use simplicity::elements;
 use crate::debug::DebugSymbols;
 use crate::driver::ProjectGraph;
 use crate::error::{Error, ErrorCollector, RichError, WithSource, WithSpan};
+use crate::lexer::RESERVED_TOKENS;
 use crate::parse::{ParseFromStrWithErrors, UseDecl};
 pub use crate::types::ResolvedType;
 pub use crate::value::Value;
@@ -129,6 +130,19 @@ pub fn get_full_path(libraries: &LibTable, use_decl: &UseDecl) -> Result<PathBuf
     Err(Error::UnknownLibrary(first_segment.to_string())).with_span(*use_decl.span())
 }
 
+/// If something went wrong, then function was failed
+fn is_reserved_tokens_in_aliases(libraries: &LibTable) -> Result<(), String> {
+    for k in libraries.keys() {
+        if RESERVED_TOKENS.contains(&k.as_str()) {
+            return Err(format!(
+                "Error: The identifier `{}` is a reserved keyword for intrinsic operations and cannot be utilized as a library name.",
+                k
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The template of a SimplicityHL program.
 ///
 /// A template has parameterized values that need to be supplied with arguments.
@@ -149,6 +163,7 @@ impl TemplateProgram {
         libraries: Arc<LibTable>,
         s: Str,
     ) -> Result<Self, String> {
+        is_reserved_tokens_in_aliases(&libraries)?;
         let source_name = source_name.without_extension();
         let file = s.into();
         let source = SourceFile::new(source_name.clone(), file.clone());
@@ -166,14 +181,17 @@ impl TemplateProgram {
             driver::Program::from_parse(&parsed_program, source.clone(), &mut error_handler)
                 .ok_or_else(|| error_handler.to_string())?
         } else {
-            ProjectGraph::new(
+            let graph = ProjectGraph::new(
                 source.clone(),
                 libraries,
                 &parsed_program,
                 &mut error_handler,
             )
-            .and_then(|graph| graph.resolve_complication_order(&mut error_handler))
-            .ok_or_else(|| error_handler.to_string())?
+            .ok_or_else(|| error_handler.to_string())?;
+
+            graph
+                .resolve_complication_order(&mut error_handler)?
+                .ok_or_else(|| error_handler.to_string())?
         };
 
         // 3. AST Analysis
@@ -713,7 +731,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CycleDetected")]
+    #[should_panic(expected = "Circular dependency detected:")]
     fn cyclic_dependency_error() {
         let main_code = "use temp::module_a::TypeA; fn main() {}";
 
@@ -780,6 +798,27 @@ pub(crate) mod tests {
         let libs = vec![(
             "temp",
             "temp/hidden.simf",
+            "type SecretType = u32; pub fn ok() {}",
+        )];
+
+        let (test, _dir) = TestCase::temp_env(main_code, libs);
+        test.with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Error: The identifier `jet` is a reserved keyword for intrinsic operations and cannot be utilized as a library name."
+    )]
+    fn using_jet_as_module() {
+        let main_code = r#"
+            use jet::eq_32::SecretType;
+            fn main() {}
+        "#;
+
+        let libs = vec![(
+            "jet",
+            "temp/eq_32.simf",
             "type SecretType = u32; pub fn ok() {}",
         )];
 

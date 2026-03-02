@@ -2,7 +2,7 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
-use simplicityhl::{AbiMeta, CompiledProgram, LibTable, SourceName};
+use simplicityhl::{lexer::RESERVED_TOKENS, AbiMeta, CompiledProgram, LibTable, SourceName};
 use std::{env, fmt, sync::Arc};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -128,6 +128,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!(
                     "Error: Library argument must be in format ALIAS=PATH, got '{}'",
                     arg
+                );
+                std::process::exit(1);
+            }
+
+            if RESERVED_TOKENS.contains(&parts[0]) {
+                eprintln!(
+                    "Error: The identifier `{}` is a reserved keyword for intrinsic operations and cannot be utilized as a library name.",
+                    parts[0]
                 );
                 std::process::exit(1);
             }
