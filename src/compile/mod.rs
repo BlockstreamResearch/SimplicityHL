@@ -379,7 +379,6 @@ impl Call {
 
         match self.name() {
             CallName::Jet(name) => {
-                // Check for deprecation
                 let jet = ProgNode::jet(scope.ctx(), *name);
                 scope.with_debug_symbol(args, &jet, self)
             }
