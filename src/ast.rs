@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use either::Either;
 use miniscript::iter::{Tree, TreeLike};
-use simplicity::jet::Elements;
+use simplicity::jet::{Elements, Jet};
 
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
 use crate::error::{Error, RichError, Span, WithSpan};
@@ -1294,7 +1294,14 @@ impl AbstractSyntaxTree for CallName {
                 Ok(Elements::CheckSigVerify | Elements::Verify) | Err(_) => {
                     Err(Error::JetDoesNotExist(name.clone())).with_span(from)
                 }
-                Ok(jet) => Ok(Self::Jet(jet)),
+                Ok(jet) => {
+                    // TODO: in future, we will want this to be a warning, but that would mean that
+                    // you need to change all methods to return warnings.
+                    if jet.is_deprecated() {
+                        return Err(Error::JetIsDeprecated(name.clone())).with_span(from);
+                    }
+                    Ok(Self::Jet(jet))
+                }
             },
             parse::CallName::UnwrapLeft(right_ty) => scope
                 .resolve(right_ty)

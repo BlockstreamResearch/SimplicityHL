@@ -450,12 +450,12 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
          * Time locks
          */
         Elements::CheckLockTime => vec![Time.into()],
-        Elements::CheckLockDistance => vec![Distance.into()],
-        Elements::CheckLockDuration => vec![Duration.into()],
+        Elements::BrokenDoNotUseCheckLockDistance => vec![Distance.into()],
+        Elements::BrokenDoNotUseCheckLockDuration => vec![Duration.into()],
         Elements::CheckLockHeight => vec![Height.into()],
         Elements::TxLockTime
-        | Elements::TxLockDistance
-        | Elements::TxLockDuration
+        | Elements::BrokenDoNotUseTxLockDistance
+        | Elements::BrokenDoNotUseTxLockDuration
         | Elements::TxLockHeight
         | Elements::TxIsFinal => vec![],
         /*
@@ -956,13 +956,13 @@ pub fn target_type(jet: Elements) -> AliasedType {
          * Time locks
          */
         Elements::CheckLockTime
-        | Elements::CheckLockDistance
-        | Elements::CheckLockDuration
+        | Elements::BrokenDoNotUseCheckLockDistance
+        | Elements::BrokenDoNotUseCheckLockDuration
         | Elements::CheckLockHeight => AliasedType::unit(),
         Elements::TxIsFinal => bool(),
         Elements::TxLockTime => Time.into(),
-        Elements::TxLockDistance => Distance.into(),
-        Elements::TxLockDuration => Duration.into(),
+        Elements::BrokenDoNotUseTxLockDistance => Distance.into(),
+        Elements::BrokenDoNotUseTxLockDuration => Duration.into(),
         Elements::TxLockHeight => Height.into(),
         /*
          * Issuance

@@ -437,6 +437,7 @@ pub enum Error {
     ModuleRedefined(ModuleName),
     ArgumentMissing(WitnessName),
     ArgumentTypeMismatch(WitnessName, ResolvedType, ResolvedType),
+    JetIsDeprecated(JetName),
 }
 
 #[rustfmt::skip]
@@ -489,6 +490,10 @@ impl fmt::Display for Error {
             Error::JetDoesNotExist(name) => write!(
                 f,
                 "Jet `{name}` does not exist"
+            ),
+            Error::JetIsDeprecated(name) => write!(
+                f, 
+                "Jet `{name}` has been deprecrated."
             ),
             Error::InvalidCast(source, target) => write!(
                 f,

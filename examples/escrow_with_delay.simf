@@ -51,7 +51,7 @@ fn timeout_spend(sender_sig: Signature) {
     let sender_pk: Pubkey = 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798; // 1 * G
     checksig(sender_pk, sender_sig);
     let timeout: Distance = 1000;
-    jet::check_lock_distance(timeout);
+    jet::broken_do_not_use_check_lock_distance(timeout);
 }
 
 fn main() {
