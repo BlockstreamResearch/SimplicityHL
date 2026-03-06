@@ -441,7 +441,7 @@ pub enum Error {
     JetDoesNotExist(JetName),
     InvalidCast(ResolvedType, ResolvedType),
     FileNotFound(PathBuf),
-    UnresolvedItem(String),
+    UnresolvedItem(Identifier),
     PrivateItem(String),
     MainNoInputs,
     MainNoOutput,
@@ -458,6 +458,7 @@ pub enum Error {
     UndefinedVariable(Identifier),
     RedefinedAlias(AliasName),
     UndefinedAlias(AliasName),
+    DuplicateAlias(Identifier),
     VariableReuseInPattern(Identifier),
     WitnessReused(WitnessName),
     WitnessTypeMismatch(WitnessName, ResolvedType, ResolvedType),
@@ -555,9 +556,9 @@ impl fmt::Display for Error {
                 f,
                 "Function `{name}` was called but not defined"
             ),
-            Error::UnresolvedItem(name) => write!(
+            Error::UnresolvedItem(identifier) => write!(
                 f,
-                "Unknown item `{name}`"
+                "Unknown item `{identifier}`"
             ),
             Error::PrivateItem(name) => write!(
                 f,
@@ -602,6 +603,10 @@ impl fmt::Display for Error {
             Error::UndefinedAlias(identifier) => write!(
                 f,
                 "Type alias `{identifier}` is not defined"
+            ),
+            Error::DuplicateAlias(identifier) => write!(
+                f,
+                "The alias `{identifier}` was defined multiple times"
             ),
             Error::VariableReuseInPattern(identifier) => write!(
                 f,

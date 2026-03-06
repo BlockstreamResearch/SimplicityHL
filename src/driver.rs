@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::error::{Error, ErrorCollector, RichError, Span};
-use crate::parse::{self, ParseFromStrWithErrors, Visibility};
+use crate::parse::{self, AliasedIdentifier, ParseFromStrWithErrors, Visibility};
 use crate::str::{AliasName, FunctionName, Identifier};
 use crate::types::AliasedType;
 use crate::{get_full_path, impl_eq_hash, LibTable, SourceFile, SourceName};
@@ -18,6 +18,8 @@ pub struct Module {
     /// it contains all the functions, aliases, and imports defined inside the file.
     pub parsed_program: parse::Program,
 }
+
+pub type IdentifierWithFileID = (Identifier, usize);
 
 /// The Dependency Graph itself.
 pub struct ProjectGraph {
@@ -54,6 +56,35 @@ pub type FileResolutions = BTreeMap<Identifier, Resolution>;
 
 pub type ProgramResolutions = Arc<[FileResolutions]>;
 
+/// A standard mapping from one unique identifier to another
+pub type AliasMap = BTreeMap<IdentifierWithFileID, IdentifierWithFileID>;
+
+/// Manages the resolution of import aliases across the entire program.
+#[derive(Clone, Debug, Default)]
+pub struct AliasRegistry {
+    /// Maps an alias to its immediate target.
+    /// (e.g., `use B as C;` stores C -> B)
+    pub(self) direct_targets: AliasMap,
+
+    /// Caches the final, original definition of an alias to avoid walking the chain.
+    /// (e.g., If C -> B and B -> A, this stores C -> A)
+    pub(self) resolved_roots: AliasMap,
+}
+
+impl AliasRegistry {
+    /// Access the direct targets of the `AliasRegistry`
+    pub fn direct_targets(&self) -> &AliasMap {
+        &self.direct_targets
+    }
+
+    /// Access the resolved roots of the `AliasRegistry`
+    pub fn resolved_roots(&self) -> &AliasMap {
+        &self.resolved_roots
+    }
+}
+
+impl_eq_hash!(AliasRegistry; direct_targets, resolved_roots);
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Resolution {
     pub visibility: Visibility,
@@ -64,7 +95,8 @@ pub struct Program {
     items: Arc<[Item]>,
     paths: Arc<[SourceName]>,
 
-    // Use BTreeMap instead of HashMap for the impl_eq_hash! macro.
+    import_aliases: AliasRegistry,
+
     resolutions: ProgramResolutions,
     span: Span,
 }
@@ -127,29 +159,35 @@ impl Program {
             Some(Program {
                 items: items.into(),
                 paths: Arc::from([root_path]),
+                import_aliases: AliasRegistry::default(),
                 resolutions: resolutions.into(),
                 span: *parsed.as_ref(),
             })
         }
     }
 
-    /// Access the items of the program.
+    /// Access the items of the Program.
     pub fn items(&self) -> &[Item] {
         &self.items
     }
 
-    /// Access the paths of the program
+    /// Access the paths of the Program.
     pub fn paths(&self) -> &[SourceName] {
         &self.paths
     }
 
-    /// Access the scope items of the program.
+    /// Access the import aliases of the Program.
+    pub fn import_aliases(&self) -> &AliasRegistry {
+        &self.import_aliases
+    }
+
+    /// Access the scope items of the Program.
     pub fn resolutions(&self) -> &[FileResolutions] {
         &self.resolutions
     }
 }
 
-impl_eq_hash!(Program; items, paths, resolutions);
+impl_eq_hash!(Program; items, paths, import_aliases, resolutions);
 
 /// An item is a component of a driver Program
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -484,20 +522,82 @@ impl ProjectGraph {
         Ok(result)
     }
 
+    /// Processes a single imported item (or alias) during the module resolution phase.
+    ///
+    /// This function verifies that the requested item exists in the source module and
+    /// that it has the appropriate public visibility to be imported. If validation passes,
+    /// the item is registered in the importing module's resolution table and global alias registry.
+    ///
+    /// # Arguments
+    ///
+    /// * `import_aliases` - The global registry tracking alias chains and their canonical roots.
+    /// * `resolutions` - The global, mutable array mapping each `file_id` to its localized `FileResolutions` table.
+    /// * `file_id` - The unique identifier of the module that is *performing* the import (the destination).
+    /// * `ind` - The unique identifier of the source module being imported *from*.
+    /// * `aliased_identifier` - The specific identifier (and potential alias) being imported from the source.
+    /// * `use_decl` - The node of the `use` statement. This dictates the visibility of the new import
+    ///   (e.g., `pub use` re-exports the item publicly).
+    ///
+    /// # Returns
+    ///
+    /// Returns `None` on success. Returns `Some(RichError)` if:
+    /// * [`Error::DuplicateAlias`]: The target `alias` (or imported name) has already been used in the current module.
+    /// * [`Error::UnresolvedItem`]: The target `elem` does not exist in the source module (`ind`).
+    /// * [`Error::PrivateItem`]: The target exists, but its visibility is explicitly `Private`,
     fn process_use_item(
+        import_aliases: &mut AliasRegistry,
         resolutions: &mut [FileResolutions],
         file_id: usize,
         ind: usize,
-        elem: &Identifier,
+        (elem, alias): &AliasedIdentifier,
         use_decl: &parse::UseDecl,
     ) -> Option<RichError> {
+        let orig_id = (elem.clone(), ind);
+
+        // 1. Determine the local name and ID up front
+        let local_name = alias.as_ref().unwrap_or(elem);
+        let local_id = (local_name.clone(), file_id);
+
+        // 2. Check for collisions
+        if import_aliases.direct_targets.contains_key(&local_id) {
+            return Some(RichError::new(
+                Error::DuplicateAlias(local_name.clone()),
+                *use_decl.span(),
+            ));
+        }
+
+        // 3. Find the true root using a single lookup!
+        // If `orig_id` exists in resolved_roots, it means it's an alias and we get its true root.
+        // If it returns None, it means `orig_id` is the original item, so it IS the root.
+        let true_root = import_aliases
+            .resolved_roots
+            .get(&orig_id)
+            .cloned()
+            .unwrap_or_else(|| orig_id.clone());
+
+        // 4. Update the registries
+        if alias.is_some() {
+            // Only update the chain if the user explicitly used the `as` keyword
+            import_aliases
+                .direct_targets
+                .insert(local_id.clone(), orig_id);
+        }
+
+        // Always cache the final root for instant O(1) lookups later
+        import_aliases.resolved_roots.insert(local_id, true_root);
+
+        // 5. Bind the result to the `identifier` variable
+        let identifier = local_name.clone();
+
+        // 6. Verify Existence: Does the item exist in the source file?
         let Some(resolution) = resolutions[ind].get(elem) else {
             return Some(RichError::new(
-                Error::UnresolvedItem(elem.as_inner().to_string()),
+                Error::UnresolvedItem(elem.clone()),
                 *use_decl.span(),
             ));
         };
 
+        // 7. Verify Visibility: Are we allowed to see it?
         if matches!(resolution.visibility, parse::Visibility::Private) {
             return Some(RichError::new(
                 Error::PrivateItem(elem.as_inner().to_string()),
@@ -505,8 +605,9 @@ impl ProjectGraph {
             ));
         }
 
+        // 8. Register the item in the local  module's namespace
         resolutions[file_id].insert(
-            elem.clone(),
+            identifier,
             Resolution {
                 visibility: use_decl.visibility().clone(),
             },
@@ -542,6 +643,7 @@ impl ProjectGraph {
     fn build_program(&self, order: &Vec<usize>, handler: &mut ErrorCollector) -> Option<Program> {
         let mut items: Vec<Item> = Vec::new();
         let mut resolutions: Vec<FileResolutions> = vec![BTreeMap::new(); order.len()];
+        let mut import_aliases = AliasRegistry::default();
 
         for &file_id in order {
             let importer_source = self.modules[file_id].source.clone();
@@ -568,6 +670,7 @@ impl ProjectGraph {
 
                         for target in use_targets {
                             if let Some(err) = ProjectGraph::process_use_item(
+                                &mut import_aliases,
                                 &mut resolutions,
                                 file_id,
                                 ind,
@@ -614,6 +717,7 @@ impl ProjectGraph {
             Some(Program {
                 items: items.into(),
                 paths: self.paths.clone(),
+                import_aliases,
                 resolutions: resolutions.into(),
                 span: *self.modules[0].parsed_program.as_ref(),
             })
@@ -1197,6 +1301,191 @@ pub(crate) mod tests {
             error_msg.contains("File not found") || error_msg.contains("ghost.simf"),
             "Error message should mention 'ghost.simf' or 'File not found'. Got: {}",
             error_msg
+        );
+    }
+
+    // Tests for aliases
+    // TODO: @LesterEvSe, @Sdoba16 add more tests for alias
+    #[test]
+    fn test_renaming_with_use() {
+        // Scenario: Renaming imports.
+        // main.simf: use lib::A::foo as bar;
+        // Expected: Scope should contain "bar", but not "foo".
+
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn foo() {}"),
+            ("main.simf", "use lib::A::foo as bar;"),
+        ]);
+
+        let id_a = *ids.get("A").unwrap();
+        let id_root = *ids.get("main").unwrap();
+        let order = vec![id_a, id_root];
+
+        let mut error_handler = ErrorCollector::new();
+        let program = graph
+            .build_program(&order, &mut error_handler)
+            .expect("Failed to build program");
+        let scope = &program.resolutions[id_root];
+
+        assert!(
+            scope.get(&Identifier::from("foo")).is_none(),
+            "Original name 'foo' should not be in scope"
+        );
+        assert!(
+            scope.get(&Identifier::from("bar")).is_some(),
+            "Alias 'bar' should be in scope"
+        );
+    }
+
+    #[test]
+    fn test_multiple_aliases_in_list() {
+        // Scenario: Renaming multiple imports inside brackets.
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn foo() {} pub fn baz() {}"),
+            ("main.simf", "use lib::A::{foo as bar, baz as qux};"),
+        ]);
+
+        let id_a = *ids.get("A").unwrap();
+        let id_root = *ids.get("main").unwrap();
+        let order = vec![id_a, id_root];
+
+        let mut error_handler = ErrorCollector::new();
+        let program = graph
+            .build_program(&order, &mut error_handler)
+            .expect("Failed to build program");
+        let scope = &program.resolutions[id_root];
+
+        // The original names should NOT be in scope
+        assert!(scope.get(&Identifier::from("foo")).is_none());
+        assert!(scope.get(&Identifier::from("baz")).is_none());
+
+        // The aliases MUST be in scope
+        assert!(scope.get(&Identifier::from("bar")).is_some());
+        assert!(scope.get(&Identifier::from("qux")).is_some());
+    }
+
+    #[test]
+    fn test_alias_private_item_fails() {
+        // Scenario: Attempting to alias a private item should fail.
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "fn secret() {}"), // Note: Missing `pub`
+            ("main.simf", "use lib::A::secret as my_secret;"),
+        ]);
+
+        let id_a = *ids.get("A").unwrap();
+        let id_root = *ids.get("main").unwrap();
+        let order = vec![id_a, id_root];
+
+        let mut error_handler = ErrorCollector::new();
+        // This should NOT panic, but it should populate the error handler
+        graph.build_program(&order, &mut error_handler);
+
+        assert!(
+            error_handler.has_errors(),
+            "Compiler should emit an error when aliasing a private item"
+        );
+
+        let error_msg = ErrorCollector::to_string(&error_handler);
+        assert!(
+            error_msg.contains("PrivateItem") || error_msg.contains("secret"),
+            "Error should mention the private item restriction"
+        );
+    }
+
+    #[test]
+    fn test_deep_reexport_with_aliases() {
+        // Scenario: Chaining aliases across multiple files.
+        // A.simf: pub fn original() {}
+        // B.simf: pub use lib::A::original as middle;
+        // main.simf: use lib::B::middle as final;
+
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn original() {}"),
+            ("libs/lib/B.simf", "pub use lib::A::original as middle;"),
+            ("main.simf", "use lib::B::middle as final_name;"),
+        ]);
+
+        let id_a = *ids.get("A").unwrap();
+        let id_b = *ids.get("B").unwrap();
+        let id_root = *ids.get("main").unwrap();
+        // Crucial: The compiler must process A, then B, then Main!
+        let order = vec![id_a, id_b, id_root];
+
+        let mut error_handler = ErrorCollector::new();
+        let program = graph
+            .build_program(&order, &mut error_handler)
+            .expect("Failed to build program");
+
+        // Assert Main Scope
+        let main_scope = &program.resolutions[id_root];
+        assert!(main_scope.get(&Identifier::from("original")).is_none());
+        assert!(main_scope.get(&Identifier::from("middle")).is_none());
+        assert!(
+            main_scope.get(&Identifier::from("final_name")).is_some(),
+            "Main must see the final alias"
+        );
+
+        // Assert B Scope (It should have the intermediate alias!)
+        let b_scope = &program.resolutions[id_b];
+        assert!(
+            b_scope.get(&Identifier::from("middle")).is_some(),
+            "File B must contain its own public alias"
+        );
+    }
+
+    #[test]
+    fn test_deep_reexport_private_link_fails() {
+        // Scenario: Main tries to import an alias from B, but B's alias is private!
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn target() {}"),
+            // Note: Missing `pub` keyword here! This makes `hidden_alias` private to B.
+            ("libs/lib/B.simf", "use lib::A::target as hidden_alias;"),
+            ("main.simf", "use lib::B::hidden_alias;"),
+        ]);
+
+        let id_a = *ids.get("A").unwrap();
+        let id_b = *ids.get("B").unwrap();
+        let id_root = *ids.get("main").unwrap();
+        let order = vec![id_a, id_b, id_root];
+
+        let mut error_handler = ErrorCollector::new();
+        graph.build_program(&order, &mut error_handler);
+
+        assert!(
+            error_handler.has_errors(),
+            "Compiler must emit an error when trying to import a private alias from an intermediate module"
+        );
+
+        let error_msg = ErrorCollector::to_string(&error_handler);
+        assert!(
+            error_msg.contains("PrivateItem") || error_msg.contains("hidden_alias"),
+            "Error should correctly identify the private intermediate alias"
+        );
+    }
+
+    #[test]
+    fn test_alias_cycle_detection() {
+        // Scenario: A malicious or confused user creates an infinite alias loop.
+        let (graph, ids, _dir) = setup_graph(vec![
+            // A imports from B, B imports from A.
+            ("libs/lib/A.simf", "pub use lib::B::pong as ping;"),
+            ("libs/lib/B.simf", "pub use lib::A::ping as pong;"),
+            ("main.simf", "use lib::A::ping;"),
+        ]);
+
+        let id_a = *ids.get("A").unwrap();
+        let id_b = *ids.get("B").unwrap();
+        let id_root = *ids.get("main").unwrap();
+        let order = vec![id_a, id_b, id_root];
+
+        let mut error_handler = ErrorCollector::new();
+        graph.build_program(&order, &mut error_handler);
+
+        // Driver should catch this and emit an UnresolvedItem or Cycle error,
+        // rather than causing a Stack Overflow!
+        assert!(
+            error_handler.has_errors(),
+            "Compiler must catch infinite alias cycles"
         );
     }
 }

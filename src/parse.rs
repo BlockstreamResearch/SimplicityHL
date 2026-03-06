@@ -96,12 +96,13 @@ impl UseDecl {
 
 impl_eq_hash!(UseDecl; visibility, path, items);
 
-// TODO: @LesterEvSe, Add aliases
+pub type AliasedIdentifier = (Identifier, Option<Identifier>);
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum UseItems {
-    Single(Identifier),
-    List(Vec<Identifier>),
+    Single(AliasedIdentifier),
+    List(Vec<AliasedIdentifier>),
 }
 
 /// Definition of a function.
@@ -692,16 +693,29 @@ impl fmt::Display for UseDecl {
 impl fmt::Display for UseItems {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            UseItems::Single(ident) => write!(f, "{}", ident),
-            UseItems::List(idents) => {
+            UseItems::Single((ident, alias)) => {
+                write!(f, "{};", ident)?;
+
+                if let Some(alias) = alias {
+                    write!(f, " as {}", alias)?;
+                }
+
+                write!(f, ";")
+            }
+            UseItems::List(aliased_idents) => {
                 let _ = write!(f, "{{");
-                for (i, ident) in idents.iter().enumerate() {
+                for (i, (ident, alias)) in aliased_idents.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
+
                     write!(f, "{}", ident)?;
+
+                    if let Some(alias) = alias {
+                        write!(f, " as {}", alias)?
+                    }
                 }
-                write!(f, "}}")
+                write!(f, "}};")
             }
         }
     }
@@ -1377,13 +1391,19 @@ impl ChumskyParse for UseDecl {
             .at_least(1)
             .collect::<Vec<_>>();
 
-        let list = Identifier::parser()
+        let aliased_item = Identifier::parser().then(
+            just(Token::As).ignore_then(Identifier::parser()).or_not(), // Returns None if 'as' missing'
+        );
+
+        let list = aliased_item
+            .clone()
             .separated_by(just(Token::Comma))
             .allow_trailing()
             .collect()
             .delimited_by(just(Token::LBrace), just(Token::RBrace))
             .map(UseItems::List);
-        let single = Identifier::parser().map(UseItems::Single);
+
+        let single = aliased_item.map(UseItems::Single);
         let items = choice((list, single));
 
         visibility

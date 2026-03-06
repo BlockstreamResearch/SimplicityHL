@@ -1,4 +1,4 @@
-pub use temp::constants::utils::two;
+pub use temp::constants::utils::two as smth;
 use temp::funcs::{get_five, Smth};
 
 fn seven() -> u32 {
@@ -6,6 +6,6 @@ fn seven() -> u32 {
 }
 
 fn main() {
-    let (_, temp): (bool, u32) = jet::add_32(two(), get_five());
+    let (_, temp): (bool, u32) = jet::add_32(smth(), get_five());
     assert!(jet::eq_32(temp, seven()));
 }

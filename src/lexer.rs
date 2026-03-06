@@ -9,6 +9,10 @@ pub type Spanned<T> = (T, SimpleSpan);
 pub type Tokens<'src> = Vec<(Token<'src>, crate::error::Span)>;
 
 // Define your SSoT here
+// TODO: @LesterEvSe or @Sdoba16 - Migrate to raw identifiers (`r#ident`) for forward compatibility.
+// As the language grows, adding new keywords (e.g., `mut`) will break legacy code
+// that uses those names for variables. Supporting `r#` escapes prevents this collision.
+// BLOCKER: The Imports PR must not be merged until this feature is implemented
 pub const RESERVED_TOKENS: &[&str] = &[
     "pub", "use", "as", "fn", "let", "type", "mod", "const", "match", "true", "false", "jet",
     "witness", "param",

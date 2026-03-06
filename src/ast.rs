@@ -9,7 +9,7 @@ use miniscript::iter::{Tree, TreeLike};
 use simplicity::jet::Elements;
 
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
-use crate::driver::ProgramResolutions;
+use crate::driver::{AliasRegistry, IdentifierWithFileID, ProgramResolutions};
 use crate::error::{Error, RichError, Span, WithSpan};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::parse::MatchPattern;
@@ -521,26 +521,50 @@ impl TreeLike for ExprTree<'_> {
 /// 2. Resolving type aliases
 /// 3. Assigning types to each witness expression
 /// 4. Resolving calls to custom functions
-#[derive(Clone, Debug, Eq, PartialEq, Default)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Scope {
     resolutions: ProgramResolutions,
     paths: Arc<[SourceName]>,
+    import_aliases: AliasRegistry,
     file_id: usize, // ID of the file from which the function is called.
 
     variables: Vec<HashMap<Identifier, ResolvedType>>,
     aliases: HashMap<AliasName, ResolvedType>,
     parameters: HashMap<WitnessName, ResolvedType>,
     witnesses: HashMap<WitnessName, ResolvedType>,
-    functions: HashMap<FunctionName, CustomFunction>,
+    functions: HashMap<IdentifierWithFileID, CustomFunction>,
     is_main: bool,
     call_tracker: CallTracker,
 }
 
+impl Default for Scope {
+    fn default() -> Self {
+        Self {
+            resolutions: Arc::from([]),
+            paths: Arc::from([]),
+            import_aliases: AliasRegistry::default(),
+            file_id: 0,
+            variables: Vec::new(),
+            aliases: HashMap::new(),
+            parameters: HashMap::new(),
+            witnesses: HashMap::new(),
+            functions: HashMap::new(),
+            is_main: false,
+            call_tracker: CallTracker::default(),
+        }
+    }
+}
+
 impl Scope {
-    pub fn new(resolutions: ProgramResolutions, paths: Arc<[SourceName]>) -> Self {
+    pub fn new(
+        resolutions: ProgramResolutions,
+        paths: Arc<[SourceName]>,
+        import_aliases: AliasRegistry,
+    ) -> Self {
         Self {
             resolutions,
             paths,
+            import_aliases,
             file_id: 0,
             variables: Vec::new(),
             aliases: HashMap::new(),
@@ -717,44 +741,75 @@ impl Scope {
     pub fn insert_function(
         &mut self,
         name: FunctionName,
+        file_id: usize,
         function: CustomFunction,
     ) -> Result<(), Error> {
-        match self.functions.entry(name.clone()) {
-            Entry::Occupied(_) => Err(Error::FunctionRedefined(name)),
-            Entry::Vacant(entry) => {
-                entry.insert(function);
-                Ok(())
-            }
+        let global_id = (name.clone().into(), file_id);
+
+        if self.functions.contains_key(&global_id) {
+            return Err(Error::FunctionRedefined(name));
         }
+
+        let _ = self.functions.insert(global_id, function);
+        Ok(())
+
+        // match self.functions.entry(global_id) {
+        //     Entry::Occupied(_) => Err(Error::FunctionRedefined(name)),
+        //     Entry::Vacant(entry) => {
+        //         entry.insert(function);
+        //         Ok(())
+        //     }
+        // }
     }
 
-    // TODO: @LesterEvSe, Consider why we use this function to get type.
-    /// Get the definition of a custom function with visibility and existence checks.
+    // TODO: @LesterEvSe, Consider why we use this function to get a type.
+
+    /// Retrieves the definition of a custom function, enforcing strict error prioritization.
+    ///
+    /// # Architecture Note
+    /// The order of operations here is intentional to prioritize specific compiler errors:
+    /// 1. Resolve the alias to find the true global coordinates.
+    /// 2. Check for global existence (`FunctionUndefined`) *before* checking local visibility.
+    /// 3. Verify if the current file's scope is actually allowed to see it (`PrivateItem`).
     ///
     /// # Errors
     ///
-    /// - `Error::FileNotFound`: The specified `file_id` does not exist in the resolutions.
-    /// - `Error::FunctionUndefined`: The function is not found in the file's scope OR not defined globally.
-    /// - `Error::PrivateItem`: The function or type exists but is private.
+    /// * [`Error::FunctionUndefined`]: The function is not found in the global registry.
+    /// * [`Error::FileNotFound`]: The specified `file_id` does not exist in the resolutions table.
+    /// * [`Error::PrivateItem`]: The function exists globally but is not exposed to the current file's scope.
     pub fn get_function(&self, name: &FunctionName) -> Result<&CustomFunction, Error> {
-        // The order of the errors is important!
+        // 1. Get the true global ID of the alias (or keep the current name if it is not aliased).
+        // Note: The order of the errors is important! We must know the true identify first.
+        let initial_id = (name.clone().into(), self.file_id);
+        let global_id = self
+            .import_aliases
+            .resolved_roots()
+            .get(&initial_id)
+            .cloned()
+            .unwrap_or(initial_id);
+
+        // 2. Fetch the function from the global pool.
+        // We do this first so we can throw FunctionUndefined before checking local visibility.
         let function = self
             .functions
-            .get(name)
+            .get(&global_id)
             .ok_or_else(|| Error::FunctionUndefined(name.clone()))?;
 
-        let source_name = self.paths[self.file_id].clone();
+        let source_name = &self.paths[self.file_id];
 
         let file_scope = match source_name {
             SourceName::Real(path) => self
                 .resolutions
                 .get(self.file_id)
-                .ok_or(Error::FileNotFound(path.to_path_buf()))?, // TODO: File or pub type
+                .ok_or_else(|| Error::FileNotFound(path.to_path_buf()))?,
             SourceName::Virtual(_) => {
+                // Virtual sources (e.g., injected code or REPL/Tests) bypass local visibility checks.
                 return Ok(function);
             }
         };
 
+        // 3. Verify lcoal  scope visibility.
+        // We successfully found the function globally, but is this file allowed to use it?
         let identifier: Identifier = name.clone().into();
 
         if file_scope.contains_key(&identifier) {
@@ -784,10 +839,13 @@ trait AbstractSyntaxTree: Sized {
 }
 
 impl Program {
-    // TODO: Add visibility check inside program
     pub fn analyze(from: &driver::Program) -> Result<Self, RichError> {
         let unit = ResolvedType::unit();
-        let mut scope = Scope::new(Arc::from(from.resolutions()), Arc::from(from.paths()));
+        let mut scope = Scope::new(
+            Arc::from(from.resolutions()),
+            Arc::from(from.paths()),
+            from.import_aliases().clone(),
+        );
         let items = from
             .items()
             .iter()
@@ -869,7 +927,7 @@ impl AbstractSyntaxTree for Function {
             debug_assert!(scope.is_topmost());
             let function = CustomFunction { params, body };
             scope
-                .insert_function(from.name().clone(), function)
+                .insert_function(from.name().clone(), file_id, function)
                 .with_span(from)?;
 
             return Ok(Self::Custom);
