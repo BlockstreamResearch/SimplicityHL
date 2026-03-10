@@ -331,7 +331,17 @@ impl_eq_hash!(TypeAlias; name, ty);
 #[derive(Debug)]
 pub enum C3Error {
     CycleDetected(Vec<String>),
-    InconsistentLinearization { module: String },
+    /// Error for inconsistent MRO.
+    /// This can happen if the dependency graph has a shape that makes the
+    /// order of parent classes ambiguous.
+    /// Example: A depends on B and C, and B also depends on C.
+    /// The linearization of A is A + merge(linearization(B), linearization(C), [B, C]).
+    /// If B appears before C in one parent's linearization but C appears before B
+    /// in another's, the merge will fail.
+    InconsistentLinearization {
+        module: String,
+        conflicts: Vec<Vec<String>>,
+    },
 }
 
 impl fmt::Display for C3Error {
@@ -340,8 +350,22 @@ impl fmt::Display for C3Error {
             C3Error::CycleDetected(cycle) => {
                 write!(f, "Circular dependency detected: {:?}", cycle.join(" -> "))
             }
-            C3Error::InconsistentLinearization { module } => {
-                write!(f, "Inconsistent resolution order for module '{:?}'", module)
+            C3Error::InconsistentLinearization { module, conflicts } => {
+                writeln!(f, "Inconsistent resolution order for module '{}'", module)?;
+                writeln!(
+                    f,
+                    "The compiler could not resolve the following conflicting import constraints:"
+                )?;
+
+                // Loop through the matrix and print each conflicting sequence
+                for conflict in conflicts {
+                    writeln!(f, "  [{}]", conflict.join(", "))?;
+                }
+
+                write!(
+                    f,
+                    "Try reordering your `use` statements to avoid cross-wiring."
+                )
             }
         }
     }
@@ -507,12 +531,26 @@ impl ProjectGraph {
             seqs.push(line);
         }
 
-        seqs.push(parents.clone());
-
         let mut result = vec![module];
-        let merged = merge(seqs).ok_or(C3Error::InconsistentLinearization {
-            module: self.modules[module].source.name().to_string(),
-        })?;
+        let merged = match merge(seqs) {
+            Ok(m) => m,
+            Err(conflicts) => {
+                // Map the failing usize sequences into readable module names
+                let conflict_names: Vec<Vec<String>> = conflicts
+                    .into_iter()
+                    .map(|seq| {
+                        seq.into_iter()
+                            .map(|id| self.modules[id].source.name().to_string())
+                            .collect()
+                    })
+                    .collect();
+
+                return Err(C3Error::InconsistentLinearization {
+                    module: self.modules[module].source.name().to_string(),
+                    conflicts: conflict_names,
+                });
+            }
+        };
 
         result.extend(merged);
 
@@ -738,13 +776,18 @@ impl ProjectGraph {
     }
 }
 
-fn merge(mut seqs: Vec<Vec<usize>>) -> Option<Vec<usize>> {
+/// C3 Merge Algorithm
+///
+/// Merges a list of sequences (parent linearizations) into a single sequence.
+/// The algorithm ensures that the local precedence order of each sequence is preserved.
+// Change the return type to Result
+fn merge(mut seqs: Vec<Vec<usize>>) -> Result<Vec<usize>, Vec<Vec<usize>>> {
     let mut result = Vec::new();
 
     loop {
         seqs.retain(|s| !s.is_empty());
         if seqs.is_empty() {
-            return Some(result);
+            return Ok(result);
         }
 
         let mut candidate = None;
@@ -758,7 +801,9 @@ fn merge(mut seqs: Vec<Vec<usize>>) -> Option<Vec<usize>> {
             }
         }
 
-        let head = candidate?;
+        let Some(head) = candidate else {
+            return Err(seqs);
+        };
 
         result.push(head);
 
@@ -916,7 +961,6 @@ pub(crate) mod tests {
     }
 
     // Helper to mock the initial root program parsing
-    // (Assuming your parser works via a helper function)
     fn parse_root(path: &Path) -> (parse::Program, SourceFile) {
         // 1. Read file
         let content = std::fs::read_to_string(path).expect("Failed to read root file for parsing");

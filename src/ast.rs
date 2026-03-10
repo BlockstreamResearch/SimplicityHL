@@ -1543,14 +1543,18 @@ impl AbstractSyntaxTree for Match {
     }
 }
 
+/// Analyze a parsed module program to extract assignments for a specific module.
+///
+/// This function searches the parsed program for a module matching the given `name`.
+/// If found, it evaluates the module's assignments and returns them as a map of
+/// witness names to their constant values. If the module is not present, an empty
+/// map is returned.
 fn analyze_named_module(
     name: ModuleName,
     from: &parse::ModuleProgram,
 ) -> Result<HashMap<WitnessName, Value>, RichError> {
     let unit = ResolvedType::unit();
 
-    // IMPORTANT! If modules allow imports, then we need to consider
-    // passing the resolution conetxt by calling `Scope::new(resolutions)`
     let mut scope = Scope::default();
     let items = from
         .items()

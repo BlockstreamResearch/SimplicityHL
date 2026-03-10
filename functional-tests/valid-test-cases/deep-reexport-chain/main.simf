@@ -1,0 +1,7 @@
+use lib::level1::CoreSmth;
+use lib::level1::core_val;
+
+fn main() {
+    let val: CoreSmth = core_val();
+    assert!(jet::eq_32(val, 42));
+}

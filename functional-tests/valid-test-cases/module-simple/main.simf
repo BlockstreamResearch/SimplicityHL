@@ -1,0 +1,2 @@
+use lib::module::add;
+fn main() {}

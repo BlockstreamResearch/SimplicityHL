@@ -1,0 +1,8 @@
+use api::api::{add_two, mock_hash, MathInt};
+
+fn main() {
+    let val: MathInt = 10;
+    let (_, step1): (bool, MathInt) = add_two(val);
+    let (_, step2): (bool, MathInt) = mock_hash(step1);
+    assert!(jet::eq_32(step2, 17));
+}

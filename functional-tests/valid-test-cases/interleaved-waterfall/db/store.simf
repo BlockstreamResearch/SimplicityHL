@@ -1,0 +1,2 @@
+use types::def::UserId;
+pub fn get_record(id: UserId) -> UserId { id }

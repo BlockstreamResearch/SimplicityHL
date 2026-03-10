@@ -1,0 +1,2 @@
+pub type Coin = u64;
+pub fn mint(val: u64) -> Coin { val }

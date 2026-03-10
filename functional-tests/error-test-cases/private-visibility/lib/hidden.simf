@@ -1,0 +1,1 @@
+type SecretType = u32; pub fn ok() {}

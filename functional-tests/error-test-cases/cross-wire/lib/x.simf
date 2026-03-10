@@ -1,0 +1,1 @@
+pub type TypeX = u32;

@@ -1,0 +1,9 @@
+use lib::route_a::Coin;
+use lib::route_a::mint;
+use lib::route_b::burn;
+
+fn main() {
+    let my_coin: Coin = mint(10);
+    let (_, remaining): (bool, Coin) = burn(my_coin);
+    assert!(jet::eq_64(remaining, 9));
+}

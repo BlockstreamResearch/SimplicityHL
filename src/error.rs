@@ -443,6 +443,7 @@ pub enum Error {
     FileNotFound(PathBuf),
     UnresolvedItem(Identifier),
     PrivateItem(String),
+    NameCollision(String),
     MainNoInputs,
     MainNoOutput,
     MainRequired,
@@ -564,6 +565,10 @@ impl fmt::Display for Error {
                 f,
                 "Item `{name}` is private"
             ),
+            Error::NameCollision(name) => write!(
+                f,
+                "The name `{name}` is defined multiple times in this scope"
+            ),
             Error::InvalidNumberOfArguments(expected, found) => write!(
                 f,
                 "Expected {expected} arguments, found {found} arguments"
@@ -639,7 +644,7 @@ impl fmt::Display for Error {
             Error::ArgumentTypeMismatch(name, declared, assigned) => write!(
                 f,
                 "Parameter `{name}` was declared with type `{declared}` but its assigned argument is of type `{assigned}`"
-            ),
+            )
         }
     }
 }
@@ -771,5 +776,21 @@ let x: u32 = Left(
             .with_source(source);
         let expected = "Cannot parse: This error has an empty file";
         assert_eq!(&expected, &error.to_string());
+    }
+
+    #[test]
+    fn display_private_item() {
+        let source = SourceFile::new(SourceName::Virtual(Arc::from(FILENAME)), Arc::from(FILE));
+        let error = Error::PrivateItem("SecretType".to_string())
+            .with_span(Span::new(8, 20))
+            .with_source(source);
+        let expected = format!(
+            r#"
+ --> {FILENAME}:1:9
+  |
+1 | let a1: List<u32, 5> = None;
+  |         ^^^^^^^^^^^^ Item `SecretType` is private"#
+        );
+        assert_eq!(&expected[1..], &error.to_string());
     }
 }

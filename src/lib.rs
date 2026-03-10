@@ -685,125 +685,69 @@ pub(crate) mod tests {
         }
     }
 
+    const VALID_TESTS_DIR: &str = "./functional-tests/valid-test-cases";
+    const ERROR_TESTS_DIR: &str = "./functional-tests/error-test-cases";
+
     // Real test cases
     #[test]
     fn module_simple() {
-        let (test, _dir) = TestCase::temp_env(
-            "use temp::math::add; fn main() {}",
-            vec![("temp", "temp/math.simf", "pub fn add() {}")],
-        );
-
-        test.with_witness_values(WitnessValues::default())
-            .assert_run_success();
+        TestCase::program_file_with_libs(
+            format!("{}/module-simple/main.simf", VALID_TESTS_DIR),
+            [("lib", format!("{}/module-simple/lib", VALID_TESTS_DIR))],
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
     }
 
     #[test]
     fn diamond_dependency_resolution() {
-        let main_code = r#"
-            use temp::left::get_left;
-            use temp::right::get_right;
-
-            fn main() {
-                let a: BaseType = get_left();
-                let b: BaseType = get_right();
-                let (_, c): (bool, BaseType) = jet::add_32(a, b);
-                assert!(jet::eq_32(c, 3));
-            }
-        "#;
-
-        let libs = vec![
-            ("temp", "temp/base.simf", "pub type BaseType = u32;"),
-            (
-                "temp",
-                "temp/left.simf",
-                "pub use temp::base::BaseType; pub fn get_left() -> BaseType { 1 }",
+        TestCase::program_file_with_libs(
+            format!(
+                "{}/diamond-dependency-resolution/main.simf",
+                VALID_TESTS_DIR
             ),
-            (
-                "temp",
-                "temp/right.simf",
-                "pub use temp::base::BaseType; pub fn get_right() -> BaseType { 2 }",
-            ),
-        ];
-
-        let (test, _dir) = TestCase::temp_env(main_code, libs);
-        test.with_witness_values(WitnessValues::default())
-            .assert_run_success();
+            [(
+                "lib",
+                format!("{}/diamond-dependency-resolution/lib", VALID_TESTS_DIR),
+            )],
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
     }
 
     #[test]
     #[should_panic(expected = "Circular dependency detected:")]
     fn cyclic_dependency_error() {
-        let main_code = "use temp::module_a::TypeA; fn main() {}";
-
-        let libs = vec![
-            (
-                "temp",
-                "temp/module_a.simf",
-                "pub use temp::module_b::TypeB; pub type TypeA = u32;",
-            ),
-            (
-                "temp",
-                "temp/module_b.simf",
-                "pub use temp::module_a::TypeA; pub type TypeB = u32;",
-            ),
-        ];
-
-        let (test, _dir) = TestCase::temp_env(main_code, libs);
-        test.with_witness_values(WitnessValues::default())
-            .assert_run_success();
+        TestCase::program_file_with_libs(
+            format!("{}/cyclic-dependency/main.simf", ERROR_TESTS_DIR),
+            [("lib", format!("{}/cyclic-dependency/lib", ERROR_TESTS_DIR))],
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
     }
 
     #[test]
     fn deep_reexport_chain() {
-        let main_code = r#"
-            use temp::level1::{CoreSmth, core_val};
-
-            fn main() {
-                let val: CoreSmth = core_val();
-                assert!(jet::eq_32(val, 42));
-            }
-        "#;
-
-        let libs = vec![
-            (
-                "temp",
-                "temp/level3.simf",
-                "pub type CoreSmth = u32; pub fn core_val() -> CoreSmth { 42 }",
-            ),
-            (
-                "temp",
-                "temp/level2.simf",
-                "pub use temp::level3::{CoreSmth, core_val};",
-            ),
-            (
-                "temp",
-                "temp/level1.simf",
-                "pub use temp::level2::{CoreSmth, core_val};",
-            ),
-        ];
-
-        let (test, _dir) = TestCase::temp_env(main_code, libs);
-        test.with_witness_values(WitnessValues::default())
-            .assert_run_success();
+        TestCase::program_file_with_libs(
+            format!("{}/deep-reexport-chain/main.simf", VALID_TESTS_DIR),
+            [(
+                "lib",
+                format!("{}/deep-reexport-chain/lib", VALID_TESTS_DIR),
+            )],
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
     }
 
     #[test]
     #[should_panic(expected = "Item `SecretType` is private")]
     fn private_type_visibility_error() {
-        let main_code = r#"
-            use temp::hidden::SecretType;
-            fn main() {}
-        "#;
-
-        let libs = vec![(
-            "temp",
-            "temp/hidden.simf",
-            "type SecretType = u32; pub fn ok() {}",
-        )];
-
-        let (test, _dir) = TestCase::temp_env(main_code, libs);
-        test.with_witness_values(WitnessValues::default())
-            .assert_run_success();
+        TestCase::program_file_with_libs(
+            format!("{}/private-visibility/main.simf", ERROR_TESTS_DIR),
+            [("lib", format!("{}/private-visibility/lib", ERROR_TESTS_DIR))],
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
     }
 
     #[test]
@@ -828,31 +772,100 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[ignore]
-    #[should_panic(expected = "was defined multiple times")] // TODO: Or not? Fix it later, after receiving a response from the devs.
-    fn name_collision_error() {
-        let main_code = r#"
-            use temp::mod_a::Value;
-            use temp::mod_b::Value;
-
-            fn main() {}
-        "#;
-
-        let libs = vec![
-            ("temp", "temp/mod_a.simf", "pub type Value = u32;"),
-            ("temp", "temp/mod_b.simf", "pub type Value = u32;"),
-        ];
-
-        let (test, _dir) = TestCase::temp_env(main_code, libs);
-        test.with_witness_values(WitnessValues::default())
-            .assert_run_success();
-    }
-
-    #[test]
     fn single_lib() {
         TestCase::program_file_with_libs(
             "./examples/single_lib/main.simf",
             [("temp", "./examples/single_lib/temp")],
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Cannot parse: found '*' expected '/', jet, witness, param, 'a', 'p', 'd', 'l', identifier, '0', something else, '-', '=', ':', ';', ',', '(', ')', '[', ']', '{', '}', '<', or '>'"
+    )]
+    fn global_import_error() {
+        TestCase::program_file_with_libs(
+            format!("{}/global/main.simf", ERROR_TESTS_DIR),
+            [("lib", format!("{}/global/lib", ERROR_TESTS_DIR))],
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
+    }
+
+    #[test]
+    fn file_not_found_error() {
+        use std::panic;
+        let result = panic::catch_unwind(|| {
+            TestCase::program_file_with_libs(
+                format!("{}/file-not-found/main.simf", ERROR_TESTS_DIR),
+                [("lib", &format!("{}/file-not-found/lib", ERROR_TESTS_DIR))],
+            )
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+        });
+
+        let panic_msg = result
+            .err()
+            .and_then(|b| b.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        let expected = format!(
+            "File `{}/file-not-found/lib/module.simf` not found",
+            ERROR_TESTS_DIR
+        );
+
+        assert!(panic_msg.contains(&expected));
+    }
+
+    #[test]
+    fn lib_not_found_error() {
+        use std::panic;
+
+        let result = panic::catch_unwind(|| {
+            TestCase::program_file_with_libs(
+                format!("{}/lib-not-found/main.simf", ERROR_TESTS_DIR),
+                [("lib", &format!("{}/lib-not-found/lib", ERROR_TESTS_DIR))],
+            )
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+        });
+
+        let panic_msg = result
+            .err()
+            .and_then(|b| b.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        let expected = format!(
+            "File `{}/lib-not-found/lib/module.simf` not found",
+            ERROR_TESTS_DIR
+        );
+
+        assert!(panic_msg.contains(&expected));
+    }
+
+    #[test]
+    fn multi_lib_facade_resolution() {
+        TestCase::program_file_with_libs(
+            format!("{}/multi-lib-facade/main.simf", VALID_TESTS_DIR),
+            [
+                ("math", format!("{}/multi-lib-facade/math", VALID_TESTS_DIR)),
+                (
+                    "crypto",
+                    format!("{}/multi-lib-facade/crypto", VALID_TESTS_DIR),
+                ),
+                ("api", format!("{}/multi-lib-facade/api", VALID_TESTS_DIR)),
+            ],
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
+    }
+
+    #[test]
+    #[should_panic(expected = "Inconsistent resolution order")]
+    fn cross_wire_linearization_error() {
+        TestCase::program_file_with_libs(
+            format!("{}/cross-wire/main.simf", ERROR_TESTS_DIR),
+            [("lib", format!("{}/cross-wire/lib", ERROR_TESTS_DIR))],
         )
         .with_witness_values(WitnessValues::default())
         .assert_run_success();

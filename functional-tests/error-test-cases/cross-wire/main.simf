@@ -1,0 +1,4 @@
+use lib::b::TypeX;
+use lib::c::TypeY;
+
+fn main() {}

@@ -1,0 +1,9 @@
+use lib::left::get_left;
+use lib::right::get_right;
+
+fn main() {
+    let a: BaseType = get_left();
+    let b: BaseType = get_right();
+    let (_, c): (bool, BaseType) = jet::add_32(a, b);
+    assert!(jet::eq_32(c, 3));
+}

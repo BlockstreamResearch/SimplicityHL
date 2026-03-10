@@ -1,0 +1,5 @@
+type SecretKey = u64;
+
+pub fn unlock(key: SecretKey) -> u64 {
+    jet::max_64(key, 0)
+}

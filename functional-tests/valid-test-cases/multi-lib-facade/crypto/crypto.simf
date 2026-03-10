@@ -1,0 +1,5 @@
+use math::math::MathInt;
+
+pub fn mock_hash(x: MathInt) -> (bool, MathInt) {
+    jet::add_32(x, 5)
+}

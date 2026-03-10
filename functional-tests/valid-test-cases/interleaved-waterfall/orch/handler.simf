@@ -1,0 +1,8 @@
+use auth::verify::is_valid;
+use db::store::get_record;
+use types::def::UserId;
+
+pub fn run_system(id: UserId) -> UserId {
+    let checked: UserId = is_valid(id);
+    get_record(checked)
+}
