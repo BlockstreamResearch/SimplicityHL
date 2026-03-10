@@ -14,11 +14,14 @@ struct Output {
     witness: Option<String>,
     /// Simplicity program ABI metadata to the program which the user provides.
     abi_meta: Option<AbiMeta>,
+    /// Commitment Merkle Root (CMR) of the program, hex encoded.
+    cmr: String,
 }
 
 impl fmt::Display for Output {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Program:\n{}", self.program)?;
+        writeln!(f, "CMR:\n{}", self.cmr)?;
         if let Some(witness) = &self.witness {
             writeln!(f, "Witness:\n{}", witness)?;
         }
@@ -156,10 +159,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    let cmr_hex = compiled.commit().cmr().to_string();
     let output = Output {
         program: Base64Display::new(&program_bytes, &STANDARD).to_string(),
         witness: witness_bytes.map(|bytes| Base64Display::new(&bytes, &STANDARD).to_string()),
         abi_meta: abi_opt,
+        cmr: cmr_hex,
     };
 
     if output_json {
