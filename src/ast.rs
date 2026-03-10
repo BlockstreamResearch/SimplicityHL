@@ -1573,6 +1573,9 @@ fn analyze_named_module(
     from: &parse::ModuleProgram,
 ) -> Result<HashMap<WitnessName, Value>, RichError> {
     let unit = ResolvedType::unit();
+
+    // IMPORTANT! If modules allow imports, then we need to consider
+    // passing the resolution conetxt by calling `Scope::new(resolutions)`
     let mut scope = Scope::default();
     let items = from
         .items()

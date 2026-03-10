@@ -1,0 +1,5 @@
+use lib::module::AssetId;
+
+fn main() {
+    let my_asset: AssetId = 5; 
+}

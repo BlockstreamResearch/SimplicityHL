@@ -1,0 +1,3 @@
+use lib::hidden::SecretType;
+
+fn main() {}

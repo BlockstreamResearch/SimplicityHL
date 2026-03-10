@@ -1,0 +1,6 @@
+use types::def::UserId;
+use db::store::get_record;
+
+pub fn is_valid(id: UserId) -> UserId { 
+    get_record(id)
+}

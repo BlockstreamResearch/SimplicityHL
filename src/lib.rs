@@ -610,7 +610,7 @@ pub(crate) mod tests {
 
     /// THE DEFAULT HELPER
     /// Automatically sets up the standard `lib` self-referencing dependency.
-    fn run_dependency_test(root_path: &str, lib_alias: &str) {
+    pub(crate) fn run_dependency_test(root_path: &str, lib_alias: &str) {
         let root_path = PathBuf::from(root_path);
         let lib_path = root_path.join(lib_alias);
         let main_path = root_path.join("main.simf");
@@ -630,7 +630,7 @@ pub(crate) mod tests {
     /// A helper function to run standard library dependency tests.
     /// `deps` expects an array of tuples: `(context_folder, alias, target_folder)`.
     /// Use `"."` for the `context_folder` if the context is the root test directory.
-    fn run_multidep_test(root_path: &str, deps: &[(&str, &str, &str)]) {
+    pub(crate) fn run_multidep_test(root_path: &str, deps: &[(&str, &str, &str)]) {
         let root_path = PathBuf::from(root_path);
         let main_path = root_path.join("main.simf");
 
@@ -1099,5 +1099,133 @@ fn main() {
         fn transfer_with_timeout_regression() {
             regression_test("transfer_with_timeout");
         }
+    }
+}
+
+#[cfg(test)]
+mod functional_tests {
+    use crate::tests::{run_dependency_test, run_multidep_test};
+
+    const VALID_TESTS_DIR: &str = "./functional-tests/valid-test-cases";
+    const ERROR_TESTS_DIR: &str = "./functional-tests/error-test-cases";
+
+    // Real test cases
+    #[test]
+    fn module_simple() {
+        run_dependency_test(format!("{}/module-simple", VALID_TESTS_DIR).as_str(), "lib");
+    }
+
+    #[test]
+    fn diamond_dependency_resolution() {
+        run_dependency_test(
+            format!("{}/diamond-dependency-resolution", VALID_TESTS_DIR).as_str(),
+            "lib",
+        );
+    }
+
+    #[test]
+    fn deep_reexport_chain() {
+        run_dependency_test(
+            format!("{}/deep-reexport-chain", VALID_TESTS_DIR).as_str(),
+            "lib",
+        );
+    }
+
+    #[test]
+    fn leaky_signature() {
+        run_dependency_test(
+            format!("{}/leaky-signature", VALID_TESTS_DIR).as_str(),
+            "lib",
+        );
+    }
+
+    #[test]
+    fn reexport_diamond() {
+        run_dependency_test(
+            format!("{}/reexport-diamond", VALID_TESTS_DIR).as_str(),
+            "lib",
+        );
+    }
+
+    #[test]
+    fn multi_lib_facade_resolution() {
+        run_multidep_test(
+            format!("{}/multi-lib-facade", VALID_TESTS_DIR).as_str(),
+            &[
+                (".", "api", "api"),
+                ("crypto", "math", "math"),
+                ("api", "crypto", "crypto"),
+                ("api", "math", "math"),
+            ],
+        );
+    }
+
+    #[test]
+    fn interleaved_waterfall() {
+        run_multidep_test(
+            format!("{}/interleaved-waterfall", VALID_TESTS_DIR).as_str(),
+            &[
+                (".", "orch", "orch"),
+                ("orch", "db", "db"),
+                ("orch", "auth", "auth"),
+                ("orch", "types", "types"),
+                ("db", "types", "types"),
+                ("auth", "types", "types"),
+                ("auth", "db", "db"),
+            ],
+        );
+    }
+
+    // Error tests
+    #[test]
+    #[should_panic(expected = "Circular dependency detected:")]
+    fn cyclic_dependency_error() {
+        run_dependency_test(
+            format!("{}/cyclic-dependency", ERROR_TESTS_DIR).as_str(),
+            "lib",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "No such file or directory")]
+    fn file_not_found_error() {
+        run_dependency_test(
+            format!("{}/file-not-found", ERROR_TESTS_DIR).as_str(),
+            "lib",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "No such file or directory")]
+    fn lib_not_found_error() {
+        run_dependency_test(format!("{}/lib-not-found", ERROR_TESTS_DIR).as_str(), "lib");
+    }
+
+    #[test]
+    #[should_panic(expected = "Item `SecretType` is private")]
+    fn private_type_visibility_error() {
+        run_dependency_test(
+            format!("{}/private-visibility", ERROR_TESTS_DIR).as_str(),
+            "lib",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "The alias `add` was defined multiple times")]
+    fn name_collision_error() {
+        run_dependency_test(
+            format!("{}/name-collision", ERROR_TESTS_DIR).as_str(),
+            "lib",
+        );
+    }
+
+    // Reference to the following bug: https://github.com/BlockstreamResearch/SimplicityHL/issues/220
+    #[test]
+    #[should_panic(expected = "Type alias `A` was defined multiple times")]
+    fn type_alias_duplication_error() {
+        run_dependency_test(
+            format!("{}/type-alias-duplication", ERROR_TESTS_DIR).as_str(),
+            "lib",
+        );
     }
 }

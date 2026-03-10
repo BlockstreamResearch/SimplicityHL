@@ -1,0 +1,2 @@
+pub use lib::module_a::TypeA;
+pub type TypeB = u32;
