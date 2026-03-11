@@ -11,6 +11,7 @@ use chumsky::DefaultExpected;
 use itertools::Itertools;
 use simplicity::elements;
 
+use crate::ast::WarningName;
 use crate::lexer::Token;
 use crate::parse::MatchPattern;
 use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName, WitnessName};
@@ -189,32 +190,37 @@ impl RichError {
     }
 }
 
+pub(crate) fn get_line_col(file: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut last_newline_offset = 0;
+
+    let slice = file.get(0..offset).unwrap_or_default();
+
+    for (i, byte) in slice.bytes().enumerate() {
+        if byte == b'\n' {
+            line += 1;
+            last_newline_offset = i;
+        }
+    }
+
+    let col = (offset - last_newline_offset) + 1;
+    (line, col)
+}
+
 impl fmt::Display for RichError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fn get_line_col(file: &str, offset: usize) -> (usize, usize) {
-            let mut line = 1;
-            let mut last_newline_offset = 0;
-
-            let slice = file.get(0..offset).unwrap_or_default();
-
-            for (i, byte) in slice.bytes().enumerate() {
-                if byte == b'\n' {
-                    line += 1;
-                    last_newline_offset = i;
-                }
-            }
-
-            let col = (offset - last_newline_offset) + 1;
-            (line, col)
-        }
+        const RED_BOLD: &str = "\x1b[1;31m";
+        const RESET: &str = "\x1b[0m";
 
         match self.file {
             Some(ref file) if !file.is_empty() => {
                 let (start_line, start_col) = get_line_col(file, self.span.start);
                 let (end_line, end_col) = get_line_col(file, self.span.end);
 
-                let start_line_index = start_line - 1;
+                writeln!(f, "{RED_BOLD}error{RESET}: {}", self.error)?;
+                writeln!(f, " --> {start_line}:{start_col}")?;
 
+                let start_line_index = start_line - 1;
                 let n_spanned_lines = end_line - start_line_index;
                 let line_num_width = end_line.to_string().len();
 
@@ -229,18 +235,21 @@ impl fmt::Display for RichError {
                 }
 
                 let is_multiline = end_line > start_line;
-
                 let (underline_start, underline_length) = match is_multiline {
                     true => (0, start_line_len),
                     false => (start_col, end_col - start_col),
                 };
                 write!(f, "{:width$} |", " ", width = line_num_width)?;
                 write!(f, "{:width$}", " ", width = underline_start)?;
-                write!(f, "{:^<width$} ", "", width = underline_length)?;
-                write!(f, "{}", self.error)
+                write!(
+                    f,
+                    "{RED_BOLD}{:^<width$}{RESET}",
+                    "",
+                    width = underline_length
+                )
             }
             _ => {
-                write!(f, "{}", self.error)
+                write!(f, "{RED_BOLD}error{RESET}: {}", self.error)
             }
         }
     }
@@ -438,6 +447,7 @@ pub enum Error {
     ModuleRedefined(ModuleName),
     ArgumentMissing(WitnessName),
     ArgumentTypeMismatch(WitnessName, ResolvedType, ResolvedType),
+    DeniedWarning(WarningName),
 }
 
 #[rustfmt::skip]
@@ -587,6 +597,9 @@ impl fmt::Display for Error {
                 f,
                 "Parameter `{name}` was declared with type `{declared}` but its assigned argument is of type `{assigned}`"
             ),
+            Error::DeniedWarning(warning) => write!(
+                f, "Warning treated as error: {warning}"
+            )
         }
     }
 }

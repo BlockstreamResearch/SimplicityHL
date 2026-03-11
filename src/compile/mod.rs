@@ -222,6 +222,18 @@ impl<'brand> Scope<'brand> {
     }
 }
 
+/// Returns the equality jet and a zero `simplicity::Value` for the operand type
+/// of a divide or modulo jet. Used to generate the divisor-zero check.
+fn divisor_check_jet_and_zero_for_binary_op(jet: Elements) -> (Elements, simplicity::Value) {
+    match jet {
+        Elements::Divide8 | Elements::Modulo8 => (Elements::Eq8, simplicity::Value::u8(0)),
+        Elements::Divide16 | Elements::Modulo16 => (Elements::Eq16, simplicity::Value::u16(0)),
+        Elements::Divide32 | Elements::Modulo32 => (Elements::Eq32, simplicity::Value::u32(0)),
+        Elements::Divide64 | Elements::Modulo64 => (Elements::Eq64, simplicity::Value::u64(0)),
+        _ => unreachable!("divisor_check_jet_and_zero called on non-divide/modulo jet"),
+    }
+}
+
 fn compile_blk<'brand>(
     stmts: &[Statement],
     scope: &mut Scope<'brand>,
@@ -355,6 +367,77 @@ impl SingleExpression {
             }
             SingleExpressionInner::Call(call) => call.compile(scope)?,
             SingleExpressionInner::Match(match_) => match_.compile(scope)?,
+            SingleExpressionInner::BinaryOp {
+                jet,
+                lhs,
+                rhs,
+                assert_no_carry,
+                swap_args,
+                negate_result,
+                check_nonzero_divisor,
+            } => {
+                let args = if *swap_args {
+                    rhs.compile(scope)?.pair(lhs.compile(scope)?)
+                } else {
+                    lhs.compile(scope)?.pair(rhs.compile(scope)?)
+                };
+                let jet_node = ProgNode::jet(scope.ctx(), *jet);
+                let args = if *check_nonzero_divisor {
+                    // Emit a divisor-zero check before the divide/modulo jet.
+                    // If rhs == 0 the program panics; otherwise the args pass through unchanged.
+                    //
+                    // args : Input → (lhs, rhs)
+                    //
+                    // Step 1: check_rhs_eq_zero : (lhs, rhs) → (1+1)
+                    //   = pair(drop(iden), unit_scribe(0)) >>> EqN
+                    let (eq_jet_elem, zero_sv) = divisor_check_jet_and_zero_for_binary_op(*jet);
+                    // drop(iden) : (lhs, rhs) → rhs
+                    let rhs_from_pair = ProgNode::drop_(&ProgNode::iden(scope.ctx()));
+                    // unit_scribe(0) : (lhs, rhs) → 0
+                    let zero_scribe = ProgNode::unit_scribe(scope.ctx(), &zero_sv);
+                    // pair(rhs_from_pair, zero_scribe) : (lhs, rhs) → (rhs, 0)
+                    let rhs_zero_pair = ProgNode::pair(&rhs_from_pair, &zero_scribe).unwrap();
+                    // >>> EqN : (rhs, 0) → (1+1)  [right = equal, left = not-equal]
+                    let eq_node = ProgNode::jet(scope.ctx(), eq_jet_elem);
+                    let check_rhs_eq_zero = ProgNode::comp(&rhs_zero_pair, &eq_node).unwrap();
+
+                    // Step 2: pair(check, iden) : (lhs, rhs) → ((1+1), (lhs, rhs))
+                    let check_and_iden =
+                        ProgNode::pair(&check_rhs_eq_zero, &ProgNode::iden(scope.ctx())).unwrap();
+
+                    // Step 3: assertl(drop(iden), fail) : ((1+1), (lhs, rhs)) → (lhs, rhs)
+                    //   asserts eq result is left (false = not-equal, i.e. divisor != 0)
+                    //   passes through (lhs, rhs) via drop(iden)
+                    let assert_nonzero =
+                        ProgNode::iden(scope.ctx()).assertl_drop(Cmr::fail(FailEntropy::ZERO));
+
+                    // Compose: (lhs, rhs) → (lhs, rhs) [panics if rhs == 0]
+                    let check_passthrough =
+                        ProgNode::comp(&check_and_iden, &assert_nonzero).unwrap();
+
+                    // args >>> check_passthrough : Input → (lhs, rhs) [with zero check]
+                    args.comp(&check_passthrough).with_span(self)?
+                } else {
+                    args
+                };
+                let jet_result = args.comp(&jet_node).with_span(self)?;
+                if *assert_no_carry {
+                    // jet returns (bool, uN): assert carry==false (panic on overflow), return uN
+                    // assertl(drop_(iden), cmr_fail): ((unit+unit), uN) → uN
+                    let assert_and_extract =
+                        ProgNode::iden(scope.ctx()).assertl_drop(Cmr::fail(FailEntropy::ZERO));
+                    jet_result.comp(&assert_and_extract).with_span(self)?
+                } else if *negate_result {
+                    // bool NOT: pair(iden, unit) >>> case_true_false: (1+1) → (1+1)
+                    let input_and_unit =
+                        PairBuilder::iden(scope.ctx()).pair(PairBuilder::unit(scope.ctx()));
+                    let bool_not_node = ProgNode::case_true_false(scope.ctx());
+                    let bool_not = input_and_unit.comp(&bool_not_node).with_span(self)?;
+                    jet_result.comp(&bool_not).with_span(self)?
+                } else {
+                    jet_result
+                }
+            }
         };
 
         scope

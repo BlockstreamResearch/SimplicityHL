@@ -303,6 +303,106 @@ pub enum ExpressionInner {
     Block(Arc<[Statement]>, Option<Arc<Expression>>),
 }
 
+/// An infix binary operator.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum InfixOp {
+    /// `+`
+    Add,
+    /// `-`
+    Sub,
+    /// `*`
+    Mul,
+    /// `/`
+    Div,
+    /// `%`
+    Rem,
+    /// `&&` — short-circuit logical AND
+    LogicalAnd,
+    /// `||` — short-circuit logical OR
+    LogicalOr,
+    /// `&`
+    BitAnd,
+    /// `|`
+    BitOr,
+    /// `^`
+    BitXor,
+    /// `==`
+    Eq,
+    /// `!=`
+    Ne,
+    /// `<`
+    Lt,
+    /// `<=`
+    Le,
+    /// `>`
+    Gt,
+    /// `>=`
+    Ge,
+}
+
+impl fmt::Display for InfixOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            InfixOp::Add => write!(f, "+"),
+            InfixOp::Sub => write!(f, "-"),
+            InfixOp::Mul => write!(f, "*"),
+            InfixOp::Div => write!(f, "/"),
+            InfixOp::Rem => write!(f, "%"),
+            InfixOp::LogicalAnd => write!(f, "&&"),
+            InfixOp::LogicalOr => write!(f, "||"),
+            InfixOp::BitAnd => write!(f, "&"),
+            InfixOp::BitOr => write!(f, "|"),
+            InfixOp::BitXor => write!(f, "^"),
+            InfixOp::Eq => write!(f, "=="),
+            InfixOp::Ne => write!(f, "!="),
+            InfixOp::Lt => write!(f, "<"),
+            InfixOp::Le => write!(f, "<="),
+            InfixOp::Gt => write!(f, ">"),
+            InfixOp::Ge => write!(f, ">="),
+        }
+    }
+}
+
+/// A binary infix operator expression: `lhs op rhs`.
+#[derive(Clone, Debug)]
+pub struct BinaryExpression {
+    lhs: Arc<Expression>,
+    op: InfixOp,
+    rhs: Arc<Expression>,
+    span: Span,
+}
+
+impl BinaryExpression {
+    /// Access the left-hand side expression.
+    pub fn lhs(&self) -> &Expression {
+        &self.lhs
+    }
+
+    /// Access the infix operator.
+    pub fn op(&self) -> &InfixOp {
+        &self.op
+    }
+
+    /// Access the right-hand side expression.
+    pub fn rhs(&self) -> &Expression {
+        &self.rhs
+    }
+}
+
+impl_eq_hash!(BinaryExpression; lhs, op, rhs);
+
+impl fmt::Display for BinaryExpression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", ExprTree::BinaryOp(self))
+    }
+}
+
+impl AsRef<Span> for BinaryExpression {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
 /// A single expression directly returns a value.
 #[derive(Clone, Debug)]
 pub struct SingleExpression {
@@ -351,6 +451,8 @@ pub enum SingleExpressionInner {
     Expression(Arc<Expression>),
     /// Match expression over a sum type
     Match(Match),
+    /// Binary infix operator expression, e.g. `a + b`.
+    BinaryOp(BinaryExpression),
     /// Tuple wrapper expression
     Tuple(Arc<[Expression]>),
     /// Array wrapper expression
@@ -602,6 +704,7 @@ pub enum ExprTree<'a> {
     Single(&'a SingleExpression),
     Call(&'a Call),
     Match(&'a Match),
+    BinaryOp(&'a BinaryExpression),
 }
 
 impl TreeLike for ExprTree<'_> {
@@ -642,6 +745,7 @@ impl TreeLike for ExprTree<'_> {
                 | S::Expression(l) => Tree::Unary(Self::Expression(l)),
                 S::Call(call) => Tree::Unary(Self::Call(call)),
                 S::Match(match_) => Tree::Unary(Self::Match(match_)),
+                S::BinaryOp(binary) => Tree::Unary(Self::BinaryOp(binary)),
                 S::Tuple(elements) | S::Array(elements) | S::List(elements) => {
                     Tree::Nary(elements.iter().map(Self::Expression).collect())
                 }
@@ -651,6 +755,10 @@ impl TreeLike for ExprTree<'_> {
                 Self::Expression(match_.scrutinee()),
                 Self::Expression(match_.left().expression()),
                 Self::Expression(match_.right().expression()),
+            ])),
+            Self::BinaryOp(binary) => Tree::Nary(Arc::new([
+                Self::Expression(binary.lhs()),
+                Self::Expression(binary.rhs()),
             ])),
         }
     }
@@ -715,7 +823,7 @@ impl fmt::Display for ExprTree<'_> {
                             write!(f, ")")?;
                         }
                     },
-                    S::Call(..) | S::Match(..) => {}
+                    S::Call(..) | S::Match(..) | S::BinaryOp(..) => {}
                     S::Tuple(tuple) => {
                         if data.n_children_yielded == 0 {
                             write!(f, "(")?;
@@ -765,6 +873,11 @@ impl fmt::Display for ExprTree<'_> {
                         debug_assert_eq!(n, 3);
                         write!(f, ",\n}}")?;
                     }
+                },
+                Self::BinaryOp(binary) => match data.n_children_yielded {
+                    0 => {}
+                    1 => write!(f, " {} ", binary.op())?,
+                    n => debug_assert_eq!(n, 2),
                 },
             }
         }
@@ -1607,14 +1720,56 @@ impl SingleExpression {
             .delimited_by(just(Token::LParen), just(Token::RParen))
             .map(|es| SingleExpressionInner::Expression(Arc::from(es)));
 
-        choice((
+        let op = select! {
+            Token::Plus if crate::unstable_flags::is_enabled(crate::unstable_flags::UnstableFlag::InfixArithmeticOperators) => InfixOp::Add,
+            Token::Minus if crate::unstable_flags::is_enabled(crate::unstable_flags::UnstableFlag::InfixArithmeticOperators) => InfixOp::Sub,
+            Token::Star if crate::unstable_flags::is_enabled(crate::unstable_flags::UnstableFlag::InfixArithmeticOperators) => InfixOp::Mul,
+            Token::Slash if crate::unstable_flags::is_enabled(crate::unstable_flags::UnstableFlag::InfixArithmeticOperators) => InfixOp::Div,
+            Token::Percent if crate::unstable_flags::is_enabled(crate::unstable_flags::UnstableFlag::InfixArithmeticOperators) => InfixOp::Rem,
+            Token::AmpAmp => InfixOp::LogicalAnd,
+            Token::PipePipe => InfixOp::LogicalOr,
+            Token::Ampersand => InfixOp::BitAnd,
+            Token::Pipe => InfixOp::BitOr,
+            Token::Caret => InfixOp::BitXor,
+            Token::EqEq => InfixOp::Eq,
+            Token::BangEq => InfixOp::Ne,
+            Token::LAngle => InfixOp::Lt,
+            Token::LtEq => InfixOp::Le,
+            Token::RAngle => InfixOp::Gt,
+            Token::GtEq => InfixOp::Ge,
+        };
+
+        let primary = choice((
             left, right, some, none, boolean, match_expr, expression, list, array, tuple, call,
             literal, variable,
         ))
         .map_with(|inner, e| Self {
             inner,
             span: e.span(),
-        })
+        });
+
+        primary
+            .clone()
+            .foldl_with(op.then(primary).repeated(), |lhs, (op, rhs), e| {
+                let span = e.span();
+                let lhs_span = *lhs.span();
+                let rhs_span = *rhs.span();
+                Self {
+                    inner: SingleExpressionInner::BinaryOp(BinaryExpression {
+                        lhs: Arc::new(Expression {
+                            inner: ExpressionInner::Single(lhs),
+                            span: lhs_span,
+                        }),
+                        op,
+                        rhs: Arc::new(Expression {
+                            inner: ExpressionInner::Single(rhs),
+                            span: rhs_span,
+                        }),
+                        span,
+                    }),
+                    span,
+                }
+            })
     }
 }
 
@@ -2161,5 +2316,86 @@ impl crate::ArbitraryRec for Match {
             },
             span: Span::DUMMY,
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Helper: extract a `BinaryExpression` from the outermost `Expression`.
+    fn unwrap_binary(expr: &Expression) -> &BinaryExpression {
+        match expr.inner() {
+            ExpressionInner::Single(single) => match single.inner() {
+                SingleExpressionInner::BinaryOp(binary) => binary,
+                _ => panic!("Expected SingleExpressionInner::BinaryOp"),
+            },
+            _ => panic!("Expected ExpressionInner::Single"),
+        }
+    }
+
+    #[test]
+    fn test_binary_op_add() {
+        let expr = Expression::parse_from_str("b1 + b2").expect("Failed to parse");
+        assert_eq!(unwrap_binary(&expr).op(), &InfixOp::Add);
+    }
+
+    #[test]
+    fn test_binary_op_all_operators() {
+        for (input, expected_op) in [
+            ("a + b", InfixOp::Add),
+            ("a - b", InfixOp::Sub),
+            ("a * b", InfixOp::Mul),
+            ("a / b", InfixOp::Div),
+            ("a % b", InfixOp::Rem),
+            ("a == b", InfixOp::Eq),
+            ("a != b", InfixOp::Ne),
+            ("a < b", InfixOp::Lt),
+            ("a <= b", InfixOp::Le),
+            ("a > b", InfixOp::Gt),
+            ("a >= b", InfixOp::Ge),
+        ] {
+            let expr = Expression::parse_from_str(input).expect("Failed to parse");
+            assert_eq!(
+                unwrap_binary(&expr).op(),
+                &expected_op,
+                "Wrong op for input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_binary_op_left_associative() {
+        // `a + b + c` should parse as `(a + b) + c`
+        let expr = Expression::parse_from_str("a + b + c").expect("Failed to parse");
+        let outer = unwrap_binary(&expr);
+        assert_eq!(outer.op(), &InfixOp::Add);
+        // LHS should wrap another BinaryOp: (a + b)
+        let inner = unwrap_binary(outer.lhs());
+        assert_eq!(inner.op(), &InfixOp::Add);
+    }
+
+    #[test]
+    fn test_binary_op_in_let_binding() {
+        let input = "{ let b3: u8 = b1 + b2; b3 }";
+        let expr = Expression::parse_from_str(input).expect("Failed to parse");
+        match expr.inner() {
+            ExpressionInner::Block(stmts, _) => {
+                assert_eq!(stmts.len(), 1);
+                match &stmts[0] {
+                    Statement::Assignment(assign) => {
+                        assert_eq!(unwrap_binary(assign.expression()).op(), &InfixOp::Add);
+                    }
+                    _ => panic!("Expected assignment statement"),
+                }
+            }
+            _ => panic!("Expected block expression"),
+        }
+    }
+
+    #[test]
+    fn test_binary_op_display() {
+        let expr = Expression::parse_from_str("a + b").expect("Failed to parse");
+        assert_eq!(expr.to_string(), "a + b");
     }
 }

@@ -1,8 +1,9 @@
 // From https://github.com/BlockstreamResearch/SimplicityHL/issues/153
 
 fn sum(elt: u32, acc: u32) -> u32 {
-    let (_, acc): (bool, u32) = jet::add_32(elt, acc);
-    acc
+    // let (_, acc): (bool, u32) = jet::add_32(elt, acc);
+    elt + acc
+    // acc
 }
 
 fn main() {

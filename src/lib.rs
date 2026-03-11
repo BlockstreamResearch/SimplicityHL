@@ -17,6 +17,7 @@ mod serde;
 pub mod str;
 pub mod tracker;
 pub mod types;
+pub mod unstable_flags;
 pub mod value;
 mod witness;
 
@@ -29,10 +30,12 @@ pub extern crate either;
 pub extern crate simplicity;
 pub use simplicity::elements;
 
+use crate::ast::Warning;
 use crate::debug::DebugSymbols;
 use crate::error::{ErrorCollector, WithFile};
 use crate::parse::ParseFromStrWithErrors;
 pub use crate::types::ResolvedType;
+pub use crate::unstable_flags::{UnstableFlags, with_flags};
 pub use crate::value::Value;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 
@@ -43,6 +46,7 @@ pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 pub struct TemplateProgram {
     simfony: ast::Program,
     file: Arc<str>,
+    warnings: Vec<Warning>,
 }
 
 impl TemplateProgram {
@@ -51,16 +55,31 @@ impl TemplateProgram {
     /// ## Errors
     ///
     /// The string is not a valid SimplicityHL program.
-    pub fn new<Str: Into<Arc<str>>>(s: Str) -> Result<Self, String> {
+    pub fn new<Str: Into<Arc<str>>>(
+        s: Str,
+        deny_all_warnings: bool,
+        flags: UnstableFlags,
+    ) -> Result<Self, String> {
         let file = s.into();
         let mut error_handler = ErrorCollector::new(Arc::clone(&file));
-        let parse_program = parse::Program::parse_from_str_with_errors(&file, &mut error_handler);
+        let parse_program =
+            with_flags(flags, || {
+                parse::Program::parse_from_str_with_errors(&file, &mut error_handler)
+            });
         if let Some(program) = parse_program {
-            let ast_program = ast::Program::analyze(&program).with_file(Arc::clone(&file))?;
-            Ok(Self {
-                simfony: ast_program,
-                file,
-            })
+            let (ast_program, warnings) =
+                ast::Program::analyze(&program).with_file(Arc::clone(&file))?;
+
+            if !warnings.is_empty() && deny_all_warnings {
+                error_handler.update(warnings.into_iter().map(|w| w.into()));
+                Err(ErrorCollector::to_string(&error_handler))?
+            } else {
+                Ok(Self {
+                    simfony: ast_program,
+                    file,
+                    warnings,
+                })
+            }
         } else {
             Err(ErrorCollector::to_string(&error_handler))?
         }
@@ -74,6 +93,62 @@ impl TemplateProgram {
     /// Access the witness types of the program.
     pub fn witness_types(&self) -> &WitnessTypes {
         self.simfony.witness_types()
+    }
+
+    /// Access any warnings produced during compilation.
+    pub fn warnings(&self) -> &[Warning] {
+        &self.warnings
+    }
+
+    /// Format warnings for display in rustc style, with source location and yellow color.
+    pub fn format_warnings(&self, file_path: &str) -> String {
+        use crate::error::get_line_col;
+        use std::fmt::Write as _;
+
+        const YELLOW_BOLD: &str = "\x1b[1;33m";
+        const RESET: &str = "\x1b[0m";
+
+        let mut out = String::new();
+        for warning in &self.warnings {
+            let message = warning.canonical_name.to_string();
+            let _ = writeln!(out, "{YELLOW_BOLD}warning{RESET}: {message}");
+
+            if !self.file.is_empty() {
+                let (start_line, start_col) = get_line_col(&self.file, warning.span.start);
+                let (end_line, end_col) = get_line_col(&self.file, warning.span.end);
+                let _ = writeln!(out, " --> {file_path}:{start_line}:{start_col}");
+
+                let start_line_index = start_line - 1;
+                let n_spanned_lines = end_line - start_line_index;
+                let line_num_width = end_line.to_string().len();
+
+                let _ = writeln!(out, "{:width$} |", " ", width = line_num_width);
+                let mut lines = self.file.lines().skip(start_line_index).peekable();
+                let start_line_len = lines.peek().map_or(0, |l| l.len());
+
+                for (i, line_str) in lines.take(n_spanned_lines).enumerate() {
+                    let line_num = start_line_index + i + 1;
+                    let _ = writeln!(out, "{line_num:line_num_width$} | {line_str}");
+                }
+
+                let is_multiline = end_line > start_line;
+                let (underline_start, underline_len) = if is_multiline {
+                    (0, start_line_len)
+                } else {
+                    (start_col, end_col - start_col)
+                };
+                let _ = write!(out, "{:width$} |", " ", width = line_num_width);
+                let _ = write!(out, "{:width$}", " ", width = underline_start);
+                let _ = writeln!(
+                    out,
+                    "{YELLOW_BOLD}{:^<width$}{RESET}",
+                    "",
+                    width = underline_len
+                );
+            }
+            let _ = writeln!(out);
+        }
+        out
     }
 
     /// Instantiate the template program with the given `arguments`.
@@ -132,8 +207,10 @@ impl CompiledProgram {
         s: Str,
         arguments: Arguments,
         include_debug_symbols: bool,
+        deny_all_warnings: bool,
+        flags: UnstableFlags,
     ) -> Result<Self, String> {
-        TemplateProgram::new(s)
+        TemplateProgram::new(s, deny_all_warnings, flags)
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -217,8 +294,11 @@ impl SatisfiedProgram {
         arguments: Arguments,
         witness_values: WitnessValues,
         include_debug_symbols: bool,
+        deny_all_warnings: bool,
+        flags: UnstableFlags,
     ) -> Result<Self, String> {
-        let compiled = CompiledProgram::new(s, arguments, include_debug_symbols)?;
+        let compiled =
+            CompiledProgram::new(s, arguments, include_debug_symbols, deny_all_warnings, flags)?;
         compiled.satisfy(witness_values)
     }
 
@@ -321,7 +401,11 @@ pub(crate) mod tests {
         }
 
         pub fn template_text(program_text: Cow<str>) -> Self {
-            let program = match TemplateProgram::new(program_text.as_ref()) {
+            Self::template_text_with_flags(program_text, UnstableFlags::new())
+        }
+
+        pub fn template_text_with_flags(program_text: Cow<str>, flags: UnstableFlags) -> Self {
+            let program = match TemplateProgram::new(program_text.as_ref(), false, flags) {
                 Ok(x) => x,
                 Err(error) => panic!("{error}"),
             };
@@ -662,6 +746,8 @@ fn main() {
             Arguments::default(),
             WitnessValues::default(),
             false,
+            false,
+            UnstableFlags::new(),
         ) {
             Ok(_) => panic!("Accepted faulty program"),
             Err(error) => {
@@ -709,6 +795,225 @@ fn main() {
         TestCase::program_text(Cow::Borrowed(prog_text))
             .with_witness_values(WitnessValues::default())
             .assert_run_success();
+    }
+
+    // --- infix operator integration tests (require -Z infix_arithmetic_operators) ---
+
+    fn arith_flags() -> UnstableFlags {
+        let mut f = UnstableFlags::new();
+        f.enable(crate::unstable_flags::UnstableFlag::InfixArithmeticOperators);
+        f
+    }
+
+    #[test]
+    fn infix_op_add_u8() {
+        let prog = r#"fn main() {
+    let a: u8 = 9;
+    let b: u8 = 10;
+    let (_, sum): (bool, u8) = a + b;
+    assert!(jet::eq_8(sum, 19));
+}"#;
+        TestCase::template_text_with_flags(Cow::Borrowed(prog), arith_flags())
+            .with_arguments(Arguments::default())
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    fn infix_op_sub_u8() {
+        let prog = r#"fn main() {
+    let a: u8 = 20;
+    let b: u8 = 7;
+    let (_, diff): (bool, u8) = a - b;
+    assert!(jet::eq_8(diff, 13));
+}"#;
+        TestCase::template_text_with_flags(Cow::Borrowed(prog), arith_flags())
+            .with_arguments(Arguments::default())
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    fn infix_op_mul_u8() {
+        let prog = r#"fn main() {
+    let a: u8 = 6;
+    let b: u8 = 7;
+    let product: u16 = a * b;
+    assert!(jet::eq_16(product, 42));
+}"#;
+        TestCase::template_text_with_flags(Cow::Borrowed(prog), arith_flags())
+            .with_arguments(Arguments::default())
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    fn infix_op_div_u8() {
+        let prog = r#"fn main() {
+    let a: u8 = 20;
+    let b: u8 = 4;
+    let quotient: u8 = a / b;
+    assert!(jet::eq_8(quotient, 5));
+}"#;
+        TestCase::template_text_with_flags(Cow::Borrowed(prog), arith_flags())
+            .with_arguments(Arguments::default())
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    fn infix_op_rem_u8() {
+        let prog = r#"fn main() {
+    let a: u8 = 17;
+    let b: u8 = 5;
+    let remainder: u8 = a % b;
+    assert!(jet::eq_8(remainder, 2));
+}"#;
+        TestCase::template_text_with_flags(Cow::Borrowed(prog), arith_flags())
+            .with_arguments(Arguments::default())
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    // --- logical operator tests ---
+
+    #[test]
+    fn infix_op_logical_and_true() {
+        // true && true = true
+        let prog = r#"fn main() {
+    assert!(true && true);
+}"#;
+        TestCase::program_text(Cow::Borrowed(prog))
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    fn infix_op_logical_and_false_lhs() {
+        // false && true = false (short-circuits, rhs not evaluated)
+        let prog = r#"fn main() {
+    let result: bool = false && true;
+    assert!(match result { false => true, true => false, });
+}"#;
+        TestCase::program_text(Cow::Borrowed(prog))
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    fn infix_op_logical_and_false_rhs() {
+        // true && false = false
+        let prog = r#"fn main() {
+    let result: bool = true && false;
+    assert!(match result { false => true, true => false, });
+}"#;
+        TestCase::program_text(Cow::Borrowed(prog))
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    fn infix_op_logical_or_true_lhs() {
+        // true || false = true (short-circuits, rhs not evaluated)
+        let prog = r#"fn main() {
+    assert!(true || false);
+}"#;
+        TestCase::program_text(Cow::Borrowed(prog))
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    fn infix_op_logical_or_true_rhs() {
+        // false || true = true
+        let prog = r#"fn main() {
+    assert!(false || true);
+}"#;
+        TestCase::program_text(Cow::Borrowed(prog))
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    fn infix_op_logical_or_false() {
+        // false || false = false
+        let prog = r#"fn main() {
+    let result: bool = false || false;
+    assert!(match result { false => true, true => false, });
+}"#;
+        TestCase::program_text(Cow::Borrowed(prog))
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    fn infix_op_logical_and_wrong_type_error() {
+        // `&&` requires both operands to be bool
+        let prog = r#"fn main() {
+    let a: u8 = 1;
+    let result: bool = true && a;
+}"#;
+        match SatisfiedProgram::new(
+            prog,
+            Arguments::default(),
+            WitnessValues::default(),
+            false,
+            false,
+            UnstableFlags::new(),
+        ) {
+            Ok(_) => panic!("Expected type error for `&&` with non-bool operand"),
+            Err(error) => assert!(
+                error.contains("Expected expression of type"),
+                "Unexpected error message: {error}",
+            ),
+        }
+    }
+
+    #[test]
+    fn infix_op_logical_and_wrong_output_type_error() {
+        // `&&` result must be bool
+        let prog = r#"fn main() {
+    let result: u8 = true && false;
+}"#;
+        match SatisfiedProgram::new(
+            prog,
+            Arguments::default(),
+            WitnessValues::default(),
+            false,
+            false,
+            UnstableFlags::new(),
+        ) {
+            Ok(_) => panic!("Expected type error for `&&` assigned to non-bool"),
+            Err(error) => assert!(
+                error.contains("Expected expression of type"),
+                "Unexpected error message: {error}",
+            ),
+        }
+    }
+
+    #[test]
+    fn infix_op_add_wrong_output_type_error() {
+        // `+` returns (bool, u8), binding it to plain u8 must fail
+        let prog = r#"fn main() {
+    let a: u8 = 1;
+    let b: u8 = 2;
+    let sum: u8 = a + b;
+    assert!(jet::eq_8(sum, 3));
+}"#;
+        match SatisfiedProgram::new(
+            prog,
+            Arguments::default(),
+            WitnessValues::default(),
+            false,
+            false,
+            arith_flags(),
+        ) {
+            Ok(_) => panic!("Expected type error for `+` with plain u8 output"),
+            Err(error) => assert!(
+                error.contains("Expected expression of type"),
+                "Unexpected error message: {error}",
+            ),
+        }
     }
 
     #[cfg(feature = "serde")]
