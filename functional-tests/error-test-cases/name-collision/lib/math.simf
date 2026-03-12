@@ -1,0 +1,4 @@
+pub fn add(a: u32, b: u32) -> (bool, u32) {
+    let (_, c): (bool, u32) = jet::add_32(a, b);
+    jet::add_32(c, 1)
+}

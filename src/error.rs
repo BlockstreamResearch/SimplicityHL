@@ -443,7 +443,6 @@ pub enum Error {
     FileNotFound(PathBuf),
     UnresolvedItem(Identifier),
     PrivateItem(String),
-    NameCollision(String),
     MainNoInputs,
     MainNoOutput,
     MainRequired,
@@ -564,10 +563,6 @@ impl fmt::Display for Error {
             Error::PrivateItem(name) => write!(
                 f,
                 "Item `{name}` is private"
-            ),
-            Error::NameCollision(name) => write!(
-                f,
-                "The name `{name}` is defined multiple times in this scope"
             ),
             Error::InvalidNumberOfArguments(expected, found) => write!(
                 f,
@@ -779,18 +774,68 @@ let x: u32 = Left(
     }
 
     #[test]
-    fn display_private_item() {
-        let source = SourceFile::new(SourceName::Virtual(Arc::from(FILENAME)), Arc::from(FILE));
-        let error = Error::PrivateItem("SecretType".to_string())
-            .with_span(Span::new(8, 20))
-            .with_source(source);
-        let expected = format!(
-            r#"
- --> {FILENAME}:1:9
-  |
-1 | let a1: List<u32, 5> = None;
-  |         ^^^^^^^^^^^^ Item `SecretType` is private"#
+    fn display_error_inside_imported_module() {
+        let module_name = "libs/math.simf";
+        let module_content = "pub fn add(a: u32, b: u32) -> u64 {\n    a + b\n}";
+        let source = SourceFile::new(
+            SourceName::Virtual(Arc::from(module_name)),
+            Arc::from(module_content),
         );
+
+        let error = Error::InvalidNumberOfArguments(2, 1)
+            .with_span(Span::new(40, 45))
+            .with_source(source);
+
+        let expected = r#"
+ --> libs/math.simf:2:6
+  |
+2 |     a + b
+  |      ^^^^^ Expected 2 arguments, found 1 arguments"#
+            .to_string();
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_unresolved_import_in_main_file() {
+        let main_name = "main.simf";
+        let main_content = "use libs::math::multiply;\n\nfn main() {}";
+        let source = SourceFile::new(
+            SourceName::Virtual(Arc::from(main_name)),
+            Arc::from(main_content),
+        );
+
+        let error = Error::UnresolvedItem("multiply".into())
+            .with_span(Span::new(16, 24))
+            .with_source(source);
+
+        let expected = r#"
+ --> main.simf:1:17
+  |
+1 | use libs::math::multiply;
+  |                 ^^^^^^^^ Unknown item `multiply`"#
+            .to_string();
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_private_item_import_across_modules() {
+        let main_name = "src/auth_test.simf";
+        let main_content = "use libs::auth::SecretToken;\n\nfn main() {}";
+        let source = SourceFile::new(
+            SourceName::Virtual(Arc::from(main_name)),
+            Arc::from(main_content),
+        );
+
+        let error = Error::PrivateItem("SecretToken".into())
+            .with_span(Span::new(16, 27))
+            .with_source(source);
+
+        let expected = r#"
+ --> src/auth_test.simf:1:17
+  |
+1 | use libs::auth::SecretToken;
+  |                 ^^^^^^^^^^^ Item `SecretToken` is private"#
+            .to_string();
         assert_eq!(&expected[1..], &error.to_string());
     }
 }

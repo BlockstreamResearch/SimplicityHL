@@ -1532,4 +1532,158 @@ pub(crate) mod tests {
             "Compiler must catch infinite alias cycles"
         );
     }
+
+    // --- C3 Error Display Tests ---
+
+    #[test]
+    fn display_c3_cycle_detected() {
+        let cycle = vec![
+            "main.simf".to_string(),
+            "libs/lib/A.simf".to_string(),
+            "libs/lib/B.simf".to_string(),
+            "main.simf".to_string(),
+        ];
+
+        let error = C3Error::CycleDetected(cycle);
+
+        let expected = r#"Circular dependency detected: "main.simf -> libs/lib/A.simf -> libs/lib/B.simf -> main.simf""#;
+
+        assert_eq!(error.to_string(), expected);
+    }
+
+    #[test]
+    fn display_c3_inconsistent_linearization() {
+        let conflicts = vec![
+            vec!["lib/x".to_string(), "lib/y".to_string()],
+            vec!["lib/y".to_string(), "lib/x".to_string()],
+        ];
+
+        let error = C3Error::InconsistentLinearization {
+            module: "main".to_string(),
+            conflicts,
+        };
+
+        let expected = r#"Inconsistent resolution order for module 'main'
+The compiler could not resolve the following conflicting import constraints:
+  [lib/x, lib/y]
+  [lib/y, lib/x]
+Try reordering your `use` statements to avoid cross-wiring."#
+            .to_string();
+
+        assert_eq!(error.to_string(), expected);
+    }
+
+    // --- Dependent File Error Display Tests ---
+
+    #[test]
+    #[ignore = "TODO(Error_Formatting): The compiler currently strips the .simf extension from file paths during graph construction. This test expects the extension to be preserved."]
+    fn test_display_error_in_imported_dependency() {
+        let temp_dir = TempDir::new().unwrap();
+        let root_path = create_simf_file(temp_dir.path(), "main.simf", "use lib::math::add;");
+
+        create_simf_file(
+            temp_dir.path(),
+            "libs/lib/math.simf",
+            "pub fn add(a: u32 b: u32) {}",
+        );
+
+        let mut lib_map = HashMap::new();
+        lib_map.insert("lib".to_string(), temp_dir.path().join("libs/lib"));
+
+        let (root_program, root_source) = parse_root(&root_path);
+        let mut handler = ErrorCollector::new();
+
+        let result =
+            ProjectGraph::new(root_source, Arc::from(lib_map), &root_program, &mut handler);
+
+        assert!(
+            result.is_none(),
+            "Graph construction should fail due to syntax error in dependency"
+        );
+        assert!(
+            handler.has_errors(),
+            "Handler should contain the imported module's error"
+        );
+
+        let err_msg = ErrorCollector::to_string(&handler);
+
+        assert!(
+            err_msg.contains("math.simf:1"),
+            "Error should correctly display the file name math.simf and line number. Got:\n{}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("pub fn add(a: u32 b: u32) {}"),
+            "Error should print the snippet from the imported file. Got:\n{}",
+            err_msg
+        );
+    }
+
+    #[test]
+    #[ignore = "TODO(Error_Formatting): The compiler currently strips the .simf extension from file paths during graph construction. This test expects the extension to be preserved."]
+    fn test_display_unresolved_item_in_dependency() {
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/B.simf", "pub fn real() {}"),
+            ("libs/lib/A.simf", "use lib::B::ghost;\npub fn foo() {}"),
+            ("main.simf", "use lib::A::foo;"),
+        ]);
+
+        let id_a = *ids.get("A").unwrap();
+        let id_b = *ids.get("B").unwrap();
+        let id_root = *ids.get("main").unwrap();
+        let order = vec![id_b, id_a, id_root];
+
+        let mut handler = ErrorCollector::new();
+        let _ = graph.build_program(&order, &mut handler);
+
+        let err_msg = ErrorCollector::to_string(&handler);
+
+        assert!(
+            err_msg.contains("A.simf:1"),
+            "Error should point to A.simf where the bad import happened. Got:\n{}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("use lib::B::ghost;"),
+            "Error should print the snippet from A.simf"
+        );
+        assert!(
+            err_msg.contains("Unknown item `ghost`"),
+            "Error should correctly identify the missing item"
+        );
+    }
+
+    #[test]
+    #[ignore = "TODO(Error_Formatting): The compiler currently strips the .simf extension from file paths during graph construction. This test expects the extension to be preserved."]
+    fn test_display_private_item_access_in_dependency() {
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/B.simf", "fn secret() {}"),
+            ("libs/lib/A.simf", "use lib::B::secret;\npub fn foo() {}"),
+            ("main.simf", "use lib::A::foo;"),
+        ]);
+
+        let id_a = *ids.get("A").unwrap();
+        let id_b = *ids.get("B").unwrap();
+        let id_root = *ids.get("main").unwrap();
+        let order = vec![id_b, id_a, id_root];
+
+        let mut handler = ErrorCollector::new();
+        let _ = graph.build_program(&order, &mut handler);
+
+        let err_msg = ErrorCollector::to_string(&handler);
+
+        assert!(
+            err_msg.contains("A.simf:1"),
+            "Error should point to A.simf where the privacy violation happened. Got:\n{}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("use lib::B::secret;"),
+            "Error should print the snippet from A.simf"
+        );
+        assert!(
+            err_msg.contains("Item `secret` is private"),
+            "Error should correctly identify the privacy violation"
+        );
+    }
 }
