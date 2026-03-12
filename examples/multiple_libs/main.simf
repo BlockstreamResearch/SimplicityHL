@@ -1,12 +1,16 @@
-use merkle::build_root::get_root;
-use math::simple_op::hash;
+use merkle::build_root::{get_root, hash as and_hash};
+use base_math::simple_op::hash as or_hash;
 
 pub fn get_block_value_hash(prev_hash: u32, tx1: u32, tx2: u32) -> u32 {
     let root: u32 = get_root(tx1, tx2);
-    hash(prev_hash, root);
+    or_hash(prev_hash, root)
 }
 
 fn main() {
-    let block_val_hash: u32 = get_block_value(5, 10, 20);
+    let block_val_hash: u32 = get_block_value_hash(5, 10, 20);
     assert!(jet::eq_32(block_val_hash, 27));
+    
+    let first_value: u32 = 15;
+    let second_value: u32 = 22;
+    assert!(jet::eq_32(and_hash(first_value, second_value), 6));
 }

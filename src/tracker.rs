@@ -399,8 +399,8 @@ mod tests {
     use crate::elements::hashes::Hash;
     use crate::elements::pset::Input;
     use crate::elements::{AssetId, OutPoint, Script, Txid};
-    use crate::SourceName;
     use crate::{Arguments, TemplateProgram, WitnessValues};
+    use crate::{DependencyMap, SourceName};
 
     use super::*;
 
@@ -475,7 +475,7 @@ mod tests {
     fn test_debug_and_jet_tracing() {
         let program = TemplateProgram::new(
             SourceName::default(),
-            Arc::from(HashMap::new()),
+            Arc::from(DependencyMap::new()),
             TEST_PROGRAM,
         )
         .unwrap();
@@ -549,7 +549,7 @@ mod tests {
 
         let program = TemplateProgram::new(
             SourceName::default(),
-            Arc::from(HashMap::new()),
+            Arc::from(DependencyMap::new()),
             TEST_ARITHMETIC_JETS,
         )
         .unwrap();

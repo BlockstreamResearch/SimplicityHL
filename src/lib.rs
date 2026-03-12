@@ -21,7 +21,7 @@ pub mod types;
 pub mod value;
 mod witness;
 
-use std::collections::HashMap;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -35,7 +35,6 @@ pub use simplicity::elements;
 use crate::debug::DebugSymbols;
 use crate::driver::ProjectGraph;
 use crate::error::{Error, ErrorCollector, RichError, WithSource, WithSpan};
-use crate::lexer::RESERVED_TOKENS;
 use crate::parse::{ParseFromStrWithErrors, UseDecl};
 pub use crate::types::ResolvedType;
 pub use crate::value::Value;
@@ -108,39 +107,129 @@ impl SourceFile {
     }
 }
 
-pub type LibTable = HashMap<String, PathBuf>;
-
-pub fn get_full_path(libraries: &LibTable, use_decl: &UseDecl) -> Result<PathBuf, RichError> {
-    let parts: Vec<&str> = use_decl.path().iter().map(|s| s.as_ref()).collect();
-
-    let first_segment = match parts.first() {
-        Some(s) => *s,
-        None => {
-            return Err(Error::CannotParse("Empty use path".to_string()))
-                .with_span(*use_decl.span())
-        }
-    };
-
-    if let Some(lib_root) = libraries.get(first_segment) {
-        let mut full_path = lib_root.clone();
-        full_path.extend(&parts[1..]);
-        return Ok(full_path);
-    }
-
-    Err(Error::UnknownLibrary(first_segment.to_string())).with_span(*use_decl.span())
+/// A single dependency rule.
+#[derive(Debug, Clone)]
+pub struct Remapping {
+    /// The base directory/file that owns this dependency
+    pub context_prefix: PathBuf,
+    /// The name used in the `use` statement (e.g., "math")
+    pub alias: String,
+    /// The physical path this alias points to
+    pub target: PathBuf,
 }
 
-/// If something went wrong, then function was failed
-fn is_reserved_tokens_in_aliases(libraries: &LibTable) -> Result<(), String> {
-    for k in libraries.keys() {
-        if RESERVED_TOKENS.contains(&k.as_str()) {
-            return Err(format!(
-                "Error: The identifier `{}` is a reserved keyword for intrinsic operations and cannot be utilized as a library name.",
-                k
-            ));
-        }
+/// A list of dependencies, strictly sorted by longest prefix match.
+#[derive(Debug, Default)]
+pub struct DependencyMap {
+    inner: Vec<Remapping>,
+}
+
+impl DependencyMap {
+    pub fn new() -> Self {
+        Self::default()
     }
-    Ok(())
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Inserts a dependency remapping without interacting with the physical file system.
+    ///
+    /// **Warning:** This method completely bypasses OS path canonicalization (`std::fs::canonicalize`).
+    /// It is designed strictly for unit testing and virtual file environments where the
+    /// provided paths might not actually exist on the hard drive.
+    ///
+    /// Like the standard `insert` method, it internally re-sorts the remapping vector
+    /// to mathematically guarantee that Longest Prefix Matching is used during path resolution.
+    pub fn test_insert_without_canonicalize(&mut self, context: &Path, alias: String, path: &Path) {
+        self.inner.push(Remapping {
+            context_prefix: context.to_path_buf(),
+            alias,
+            target: path.to_path_buf(),
+        });
+
+        self.inner.sort_by(|a, b| {
+            let len_a = a.context_prefix.as_os_str().len();
+            let len_b = b.context_prefix.as_os_str().len();
+            len_b.cmp(&len_a)
+        });
+    }
+
+    /// Add a dependency mapped to a specific calling file's path prefix.
+    /// Re-sorts the vector internally to guarantee the Longest Prefix Match.
+    pub fn insert(&mut self, context: &Path, alias: String, path: &Path) -> io::Result<()> {
+        let canon_context = std::fs::canonicalize(context).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "Failed to find context directory '{}': {}",
+                    context.display(),
+                    err
+                ),
+            )
+        })?;
+
+        let canon_path = std::fs::canonicalize(path).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "Failed to find library target path '{}': {}",
+                    path.display(),
+                    err
+                ),
+            )
+        })?;
+
+        self.inner.push(Remapping {
+            context_prefix: canon_context,
+            alias,
+            target: canon_path,
+        });
+
+        // Re-sort the vector so the longest context paths are always at the front!
+        // This mathematically guarantees that the first match we find is the most specific.
+        self.inner.sort_by(|a, b| {
+            let len_a = a.context_prefix.as_os_str().len();
+            let len_b = b.context_prefix.as_os_str().len();
+            len_b.cmp(&len_a) // Descending order
+        });
+
+        Ok(())
+    }
+
+    /// Resolve `use alias::...` into a physical file path by finding the
+    /// most specific library context that owns the current file.
+    pub fn resolve_path(
+        &self,
+        current_file: &Path,
+        use_decl: &UseDecl,
+    ) -> Result<PathBuf, RichError> {
+        // Safely extract the first segment (the alias)
+        let parts: Vec<&str> = use_decl.path().iter().map(|s| s.as_ref()).collect();
+        let first_segment = parts.first().copied().ok_or_else(|| {
+            Error::CannotParse("Empty use path".to_string()).with_span(*use_decl.span())
+        })?;
+
+        // Because the vector is sorted by longest prefix,
+        // the VERY FIRST match we find is guaranteed to be the correct one!
+        for remapping in &self.inner {
+            // Check if the current file is inside the context's directory tree
+            if !current_file.starts_with(&remapping.context_prefix) {
+                continue;
+            }
+
+            // Check if the alias matches what the user typed
+            if remapping.alias == first_segment {
+                let mut resolved_path = remapping.target.clone();
+                resolved_path.extend(&parts[1..]);
+                return Ok(resolved_path);
+            }
+        }
+
+        println!("Got an error");
+
+        Err(Error::UnknownLibrary(first_segment.to_string())).with_span(*use_decl.span())
+    }
 }
 
 /// The template of a SimplicityHL program.
@@ -160,10 +249,9 @@ impl TemplateProgram {
     /// The string is not a valid SimplicityHL program.
     pub fn new<Str: Into<Arc<str>>>(
         source_name: SourceName,
-        libraries: Arc<LibTable>,
+        dependency_map: Arc<DependencyMap>,
         s: Str,
     ) -> Result<Self, String> {
-        is_reserved_tokens_in_aliases(&libraries)?;
         let source_name = source_name.without_extension();
         let file = s.into();
         let source = SourceFile::new(source_name.clone(), file.clone());
@@ -177,13 +265,13 @@ impl TemplateProgram {
                 .ok_or_else(|| error_handler.to_string())?;
 
         // 2. Create the driver program
-        let driver_program: driver::Program = if libraries.is_empty() {
+        let driver_program: driver::Program = if dependency_map.is_empty() {
             driver::Program::from_parse(&parsed_program, source.clone(), &mut error_handler)
                 .ok_or_else(|| error_handler.to_string())?
         } else {
             let graph = ProjectGraph::new(
                 source.clone(),
-                libraries,
+                dependency_map,
                 &parsed_program,
                 &mut error_handler,
             )
@@ -266,12 +354,12 @@ impl CompiledProgram {
     /// - [`TemplateProgram::instantiate`]
     pub fn new<Str: Into<Arc<str>>>(
         source_name: SourceName,
-        libraries: Arc<LibTable>,
+        dependency_map: Arc<DependencyMap>,
         s: Str,
         arguments: Arguments,
         include_debug_symbols: bool,
     ) -> Result<Self, String> {
-        TemplateProgram::new(source_name, libraries, s)
+        TemplateProgram::new(source_name, dependency_map, s)
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -352,14 +440,19 @@ impl SatisfiedProgram {
     /// - [`CompiledProgram::satisfy`]
     pub fn new<Str: Into<Arc<str>>>(
         source_name: SourceName,
-        libraries: Arc<LibTable>,
+        dependency_map: Arc<DependencyMap>,
         s: Str,
         arguments: Arguments,
         witness_values: WitnessValues,
         include_debug_symbols: bool,
     ) -> Result<Self, String> {
-        let compiled =
-            CompiledProgram::new(source_name, libraries, s, arguments, include_debug_symbols)?;
+        let compiled = CompiledProgram::new(
+            source_name,
+            dependency_map,
+            s,
+            arguments,
+            include_debug_symbols,
+        )?;
         compiled.satisfy(witness_values)
     }
 
@@ -460,30 +553,30 @@ pub(crate) mod tests {
             let program_text = std::fs::read_to_string(program_file_path).unwrap();
             Self::template_text(
                 SourceName::default(),
-                Arc::from(HashMap::new()),
+                Arc::from(DependencyMap::new()),
                 Cow::Owned(program_text),
             )
         }
 
         pub fn template_lib(
             source_name: SourceName,
-            libraries: Arc<LibTable>,
+            dependency_map: Arc<DependencyMap>,
             program_file: &Path,
         ) -> Self {
             let program_text = std::fs::read_to_string(program_file).unwrap();
-            Self::template_text(source_name, libraries, Cow::Owned(program_text))
+            Self::template_text(source_name, dependency_map, Cow::Owned(program_text))
         }
 
         pub fn template_text(
             source_name: SourceName,
-            libraries: Arc<LibTable>,
+            dependency_map: Arc<DependencyMap>,
             program_text: Cow<str>,
         ) -> Self {
-            let program = match TemplateProgram::new(source_name, libraries, program_text.as_ref())
-            {
-                Ok(x) => x,
-                Err(error) => panic!("{error}"),
-            };
+            let program =
+                match TemplateProgram::new(source_name, dependency_map, program_text.as_ref()) {
+                    Ok(x) => x,
+                    Err(error) => panic!("{error}"),
+                };
             Self {
                 program,
                 lock_time: elements::LockTime::ZERO,
@@ -520,36 +613,6 @@ pub(crate) mod tests {
     }
 
     impl TestCase<CompiledProgram> {
-        pub fn temp_env(
-            main_content: &str,
-            libs: Vec<(&str, &str, &str)>,
-        ) -> (Self, tempfile::TempDir) {
-            let temp_dir = tempfile::TempDir::new().unwrap();
-            let main_path =
-                driver::tests::create_simf_file(temp_dir.path(), "main.simf", main_content);
-            let mut lib_paths = Vec::new();
-
-            for (lib_name, rel_path, content) in libs {
-                driver::tests::create_simf_file(temp_dir.path(), rel_path, content);
-
-                let lib_root = temp_dir
-                    .path()
-                    .join(rel_path)
-                    .parent()
-                    .unwrap()
-                    .to_path_buf();
-                lib_paths.push((lib_name.to_string(), lib_root));
-            }
-
-            let libs_refs: Vec<(&str, &std::path::Path)> = lib_paths
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_path()))
-                .collect();
-
-            let test_case = Self::program_file_with_libs(&main_path, libs_refs);
-            (test_case, temp_dir)
-        }
-
         pub fn program_file<P: AsRef<Path>>(program_file_path: P) -> Self {
             TestCase::<TemplateProgram>::template_file(program_file_path)
                 .with_arguments(Arguments::default())
@@ -558,32 +621,43 @@ pub(crate) mod tests {
         pub fn program_text(program_text: Cow<str>) -> Self {
             TestCase::<TemplateProgram>::template_text(
                 SourceName::default(),
-                Arc::from(HashMap::new()),
+                Arc::from(DependencyMap::new()),
                 program_text,
             )
             .with_arguments(Arguments::default())
         }
 
-        pub fn program_file_with_libs<P, I, K, V>(program_file_path: P, libs: I) -> Self
+        pub fn program_file_with_libs<P, I, K>(program_file: P, libs: I) -> Self
         where
             P: AsRef<Path>,
-            I: IntoIterator<Item = (K, V)>, // Magic trait: accepts anything we can iterate over
+            I: IntoIterator<Item = (P, K, P)>,
             K: Into<String>,
-            V: AsRef<Path>,
         {
-            let path_ref = program_file_path.as_ref();
+            let path_ref =
+                std::fs::canonicalize(program_file).expect("Failed to canonicalize program path");
+            let path_ref = path_ref.as_path();
 
-            let mut libraries = HashMap::new();
-            for (k, v) in libs {
-                libraries.insert(k.into(), v.as_ref().to_path_buf());
+            let mut dependency_map = DependencyMap::new();
+            for (context, alias, target) in libs {
+                let context =
+                    std::fs::canonicalize(context).expect("Failed to canonicalize program path");
+                let target =
+                    std::fs::canonicalize(target).expect("Failed to canonicalize program path");
+                dependency_map
+                    .insert(context.as_ref(), alias.into(), target.as_ref())
+                    .unwrap();
             }
 
-            let source_name =
-                SourceName::Real(Arc::from(path_ref.parent().unwrap_or(Path::new(""))));
+            let source_name = SourceName::Real(Arc::from(
+                path_ref.parent().unwrap_or_else(|| Path::new(".")),
+            ));
 
-            // 3. Delegate to your existing template_lib method
-            TestCase::<TemplateProgram>::template_lib(source_name, Arc::from(libraries), path_ref)
-                .with_arguments(Arguments::default())
+            TestCase::<TemplateProgram>::template_lib(
+                source_name,
+                Arc::from(dependency_map),
+                path_ref,
+            )
+            .with_arguments(Arguments::default())
         }
 
         #[cfg(feature = "serde")]
@@ -685,100 +759,154 @@ pub(crate) mod tests {
         }
     }
 
+    /// THE DEFAULT HELPER
+    /// Automatically sets up the standard `lib` self-referencing dependency.
+    fn run_dependency_test(root_path: &str, lib_alias: &str) {
+        let root_path = PathBuf::from(root_path);
+        let lib_path = root_path.join(lib_alias);
+        let main_path = root_path.join("main.simf");
+
+        TestCase::program_file_with_libs(
+            &main_path,
+            [
+                (&root_path, lib_alias, &lib_path),
+                (&lib_path, lib_alias, &lib_path),
+            ],
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
+    }
+
+    /// THE ADVANCED HELPER
+    /// A helper function to run standard library dependency tests.
+    /// `deps` expects an array of tuples: `(context_folder, alias, target_folder)`.
+    /// Use `"."` for the `context_folder` if the context is the root test directory.
+    fn run_multi_lib_test(root_path: &str, deps: &[(&str, &str, &str)]) {
+        let root_path = PathBuf::from(root_path);
+        let main_path = root_path.join("main.simf");
+
+        // Convert the string slices into proper PathBufs dynamically
+        let mapped_deps: Vec<(PathBuf, &str, PathBuf)> = deps
+            .iter()
+            .map(|(ctx, alias, target)| {
+                let ctx_path = if *ctx == "." {
+                    root_path.clone()
+                } else {
+                    root_path.join(ctx)
+                };
+
+                let target_path = root_path.join(target);
+
+                (ctx_path, *alias, target_path)
+            })
+            .collect();
+
+        let ref_deps = mapped_deps.iter().map(|(c, a, t)| (c, *a, t));
+
+        TestCase::program_file_with_libs(&main_path, ref_deps)
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
     const VALID_TESTS_DIR: &str = "./functional-tests/valid-test-cases";
     const ERROR_TESTS_DIR: &str = "./functional-tests/error-test-cases";
 
     // Real test cases
     #[test]
     fn module_simple() {
-        TestCase::program_file_with_libs(
-            format!("{}/module-simple/main.simf", VALID_TESTS_DIR),
-            [("lib", format!("{}/module-simple/lib", VALID_TESTS_DIR))],
-        )
-        .with_witness_values(WitnessValues::default())
-        .assert_run_success();
+        run_dependency_test(format!("{}/module-simple", VALID_TESTS_DIR).as_str(), "lib");
     }
 
     #[test]
     fn diamond_dependency_resolution() {
-        TestCase::program_file_with_libs(
-            format!(
-                "{}/diamond-dependency-resolution/main.simf",
-                VALID_TESTS_DIR
-            ),
-            [(
-                "lib",
-                format!("{}/diamond-dependency-resolution/lib", VALID_TESTS_DIR),
-            )],
-        )
-        .with_witness_values(WitnessValues::default())
-        .assert_run_success();
-    }
-
-    #[test]
-    #[should_panic(expected = "Circular dependency detected:")]
-    fn cyclic_dependency_error() {
-        TestCase::program_file_with_libs(
-            format!("{}/cyclic-dependency/main.simf", ERROR_TESTS_DIR),
-            [("lib", format!("{}/cyclic-dependency/lib", ERROR_TESTS_DIR))],
-        )
-        .with_witness_values(WitnessValues::default())
-        .assert_run_success();
+        run_dependency_test(
+            format!("{}/diamond-dependency-resolution", VALID_TESTS_DIR).as_str(),
+            "lib",
+        );
     }
 
     #[test]
     fn deep_reexport_chain() {
-        TestCase::program_file_with_libs(
-            format!("{}/deep-reexport-chain/main.simf", VALID_TESTS_DIR),
-            [(
-                "lib",
-                format!("{}/deep-reexport-chain/lib", VALID_TESTS_DIR),
-            )],
-        )
-        .with_witness_values(WitnessValues::default())
-        .assert_run_success();
+        run_dependency_test(
+            format!("{}/deep-reexport-chain", VALID_TESTS_DIR).as_str(),
+            "lib",
+        );
+    }
+
+    #[test]
+    fn leaky_signature() {
+        run_dependency_test(
+            format!("{}/leaky-signature", VALID_TESTS_DIR).as_str(),
+            "lib",
+        );
+    }
+
+    #[test]
+    fn reexport_diamond() {
+        run_dependency_test(
+            format!("{}/reexport-diamond", VALID_TESTS_DIR).as_str(),
+            "lib",
+        );
+    }
+
+    // TODO: @Sdoba16, un-ignore this test once teh parser supports r#.
+    // Please also add a negative test to ensure parsing fails without r#.
+    #[test]
+    #[ignore]
+    // Move this validation into a separate test.
+    // #[should_panic(
+    //     expected = "Error: The identifier `jet` is a reserved keyword for intrinsic operations and cannot be utilized as a library name."
+    // )]
+    fn using_jet_as_module() {
+        run_dependency_test(
+            format!("{}/keyword-as-lib", VALID_TESTS_DIR).as_str(),
+            "jet",
+        );
+    }
+
+    #[test]
+    fn multi_lib_facade_resolution() {
+        run_multi_lib_test(
+            format!("{}/multi-lib-facade", VALID_TESTS_DIR).as_str(),
+            &[
+                (".", "api", "api"),
+                ("crypto", "math", "math"),
+                ("api", "crypto", "crypto"),
+                ("api", "math", "math"),
+            ],
+        );
+    }
+
+    #[test]
+    fn interleaved_waterfall() {
+        run_multi_lib_test(
+            format!("{}/interleaved-waterfall", VALID_TESTS_DIR).as_str(),
+            &[
+                (".", "orch", "orch"),
+                ("orch", "db", "db"),
+                ("orch", "auth", "auth"),
+                ("orch", "types", "types"),
+                ("db", "types", "types"),
+                ("auth", "types", "types"),
+                ("auth", "db", "db"),
+            ],
+        );
+    }
+
+    // Error tests
+    #[test]
+    #[should_panic(expected = "Inconsistent resolution order")]
+    fn cross_wire_linearization_error() {
+        run_dependency_test(format!("{}/cross-wire", ERROR_TESTS_DIR).as_str(), "lib");
     }
 
     #[test]
     #[should_panic(expected = "Item `SecretType` is private")]
     fn private_type_visibility_error() {
-        TestCase::program_file_with_libs(
-            format!("{}/private-visibility/main.simf", ERROR_TESTS_DIR),
-            [("lib", format!("{}/private-visibility/lib", ERROR_TESTS_DIR))],
-        )
-        .with_witness_values(WitnessValues::default())
-        .assert_run_success();
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "Error: The identifier `jet` is a reserved keyword for intrinsic operations and cannot be utilized as a library name."
-    )]
-    fn using_jet_as_module() {
-        let main_code = r#"
-            use jet::eq_32::SecretType;
-            fn main() {}
-        "#;
-
-        let libs = vec![(
-            "jet",
-            "temp/eq_32.simf",
-            "type SecretType = u32; pub fn ok() {}",
-        )];
-
-        let (test, _dir) = TestCase::temp_env(main_code, libs);
-        test.with_witness_values(WitnessValues::default())
-            .assert_run_success();
-    }
-
-    #[test]
-    fn single_lib() {
-        TestCase::program_file_with_libs(
-            "./examples/single_lib/main.simf",
-            [("temp", "./examples/single_lib/temp")],
-        )
-        .with_witness_values(WitnessValues::default())
-        .assert_run_success();
+        run_dependency_test(
+            format!("{}/private-visibility", ERROR_TESTS_DIR).as_str(),
+            "lib",
+        );
     }
 
     #[test]
@@ -786,89 +914,57 @@ pub(crate) mod tests {
         expected = "Cannot parse: found '*' expected '/', jet, witness, param, 'a', 'p', 'd', 'l', identifier, '0', something else, '-', '=', ':', ';', ',', '(', ')', '[', ']', '{', '}', '<', or '>'"
     )]
     fn global_import_error() {
-        TestCase::program_file_with_libs(
-            format!("{}/global/main.simf", ERROR_TESTS_DIR),
-            [("lib", format!("{}/global/lib", ERROR_TESTS_DIR))],
-        )
-        .with_witness_values(WitnessValues::default())
-        .assert_run_success();
+        run_dependency_test(format!("{}/global", ERROR_TESTS_DIR).as_str(), "lib");
     }
 
     #[test]
+    #[should_panic(expected = "Circular dependency detected:")]
+    fn cyclic_dependency_error() {
+        run_dependency_test(
+            format!("{}/cyclic-dependency", ERROR_TESTS_DIR).as_str(),
+            "lib",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "No such file or directory")]
     fn file_not_found_error() {
-        use std::panic;
-        let result = panic::catch_unwind(|| {
-            TestCase::program_file_with_libs(
-                format!("{}/file-not-found/main.simf", ERROR_TESTS_DIR),
-                [("lib", &format!("{}/file-not-found/lib", ERROR_TESTS_DIR))],
-            )
-            .with_witness_values(WitnessValues::default())
-            .assert_run_success();
-        });
-
-        let panic_msg = result
-            .err()
-            .and_then(|b| b.downcast_ref::<String>().cloned())
-            .unwrap_or_default();
-        let expected = format!(
-            "File `{}/file-not-found/lib/module.simf` not found",
-            ERROR_TESTS_DIR
+        run_dependency_test(
+            format!("{}/file-not-found", ERROR_TESTS_DIR).as_str(),
+            "lib",
         );
-
-        assert!(panic_msg.contains(&expected));
     }
 
     #[test]
+    #[should_panic(expected = "No such file or directory")]
     fn lib_not_found_error() {
-        use std::panic;
+        run_dependency_test(format!("{}/lib-not-found", ERROR_TESTS_DIR).as_str(), "lib");
+    }
 
-        let result = panic::catch_unwind(|| {
-            TestCase::program_file_with_libs(
-                format!("{}/lib-not-found/main.simf", ERROR_TESTS_DIR),
-                [("lib", &format!("{}/lib-not-found/lib", ERROR_TESTS_DIR))],
-            )
-            .with_witness_values(WitnessValues::default())
-            .assert_run_success();
-        });
+    // Examples
+    #[test]
+    fn single_lib() {
+        run_dependency_test("./examples/single_lib", "temp");
+    }
 
-        let panic_msg = result
-            .err()
-            .and_then(|b| b.downcast_ref::<String>().cloned())
-            .unwrap_or_default();
-        let expected = format!(
-            "File `{}/lib-not-found/lib/module.simf` not found",
-            ERROR_TESTS_DIR
+    #[test]
+    fn simple_multilib() {
+        run_multi_lib_test(
+            "./examples/simple_multilib",
+            &[(".", "math", "math"), (".", "crypto", "crypto")],
         );
-
-        assert!(panic_msg.contains(&expected));
     }
 
     #[test]
-    fn multi_lib_facade_resolution() {
-        TestCase::program_file_with_libs(
-            format!("{}/multi-lib-facade/main.simf", VALID_TESTS_DIR),
-            [
-                ("math", format!("{}/multi-lib-facade/math", VALID_TESTS_DIR)),
-                (
-                    "crypto",
-                    format!("{}/multi-lib-facade/crypto", VALID_TESTS_DIR),
-                ),
-                ("api", format!("{}/multi-lib-facade/api", VALID_TESTS_DIR)),
+    fn multiple_libs() {
+        run_multi_lib_test(
+            "./examples/multiple_libs",
+            &[
+                (".", "merkle", "merkle"),
+                (".", "base_math", "math"),
+                ("merkle", "math", "math"),
             ],
-        )
-        .with_witness_values(WitnessValues::default())
-        .assert_run_success();
-    }
-
-    #[test]
-    #[should_panic(expected = "Inconsistent resolution order")]
-    fn cross_wire_linearization_error() {
-        TestCase::program_file_with_libs(
-            format!("{}/cross-wire/main.simf", ERROR_TESTS_DIR),
-            [("lib", format!("{}/cross-wire/lib", ERROR_TESTS_DIR))],
-        )
-        .with_witness_values(WitnessValues::default())
-        .assert_run_success();
+        );
     }
 
     #[test]
@@ -1060,7 +1156,7 @@ fn main() {
 "#;
         match SatisfiedProgram::new(
             SourceName::default(),
-            Arc::from(HashMap::new()),
+            Arc::from(DependencyMap::new()),
             prog_text,
             Arguments::default(),
             WitnessValues::default(),

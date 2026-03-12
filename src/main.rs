@@ -2,7 +2,7 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
-use simplicityhl::{lexer::RESERVED_TOKENS, AbiMeta, CompiledProgram, LibTable, SourceName};
+use simplicityhl::{AbiMeta, CompiledProgram, DependencyMap, SourceName};
 use std::{env, fmt, sync::Arc};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -47,12 +47,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .help("SimplicityHL program file to build"),
             )
             .arg(
-                Arg::new("library")
-                    .long("lib")
-                    .short('L')
-                    .value_name("ALIAS=PATH")
+                Arg::new("dependencies")
+                    .long("dep")
+                    .value_name("[CONTEXT:]ALIAS=PATH")
                     .action(ArgAction::Append)
-                    .help("Link a library with an alias (e.g., --lib math=./libs/math)"),
+                    .help("Link a dependency, optionally scoped to a specific module (e.g., --dep ./libs/merkle:math=./libs/math)"),
             )
             .arg(
                 Arg::new("wit_file")
@@ -93,8 +92,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = command.get_matches();
 
     let prog_file = matches.get_one::<String>("prog_file").unwrap();
-    let prog_path = std::path::Path::new(prog_file);
-    let prog_text = std::fs::read_to_string(prog_path).map_err(|e| e.to_string())?;
+    let main_path = std::fs::canonicalize(prog_file).unwrap_or_else(|_| {
+        panic!("Failed to find the program file: '{}'", prog_file);
+    });
+    let main_path = main_path.as_path();
+    let prog_text = std::fs::read_to_string(main_path).map_err(|e| e.to_string())?;
     let include_debug_symbols = matches.get_flag("debug");
     let output_json = matches.get_flag("json");
     let abi_param = matches.get_flag("abi");
@@ -118,34 +120,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         simplicityhl::Arguments::default()
     };
 
-    let lib_args = matches.get_many::<String>("library").unwrap_or_default();
+    let lib_args = matches
+        .get_many::<String>("dependencies")
+        .unwrap_or_default();
 
-    let libraries: LibTable = lib_args
-        .map(|arg| {
-            let parts: Vec<&str> = arg.splitn(2, '=').collect();
+    let mut libraries = DependencyMap::new();
 
-            if parts.len() != 2 {
-                eprintln!(
-                    "Error: Library argument must be in format ALIAS=PATH, got '{}'",
-                    arg
-                );
-                std::process::exit(1);
-            }
+    for arg in lib_args {
+        // Split by '=' to separate the target path
+        let (left_side, path_str) = arg.split_once('=').unwrap_or_else(|| {
+            eprintln!(
+                "Error: Library argument must be in format [CONTEXT:]ALIAS=PATH, got '{arg}'"
+            );
+            std::process::exit(1);
+        });
 
-            if RESERVED_TOKENS.contains(&parts[0]) {
-                eprintln!(
-                    "Error: The identifier `{}` is a reserved keyword for intrinsic operations and cannot be utilized as a library name.",
-                    parts[0]
-                );
-                std::process::exit(1);
-            }
+        // Split by ':' to check for a specific context
+        let (context_path, alias) = if let Some((ctx_str, alias_str)) = left_side.split_once(':') {
+            // Specific context provided (e.g., merkle:base_math=...)
+            // We convert it to PathBuf so it shares the same type as main_path
+            (std::path::Path::new(ctx_str), alias_str)
+        } else {
+            // No context provided (e.g., math=...). Bind it to the main file!
+            (main_path, left_side)
+        };
 
-            (parts[0].to_string(), std::path::PathBuf::from(parts[1]))
-        })
-        .collect();
+        // Insert and handle the potential io::Error!
+        // We convert path_str to PathBuf so it maches the tyep of context_path
+        if let Err(e) = libraries.insert(
+            context_path,
+            alias.to_string(),
+            std::path::Path::new(path_str),
+        ) {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    }
 
     let compiled = match CompiledProgram::new(
-        SourceName::Real(Arc::from(prog_path)),
+        SourceName::Real(Arc::from(main_path)),
         Arc::from(libraries),
         prog_text,
         args_opt,

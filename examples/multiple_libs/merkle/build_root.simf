@@ -1,5 +1,9 @@
-use math::simple_op::hash;
+use math::simple_op::hash as temp_hash;
 
 pub fn get_root(tx1: u32, tx2: u32) -> u32 {
-    hash(tx1, tx2)
+    temp_hash(tx1, tx2)
+}
+
+pub fn hash(tx1: u32, tx2: u32) -> u32 {
+    jet::and_32(tx1, tx2)
 }

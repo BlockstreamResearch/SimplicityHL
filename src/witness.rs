@@ -223,7 +223,7 @@ mod tests {
     use crate::error::ErrorCollector;
     use crate::parse::ParseFromStr;
     use crate::value::ValueConstructible;
-    use crate::{ast, driver, parse, CompiledProgram, SatisfiedProgram};
+    use crate::{ast, driver, parse, CompiledProgram, DependencyMap, SatisfiedProgram};
     use crate::{SourceFile, SourceName};
 
     #[test]
@@ -256,7 +256,7 @@ mod tests {
         )]));
         match SatisfiedProgram::new(
             SourceName::default(),
-            Arc::from(HashMap::new()),
+            Arc::from(DependencyMap::new()),
             s,
             Arguments::default(),
             witness,
@@ -282,7 +282,7 @@ fn main() {
 
         match CompiledProgram::new(
             SourceName::default(),
-            Arc::from(HashMap::new()),
+            Arc::from(DependencyMap::new()),
             s,
             Arguments::default(),
             false,
