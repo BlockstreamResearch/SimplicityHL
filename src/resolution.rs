@@ -192,16 +192,32 @@ impl DependencyMap {
 
             // Check if the alias matches what the user typed
             if remapping.drp_name == drp_name {
-                return remapping.target.join(&parts[1..]).map_err(|err| {
-                    RichError::new(
-                        Error::Internal(format!("Dependency resolution failed: {}", err)),
-                        *use_decl.span(),
-                    )
-                });
+                return Self::build_and_verify_path(&remapping.target, &parts[1..]).map_err(
+                    |failed_path| {
+                        RichError::new(Error::FileNotFound(failed_path), *use_decl.span())
+                    },
+                );
             }
         }
 
         Err(Error::UnknownLibrary(drp_name.to_string())).with_span(*use_decl.span())
+    }
+
+    /// Replace `.join` method to better error handling
+    fn build_and_verify_path(
+        base_target: &CanonPath,
+        module_parts: &[impl ToString],
+    ) -> Result<CanonPath, std::path::PathBuf> {
+        let mut theoretical_path = base_target.as_path().to_path_buf();
+        for part in module_parts {
+            theoretical_path.push(part.to_string());
+        }
+        theoretical_path.set_extension("simf");
+
+        match CanonPath::canonicalize(&theoretical_path) {
+            Ok(valid_canon_path) => Ok(valid_canon_path),
+            Err(_) => Err(theoretical_path),
+        }
     }
 }
 

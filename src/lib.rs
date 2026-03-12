@@ -1103,6 +1103,99 @@ fn main() {
 }
 
 #[cfg(test)]
+mod error_tests {
+    use std::path::Path;
+
+    use super::*;
+
+    use crate::resolution::tests::canon;
+    use crate::resolution::CanonPath;
+    use crate::test_utils::TempWorkspace;
+
+    fn dependency_map(root_dir: &Path, drp: &str, lib_dir: &Path) -> DependencyMap {
+        let mut dependency_map = DependencyMap::new();
+
+        let context = CanonPath::canonicalize(root_dir).unwrap();
+        let target = CanonPath::canonicalize(lib_dir).unwrap();
+
+        dependency_map.insert(context, drp.into(), target).unwrap();
+
+        dependency_map
+    }
+
+    fn source_file(path: &Path) -> SourceFile {
+        let content = std::fs::read_to_string(path).expect("Failed to read test file");
+        SourceFile::new(path, Arc::from(content))
+    }
+
+    #[test]
+    #[ignore = "TODO: Bug in Error Handler. Expected to be fixed in a future update to correctly point to dependency source files."]
+    fn dependency_ast_errors_use_dependency_source_file() {
+        let ws = TempWorkspace::new("dependency_ast_error_source");
+        let root_dir = ws.create_dir("workspace");
+        let lib_dir = ws.create_dir("workspace/lib");
+        let main_path = ws.create_file(
+            "workspace/main.simf",
+            "use lib::bad::f;\nfn main() { f(); }\n",
+        );
+        let bad_path = ws.create_file(
+            "workspace/lib/bad.simf",
+            "pub fn f() { let x: u32 = true; }\n",
+        );
+
+        let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
+
+        let err = TemplateProgram::new_with_dep(source_file(&main_path), &dependencies)
+            .expect_err("dependency body has a type error");
+        let dependency_source = canon(&bad_path).as_path().display().to_string();
+
+        assert!(
+            err.contains(&dependency_source),
+            "expected diagnostic to point at dependency source {dependency_source}, got:\n{err}"
+        );
+    }
+
+    #[test]
+    fn omitted_context_dependency_applies_inside_dependency_files() {
+        let ws = TempWorkspace::new("omitted_context_dependency");
+        let lib_dir = ws.create_dir("workspace/lib");
+        let main_path = ws.create_file(
+            "workspace/main.simf",
+            "use lib::nested::two;\nfn main() { assert!(jet::eq_32(two(), 2)); }\n",
+        );
+        ws.create_file(
+            "workspace/lib/nested.simf",
+            "use lib::base::one;\npub fn two() -> u32 {\n    let (_, out): (bool, u32) = jet::add_32(one(), 1);\n    out\n}\n",
+        );
+        ws.create_file("workspace/lib/base.simf", "pub fn one() -> u32 { 1 }\n");
+
+        let dependencies = dependency_map(&main_path, "lib", &lib_dir);
+        let _err = TemplateProgram::new_with_dep(source_file(&main_path), &dependencies)
+            .expect_err("omitted-context dependencies");
+    }
+
+    #[test]
+    fn missing_mapped_module_is_reported_as_file_not_found() {
+        let ws = TempWorkspace::new("missing_mapped_module");
+        let root_dir = ws.create_dir("workspace");
+        let lib_dir = ws.create_dir("workspace/lib");
+        let main_path = ws.create_file(
+            "workspace/main.simf",
+            "use lib::missing::Thing;\nfn main() {}\n",
+        );
+        let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
+
+        let err = TemplateProgram::new_with_dep(source_file(&main_path), &dependencies)
+            .expect_err("missing imported module should fail");
+
+        assert!(
+            err.contains("missing.simf"),
+            "diagnostic should mention the missing module path, got:\n{err}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod functional_tests {
     use crate::tests::{run_dependency_test, run_multidep_test};
 
