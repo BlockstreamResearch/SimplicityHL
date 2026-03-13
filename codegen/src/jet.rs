@@ -428,12 +428,13 @@ This jet should not be used directly."#,
 
 This builds a taproot from two branches."#,
         Elements::BuildTapleafSimplicity => r#"Return the SHA256 hash of the following:
-- The hash of the ASCII string `TapBranch/elements` (32 bytes).
-- The hash of the ASCII string `TapBranch/elements` again (32 bytes).
-- The lexicographically smaller of the two inputs (32 bytes).
-- The lexicographically larger of the two inputs (32 bytes).
+- The hash of the ASCII string `TapLeaf/elements` (32 bytes).
+- The hash of the ASCII string `TapLeaf/elements` again (32 bytes).
+- The Simplicity leaf version `0xbe` (1 byte).
+- The byte `0x20` (1 byte).
+- The input CMR (32 bytes).
 
-This builds a taproot from two branches."#,
+This builds a tapleaf hash for a Simplicity program."#,
         Elements::BuildTaptweak => r#"Implementation of `taproot_tweak_pubkey` from BIP-0341.
 
 ## Panics
