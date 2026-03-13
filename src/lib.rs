@@ -71,6 +71,11 @@ impl TemplateProgram {
         self.simfony.parameters()
     }
 
+    /// Access the witness types of the program.
+    pub fn witness_types(&self) -> &WitnessTypes {
+        self.simfony.witness_types()
+    }
+
     /// Instantiate the template program with the given `arguments`.
     ///
     /// ## Errors
