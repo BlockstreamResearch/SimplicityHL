@@ -1490,7 +1490,7 @@ impl ChumskyParse for Expression {
                     Token::RBrace,
                     [
                         (Token::LParen, Token::RParen),
-                        (Token::RAngle, Token::RAngle),
+                        (Token::LAngle, Token::RAngle),
                         (Token::LBracket, Token::RBracket),
                     ],
                     |span| Expression::empty(span).inner().clone(),
