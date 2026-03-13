@@ -428,6 +428,7 @@ pub enum Error {
     ExpressionNotConstant,
     IntegerOutOfBounds(UIntType),
     UndefinedVariable(Identifier),
+    RedefinedAlias(AliasName),
     UndefinedAlias(AliasName),
     VariableReuseInPattern(Identifier),
     WitnessReused(WitnessName),
@@ -545,6 +546,10 @@ impl fmt::Display for Error {
             Error::UndefinedVariable(identifier) => write!(
                 f,
                 "Variable `{identifier}` is not defined"
+            ),
+            Error::RedefinedAlias(identifier) => write!(
+                f,
+                "Type alias `{identifier}` was defined multiple times"
             ),
             Error::UndefinedAlias(identifier) => write!(
                 f,
