@@ -47,9 +47,9 @@ macro_rules! wrapped_string {
 /// Implementation of [`arbitrary::Arbitrary`] for wrapped string types,
 /// such that strings of 1 to 10 letters `a` to `z` are generated.
 ///
-/// The space of lowercase letter strings includes values that are invalid
-/// according to the grammar of the particular string type. For instance,
-/// keywords are reserved. However, this should not affect fuzzing.
+/// The space of lowercase letter strings includes reserved keywords,
+/// which cannot be used as identifiers. To ensure valid grammar
+/// for fuzzing, any generated keywords are padded with the `_`.
 macro_rules! impl_arbitrary_lowercase_alpha {
     ($wrapper:ident) => {
         #[cfg(feature = "arbitrary")]
@@ -60,6 +60,9 @@ macro_rules! impl_arbitrary_lowercase_alpha {
                 for _ in 0..len {
                     let offset = u.int_in_range(0..=25)?;
                     string.push((b'a' + offset) as char)
+                }
+                if crate::lexer::is_keyword(string.as_str()) {
+                    string.push('_');
                 }
                 Ok(Self::from_str_unchecked(string.as_str()))
             }
@@ -103,7 +106,7 @@ impl<'a> arbitrary::Arbitrary<'a> for FunctionName {
             let offset = u.int_in_range(0..=25)?;
             string.push((b'a' + offset) as char)
         }
-        if RESERVED_NAMES.contains(&string.as_str()) {
+        if RESERVED_NAMES.contains(&string.as_str()) || crate::lexer::is_keyword(string.as_str()) {
             string.push('_');
         }
 
@@ -202,7 +205,7 @@ impl<'a> arbitrary::Arbitrary<'a> for AliasName {
             let offset = u.int_in_range(0..=25)?;
             string.push((b'a' + offset) as char)
         }
-        if RESERVED_NAMES.contains(&string.as_str()) {
+        if RESERVED_NAMES.contains(&string.as_str()) || crate::lexer::is_keyword(string.as_str()) {
             string.push('_');
         }
 

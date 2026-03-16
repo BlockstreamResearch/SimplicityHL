@@ -237,6 +237,15 @@ pub fn lex<'src>(input: &'src str) -> (Option<Tokens<'src>>, Vec<crate::error::R
     )
 }
 
+/// Checks whether a given string is a keyword.
+#[cfg(feature = "arbitrary")]
+pub fn is_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        "fn" | "let" | "type" | "mod" | "const" | "match" | "true" | "false"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use chumsky::error::Rich;
