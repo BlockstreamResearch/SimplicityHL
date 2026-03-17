@@ -1,0 +1,35 @@
+on:   # yamllint disable-line rule:truthy
+  pull_request:
+
+name: Verify signed commits
+
+jobs:
+  Check-Signatures:
+    name: Check GPG signatures
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Checkout repo"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "Verify all PR commits are signed"
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          unsigned=""
+          for sha in $(git rev-list "$base".."$head"); do
+            sig=$(git log --format='%G?' -1 "$sha")
+            if [ "$sig" != "G" ] && [ "$sig" != "U" ] && [ "$sig" != "E" ]; then
+              unsigned="$unsigned $sha"
+              echo "::error::Commit $sha is not GPG signed (signature status: $sig)"
+            fi
+          done
+          if [ -n "$unsigned" ]; then
+            echo ""
+            echo "The following commits are not signed:$unsigned"
+            echo "Please sign your commits with a GPG key."
+            exit 1
+          fi
+          echo "All commits are GPG signed."
