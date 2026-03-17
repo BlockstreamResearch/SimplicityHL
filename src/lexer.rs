@@ -20,6 +20,9 @@ pub enum Token<'src> {
 
     // Control symbols
     Arrow,
+    /// Represents a contiguous `::` token.
+    /// This prevents the lexer from allowing spaces between colons (e.g., `use a: :b`),
+    DoubleColon,
     Colon,
     Semi,
     Comma,
@@ -71,6 +74,7 @@ impl<'src> fmt::Display for Token<'src> {
             Token::Match => write!(f, "match"),
 
             Token::Arrow => write!(f, "->"),
+            Token::DoubleColon => write!(f, "::"),
             Token::Colon => write!(f, ":"),
             Token::Semi => write!(f, ";"),
             Token::Comma => write!(f, ","),
@@ -145,16 +149,16 @@ pub fn lexer<'src>(
         _ => Token::Ident(s),
     });
 
-    let jet = just("jet::")
-        .labelled("jet")
+    let jet = just("jet")
+        .ignore_then(just("::"))
         .ignore_then(text::ident())
         .map(Token::Jet);
-    let witness = just("witness::")
-        .labelled("witness")
+    let witness = just("witness")
+        .ignore_then(just("::"))
         .ignore_then(text::ident())
         .map(Token::Witness);
-    let param = just("param::")
-        .labelled("param")
+    let param = just("param")
+        .ignore_then(just("::"))
         .ignore_then(text::ident())
         .map(Token::Param);
 
@@ -162,6 +166,7 @@ pub fn lexer<'src>(
         just("->").to(Token::Arrow),
         just("=>").to(Token::FatArrow),
         just("=").to(Token::Eq),
+        just("::").to(Token::DoubleColon),
         just(":").to(Token::Colon),
         just(";").to(Token::Semi),
         just(",").to(Token::Comma),

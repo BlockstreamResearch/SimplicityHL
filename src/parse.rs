@@ -1338,16 +1338,14 @@ impl ChumskyParse for CallName {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
-        let double_colon = just(Token::Colon).then(just(Token::Colon)).labelled("::");
-
-        let turbofish_start = double_colon.clone().then(just(Token::LAngle)).ignored();
+        let turbofish_start = just(Token::DoubleColon).then(just(Token::LAngle)).ignored();
 
         let generics_close = just(Token::RAngle);
 
         let type_cast = just(Token::LAngle)
             .ignore_then(AliasedType::parser())
             .then_ignore(generics_close.clone())
-            .then_ignore(just(Token::Colon).then(just(Token::Colon)))
+            .then_ignore(just(Token::DoubleColon))
             .then_ignore(just(Token::Ident("into")))
             .map(CallName::TypeCast);
 
@@ -2186,5 +2184,25 @@ mod test {
             ty.error(),
             &Error::RedefinedAliasAsBuiltin(AliasName::from_str_unchecked("Ctx8"))
         );
+    }
+
+    #[test]
+    fn test_double_colon() {
+        let input = "fn main() { let ab: u8 = <(u4, u4)> : :into((0b1011, 0b1101)); }";
+        let mut error_handler = ErrorCollector::new(Arc::from(input));
+        let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
+
+        assert!(parse_program.is_none());
+        assert!(ErrorCollector::to_string(&error_handler).contains("Expected '::', found ':'"));
+    }
+
+    #[test]
+    fn test_double_double_colon() {
+        let input = "fn main() { let pk: Pubkey = witnes::::PK; }";
+        let mut error_handler = ErrorCollector::new(Arc::from(input));
+        let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
+
+        assert!(parse_program.is_none());
+        assert!(ErrorCollector::to_string(&error_handler).contains("Expected ';', found '::'"));
     }
 }
