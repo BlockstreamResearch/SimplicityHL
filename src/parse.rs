@@ -429,14 +429,14 @@ impl MatchArm {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum MatchPattern {
-    /// Bind inner value of left value to variable name.
-    Left(Identifier, AliasedType),
-    /// Bind inner value of right value to variable name.
-    Right(Identifier, AliasedType),
+    /// Bind inner value of left value to a pattern.
+    Left(Pattern, AliasedType),
+    /// Bind inner value of right value to a pattern.
+    Right(Pattern, AliasedType),
     /// Match none value (no binding).
     None,
-    /// Bind inner value of some value to variable name.
-    Some(Identifier, AliasedType),
+    /// Bind inner value of some value to a pattern.
+    Some(Pattern, AliasedType),
     /// Match false value (no binding).
     False,
     /// Match true value (no binding).
@@ -444,8 +444,8 @@ pub enum MatchPattern {
 }
 
 impl MatchPattern {
-    /// Access the identifier of a pattern that binds a variable.
-    pub fn as_variable(&self) -> Option<&Identifier> {
+    /// Access the pattern of a match pattern that binds a variables.
+    pub fn as_pattern(&self) -> Option<&Pattern> {
         match self {
             MatchPattern::Left(i, _) | MatchPattern::Right(i, _) | MatchPattern::Some(i, _) => {
                 Some(i)
@@ -454,8 +454,8 @@ impl MatchPattern {
         }
     }
 
-    /// Access the identifier and the type of a pattern that binds a variable.
-    pub fn as_typed_variable(&self) -> Option<(&Identifier, &AliasedType)> {
+    /// Access the pattern and the type of a match pattern that binds a variables.
+    pub fn as_typed_pattern(&self) -> Option<(&Pattern, &AliasedType)> {
         match self {
             MatchPattern::Left(i, ty) | MatchPattern::Right(i, ty) | MatchPattern::Some(i, ty) => {
                 Some((i, ty))
@@ -1623,17 +1623,17 @@ impl ChumskyParse for MatchPattern {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
-        let wrapper = |name: &'static str, ctor: fn(Identifier, AliasedType) -> Self| {
+        let wrapper = |name: &'static str, ctor: fn(Pattern, AliasedType) -> Self| {
             select! { Token::Ident(i) if i == name => i }
                 .ignore_then(delimited_with_recovery(
-                    Identifier::parser()
+                    Pattern::parser()
                         .then_ignore(just(Token::Colon))
                         .then(AliasedType::parser()),
                     Token::LParen,
                     Token::RParen,
                     |_| {
                         (
-                            Identifier::from_str_unchecked(""),
+                            Pattern::Ignore,
                             AliasedType::alias(AliasName::from_str_unchecked("error")),
                         )
                     },
@@ -2130,16 +2130,16 @@ impl crate::ArbitraryRec for Match {
         let scrutinee = Expression::arbitrary_rec(u, budget).map(Arc::new)?;
         let (pat_l, pat_r) = match u.int_in_range(0..=2)? {
             0 => {
-                let id_l = Identifier::arbitrary(u)?;
+                let id_l = Pattern::arbitrary(u)?;
                 let ty_l = AliasedType::arbitrary(u)?;
                 let pat_l = MatchPattern::Left(id_l, ty_l);
-                let id_r = Identifier::arbitrary(u)?;
+                let id_r = Pattern::arbitrary(u)?;
                 let ty_r = AliasedType::arbitrary(u)?;
                 let pat_r = MatchPattern::Right(id_r, ty_r);
                 (pat_l, pat_r)
             }
             1 => {
-                let id_r = Identifier::arbitrary(u)?;
+                let id_r = Pattern::arbitrary(u)?;
                 let ty_r = AliasedType::arbitrary(u)?;
                 let pat_r = MatchPattern::Some(id_r, ty_r);
                 (MatchPattern::None, pat_r)
