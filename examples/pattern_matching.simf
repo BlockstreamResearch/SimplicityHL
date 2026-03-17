@@ -1,0 +1,15 @@
+fn main() {
+  let complex_pattern: Either<(u32, u32, (u1, u1)), [u1; 8]> = Left((32, 3, (0, 1)));
+
+  let a: u32 = match complex_pattern {
+    Left((a, b,(c, d)): (u32, u32, (u1, u1))) => {
+      assert!(jet::eq_32(b, 3));
+      assert!(jet::eq_1(c, 0));
+      assert!(jet::eq_1(d, 1));
+      a
+    }
+    Right(_: [u1; 8]) => 0,
+  };
+
+  assert!(jet::eq_32(a, 32));
+}

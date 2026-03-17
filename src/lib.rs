@@ -492,6 +492,13 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn pattern_matching() {
+        TestCase::program_file("./examples/pattern_matching.simf")
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
     #[cfg(feature = "serde")]
     fn sighash_non_interactive_fee_bump() {
         let mut t = TestCase::program_file("./examples/non_interactive_fee_bump.simf")
