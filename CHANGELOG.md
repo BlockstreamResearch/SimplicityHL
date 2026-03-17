@@ -1,8 +1,15 @@
+# 0.5.0-rc.0 - 2026-03-14
+
+* Migrate from the `pest` parser to a new `chumsky`-based parser, improving parser recovery and enabling multiple parse errors to be reported in one pass [#185](https://github.com/BlockstreamResearch/SimplicityHL/pull/185)
+* `simc` now accepts `--args <file>` for parameterized contracts, and witness input is supplied explicitly via `--wit <file>` [#200](https://github.com/BlockstreamResearch/SimplicityHL/pull/200)
+* Expose contract ABI metadata for tooling via `simc --abi`, and add library accessors for parameter and witness types [#201](https://github.com/BlockstreamResearch/SimplicityHL/pull/201), [#219](https://github.com/BlockstreamResearch/SimplicityHL/pull/219)
+* Improve compiler diagnostics further by rejecting duplicate type-alias definitions and fixing parser recovery around angle-bracket-delimited syntax [#221](https://github.com/BlockstreamResearch/SimplicityHL/pull/221), [#222](https://github.com/BlockstreamResearch/SimplicityHL/pull/222)
+* Correct LSP hover/completion documentation for `build_tapleaf_simplicity`, `unwrap_left`, and `unwrap_right` [#229](https://github.com/BlockstreamResearch/SimplicityHL/pull/229), [#230](https://github.com/BlockstreamResearch/SimplicityHL/pull/230)
+
 # 0.4.1 - 2026-01-22
 
-* vscode: fix icons and .json files [#214](https://github.com/BlockstreamResearch/SimplicityHL/pull/214)
-* Feat/vscode enhance -- [#199](https://github.com/BlockstreamResearch/SimplicityHL/pull/199)
-* Bug/jet trace [#198](https://github.com/BlockstreamResearch/SimplicityHL/pull/198)
+* VSCode and LSP developer experience improvements -- [#199](https://github.com/BlockstreamResearch/SimplicityHL/pull/199), [#214](https://github.com/BlockstreamResearch/SimplicityHL/pull/214)
+* Adjust jet trace debug-wrapper removal heuristic [#198](https://github.com/BlockstreamResearch/SimplicityHL/pull/198) — not an ideal solution, but adopted as a temporary approach per the discussion in [#197](https://github.com/BlockstreamResearch/SimplicityHL/issues/197).
 * `analyze_named_module`: make missing modules equivalent to empty ones [#187](https://github.com/BlockstreamResearch/SimplicityHL/pull/187)
 
 # 0.4.0 - 2025-12-18
