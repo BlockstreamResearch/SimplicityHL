@@ -130,8 +130,14 @@ pub fn lexer<'src>(
         .ignore_then(digits_with_underscore(2))
         .map(|s: &str| Token::BinLiteral(Binary::from_str_unchecked(s.replace('_', "").as_str())));
 
-    let macros =
-        choice((just("assert!"), just("panic!"), just("dbg!"), just("list!"))).map(Token::Macro);
+    let macros = choice((
+        just("assert!"),
+        just("panic!"),
+        just("dbg!"),
+        just("list!"),
+        // just("padding!"),
+    ))
+    .map(Token::Macro);
 
     let keyword = text::ident().map(|s| match s {
         "fn" => Token::Fn,
@@ -252,6 +258,75 @@ mod tests {
 
     use super::*;
 
+    /// Helper function to get the variant name of a token
+    fn variant_name(token: &Token) -> &'static str {
+        match token {
+            Token::Fn => "Fn",
+            Token::Let => "Let",
+            Token::Type => "Type",
+            Token::Mod => "Mod",
+            Token::Const => "Const",
+            Token::Match => "Match",
+            Token::Arrow => "Arrow",
+            Token::Colon => "Colon",
+            Token::Semi => "Semi",
+            Token::Comma => "Comma",
+            Token::Eq => "Eq",
+            Token::FatArrow => "FatArrow",
+            Token::LParen => "LParen",
+            Token::RParen => "RParen",
+            Token::LBracket => "LBracket",
+            Token::RBracket => "RBracket",
+            Token::LBrace => "LBrace",
+            Token::RBrace => "RBrace",
+            Token::LAngle => "LAngle",
+            Token::RAngle => "RAngle",
+            Token::DecLiteral(_) => "DecLiteral",
+            Token::HexLiteral(_) => "HexLiteral",
+            Token::BinLiteral(_) => "BinLiteral",
+            Token::Bool(_) => "Bool",
+            Token::Ident(_) => "Ident",
+            Token::Jet(_) => "Jet",
+            Token::Witness(_) => "Witness",
+            Token::Param(_) => "Param",
+            Token::Macro(_) => "Macro",
+            Token::Comment => "Comment",
+            Token::BlockComment => "BlockComment",
+        }
+    }
+
+    /// Macro to assert that a sequence of tokens matches the expected variant types
+    macro_rules! assert_tokens_match {
+        ($tokens:expr, $($expected:ident),* $(,)?) => {
+            {
+                let tokens = $tokens.as_ref().expect("Expected Some tokens");
+                let expected_variants = vec![$( stringify!($expected) ),*];
+
+                assert_eq!(
+                    tokens.len(),
+                    expected_variants.len(),
+                    "Expected {} tokens, got {}.\nTokens: {:?}",
+                    expected_variants.len(),
+                    tokens.len(),
+                    tokens
+                );
+
+                for (idx, ((token, _span), expected_variant)) in tokens.iter().zip(expected_variants.iter()).enumerate() {
+                    let actual_variant = variant_name(token);
+                    assert_eq!(
+                        actual_variant,
+                        *expected_variant,
+                        "Token at index {} does not match: expected {}, got {} (token: {:?})",
+                        idx,
+                        expected_variant,
+                        actual_variant,
+                        token
+                    );
+                }
+            }
+        };
+    }
+
     fn lex<'src>(
         input: &'src str,
     ) -> (Option<Vec<Token<'src>>>, Vec<Rich<'src, char, SimpleSpan>>) {
@@ -352,5 +427,20 @@ mod tests {
         let _ = tokens.unwrap();
 
         assert!(lex_errs.is_empty());
+    }
+
+    #[test]
+    fn test_lexer_padding_detection() {
+        let expr = "padding::<10>()";
+
+        let (tokens, lex_errs) = lexer().parse(expr).into_output_errors();
+
+        // let _ = tokens.unwrap();
+
+        assert!(lex_errs.is_empty());
+
+        assert_tokens_match!(
+            tokens, Ident, Colon, Colon, LAngle, DecLiteral, RAngle, LParen, RParen
+        );
     }
 }

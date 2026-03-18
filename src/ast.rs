@@ -287,6 +287,8 @@ pub enum CallName {
     Panic,
     /// [`dbg!`].
     Debug,
+    /// [`padding!`]
+    Padding(NonZeroUsize),
     /// Cast from the given source type.
     TypeCast(ResolvedType),
     /// A custom function that was defined previously.
@@ -1187,6 +1189,14 @@ impl AbstractSyntaxTree for Call {
                 scope.track_call(from, TrackedCallName::Debug(arg_ty));
                 args
             }
+            CallName::Padding(_size) => {
+                let args_tys = [];
+                check_argument_types(from.args(), &args_tys).with_span(from)?;
+                let args = analyze_arguments(from.args(), &args_tys, scope)?;
+                scope.track_call(from, TrackedCallName::Padding);
+
+                args
+            }
             CallName::TypeCast(source) => {
                 if StructuralType::from(&source) != StructuralType::from(ty) {
                     return Err(Error::InvalidCast(source, ty.clone())).with_span(from);
@@ -1314,6 +1324,7 @@ impl AbstractSyntaxTree for CallName {
             parse::CallName::Assert => Ok(Self::Assert),
             parse::CallName::Panic => Ok(Self::Panic),
             parse::CallName::Debug => Ok(Self::Debug),
+            parse::CallName::Padding(size) => Ok(Self::Padding(*size)),
             parse::CallName::TypeCast(target) => {
                 scope.resolve(target).map(Self::TypeCast).with_span(from)
             }
@@ -1571,5 +1582,75 @@ impl AsRef<Span> for Module {
 impl AsRef<Span> for ModuleAssignment {
     fn as_ref(&self) -> &Span {
         &self.span
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{error, parse::ParseFromStr};
+
+    use super::*;
+
+    fn parse_padding(input: &str) -> parse::Call {
+        // Parse the if expression
+        let parsed_expr = parse::Expression::parse_from_str(input).expect("Failed to parse");
+
+        // Extract the parsed If from the expression
+        let parsed_if = match parsed_expr.inner() {
+            parse::ExpressionInner::Single(single) => match single.inner() {
+                parse::SingleExpressionInner::Call(call) => match call.name() {
+                    parse::CallName::Padding(_) => call.clone(),
+                    _ => panic!("Expected padding call"),
+                },
+                _ => panic!("Expected If expression"),
+            },
+            _ => panic!("Expected Single expression"),
+        };
+        parsed_if
+    }
+
+    #[test]
+    fn test_ast_padding() {
+        let input = "padding::<10>()";
+
+        let parsed_call = &parse_padding(input);
+
+        // Analyze the if expression with u8 as the expected type
+        let expected_type = ResolvedType::unit();
+        let mut scope = Scope::default();
+        let ast_padding = Call::analyze(parsed_call, &expected_type, &mut scope)
+            .expect("Failed to analyze Padding expression");
+
+        // Verify the structure
+        assert_eq!(
+            ast_padding.args().len(),
+            0,
+            "Args did not analyse correctly"
+        );
+        assert_eq!(
+            ast_padding.name(),
+            &CallName::Padding(NonZeroUsize::new(10).unwrap()),
+            "Call name was not padding"
+        );
+    }
+
+    #[test]
+    fn test_ast_padding_should_fail_with_args() {
+        let input = "padding::<10>(1)";
+
+        let parsed_call = &parse_padding(input);
+
+        // Analyze the if expression with u8 as the expected type
+        let expected_type = ResolvedType::unit();
+        let mut scope = Scope::default();
+        let res = Call::analyze(parsed_call, &expected_type, &mut scope);
+
+        assert!(
+            matches!(
+                res.unwrap_err().error(),
+                error::Error::InvalidNumberOfArguments(0, 1)
+            ),
+            "padding parsed correctly but should have failed"
+        );
     }
 }
