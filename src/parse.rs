@@ -1452,7 +1452,25 @@ impl ChumskyParse for TypeAlias {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
-        let name = AliasName::parser().map_with(|name, e| (name, e.span()));
+        let name = AliasName::parser()
+            .validate(|name, e, emit| {
+                let ident = name.as_inner();
+                let known_type = if ident == "bool" {
+                    Some(AliasedType::boolean())
+                } else if let Ok(uint_type) = UIntType::from_str(ident) {
+                    Some(AliasedType::from(uint_type))
+                } else if let Ok(builtin) = BuiltinAlias::from_str(ident) {
+                    Some(AliasedType::builtin(builtin))
+                } else {
+                    None
+                };
+
+                if known_type.is_some() {
+                    emit.emit(Error::RedefinedAliasAsBuiltin(name.clone()).with_span(e.span()));
+                }
+                name
+            })
+            .map_with(|name, e| (name, e.span()));
 
         just(Token::Type)
             .ignore_then(name)
@@ -2152,5 +2170,21 @@ impl crate::ArbitraryRec for Match {
             },
             span: Span::DUMMY,
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_reject_redefined_builtin_type() {
+        let ty = TypeAlias::parse_from_str("type Ctx8 = u32")
+            .expect_err("Redifining built-in alias should be rejected");
+
+        assert_eq!(
+            ty.error(),
+            &Error::RedefinedAliasAsBuiltin(AliasName::from_str_unchecked("Ctx8"))
+        );
     }
 }
