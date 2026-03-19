@@ -193,6 +193,25 @@ impl fmt::Display for UIntType {
     }
 }
 
+impl FromStr for UIntType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "u1" => Ok(UIntType::U1),
+            "u2" => Ok(UIntType::U2),
+            "u4" => Ok(UIntType::U4),
+            "u8" => Ok(UIntType::U8),
+            "u16" => Ok(UIntType::U16),
+            "u32" => Ok(UIntType::U32),
+            "u64" => Ok(UIntType::U64),
+            "u128" => Ok(UIntType::U128),
+            "u256" => Ok(UIntType::U256),
+            _ => Err("Unknown integer type".to_string()),
+        }
+    }
+}
+
 impl TryFrom<&StructuralType> for UIntType {
     type Error = ();
 

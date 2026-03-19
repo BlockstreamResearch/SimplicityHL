@@ -26,7 +26,7 @@ use crate::str::{
     AliasName, Binary, Decimal, FunctionName, Hexadecimal, Identifier, JetName, ModuleName,
     WitnessName,
 };
-use crate::types::{AliasedType, BuiltinAlias, TypeConstructible};
+use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
 
 /// A program is a sequence of items.
 #[derive(Clone, Debug)]
@@ -1002,26 +1002,17 @@ impl ChumskyParse for AliasedType {
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
         let atom = select! {
-            Token::Ident(ident) => {
-                match ident
-                {
-                    "u1" => AliasedType::u1(),
-                    "u2" =>  AliasedType::u2(),
-                    "u4" =>  AliasedType::u4(),
-                    "u8" => AliasedType::u8(),
-                    "u16" => AliasedType::u16(),
-                    "u32" => AliasedType::u32(),
-                    "u64" => AliasedType::u64(),
-                    "u128" => AliasedType::u128(),
-                    "u256" => AliasedType::u256(),
-                    "Ctx8" | "Pubkey" | "Message64" | "Message" | "Signature" | "Scalar" | "Fe" | "Gej"
-                    | "Ge" | "Point" | "Height" | "Time" | "Distance" | "Duration" | "Lock" | "Outpoint"
-                    | "Confidential1" | "ExplicitAsset" | "Asset1" | "ExplicitAmount" | "Amount1"
-                    | "ExplicitNonce" | "Nonce" | "TokenAmount1" => AliasedType::builtin(BuiltinAlias::from_str(ident).unwrap()),
-                    "bool" => AliasedType::boolean(),
-                    _ => AliasedType::alias(AliasName::from_str_unchecked(ident)),
+                Token::Ident(ident) => {
+                    if ident == "bool" {
+                        AliasedType::boolean()
+                    } else if let Ok(uint_type) = UIntType::from_str(ident) {
+                        AliasedType::from(uint_type)
+                    } else if let Ok(builtin) = BuiltinAlias::from_str(ident) {
+                        AliasedType::builtin(builtin)
+                    } else {
+                        AliasedType::alias(AliasName::from_str_unchecked(ident))
+                    }
                 }
-            },
         };
 
         let num = select! {
