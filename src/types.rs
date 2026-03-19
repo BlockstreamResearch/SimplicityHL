@@ -37,7 +37,7 @@ impl<A> TypeInner<A> {
         match self {
             TypeInner::Either(_, _) => match n_children_yielded {
                 0 => f.write_str("Either<"),
-                1 => f.write_str(","),
+                1 => f.write_str(", "),
                 n => {
                     debug_assert_eq!(n, 2);
                     f.write_str(">")
@@ -1113,5 +1113,7 @@ mod tests {
         assert_eq!("[(); 3]", &array.to_string());
         let list = ResolvedType::list(ResolvedType::unit(), NonZeroPow2Usize::TWO);
         assert_eq!("List<(), 2>", &list.to_string());
+        let either = ResolvedType::either(ResolvedType::unit(), ResolvedType::u32());
+        assert_eq!("Either<(), u32>", &either.to_string());
     }
 }
