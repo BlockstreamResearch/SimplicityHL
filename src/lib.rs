@@ -4,6 +4,8 @@ pub mod array;
 pub mod ast;
 pub mod compile;
 pub mod debug;
+#[cfg(feature = "docs")]
+pub mod docs;
 pub mod dummy_env;
 pub mod error;
 pub mod jet;

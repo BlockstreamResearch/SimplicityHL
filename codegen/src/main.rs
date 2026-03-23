@@ -1,10 +1,9 @@
 use std::fs::File;
 use std::io;
 
+use simplicityhl::docs::jet;
 use simplicityhl::simplicity::jet::{Elements, Jet};
 use simplicityhl::types::TypeDeconstructible;
-
-mod jet;
 
 /// Write a SimplicityHL jet as a Rust function to the sink.
 fn write_jet<W: io::Write>(jet: Elements, w: &mut W) -> io::Result<()> {

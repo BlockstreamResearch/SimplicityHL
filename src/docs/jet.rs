@@ -1,4 +1,4 @@
-use simplicityhl::simplicity::jet::Elements;
+use crate::simplicity::jet::Elements;
 use std::fmt;
 
 #[rustfmt::skip]
