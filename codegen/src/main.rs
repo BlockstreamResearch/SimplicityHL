@@ -2,12 +2,13 @@ use std::fs::File;
 use std::io;
 
 use simplicityhl::docs::jet;
+use simplicityhl::docs::jet::JetInfo;
 use simplicityhl::simplicity::jet::{Elements, Jet};
 use simplicityhl::types::TypeDeconstructible;
 
 /// Write a SimplicityHL jet as a Rust function to the sink.
 fn write_jet<W: io::Write>(jet: Elements, w: &mut W) -> io::Result<()> {
-    for line in jet::documentation(jet).lines() {
+    for line in jet.documentation().lines() {
         match line.is_empty() {
             true => writeln!(w, "///")?,
             false => writeln!(w, "/// {line}")?,

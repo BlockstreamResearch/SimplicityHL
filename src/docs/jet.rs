@@ -1,9 +1,19 @@
 use crate::simplicity::jet::Elements;
 use std::fmt;
 
-#[rustfmt::skip]
-pub fn documentation(jet: Elements) -> &'static str {
-    match jet {
+/// Interface for providing information about jets.
+pub trait JetInfo {
+    /// The description of the jet.
+    fn documentation(&self) -> &'static str;
+
+    /// Indicates whether the jet is deprecated or disabled.
+    fn is_deprecated(&self) -> bool;
+}
+
+impl JetInfo for Elements {
+    #[rustfmt::skip]
+    fn documentation(&self) -> &'static str {
+    match self {
         // Multi-bit logic
         Elements::All8  => "Check if the value is [`u8::MAX`].",
         Elements::All16 => "Check if the value is [`u16::MAX`].",
@@ -804,6 +814,19 @@ Return zero for any asset without fees."#,
     }
 }
 
+    fn is_deprecated(&self) -> bool {
+        matches!(
+            self,
+            Elements::CheckLockDistance
+                | Elements::CheckLockDuration
+                | Elements::TxLockDistance
+                | Elements::TxLockDuration
+                | Elements::CheckSigVerify
+                | Elements::Verify
+        )
+    }
+}
+
 /// Category of an Elements jet.
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum Category {
@@ -939,6 +962,23 @@ impl Category {
             Self::Issuance => ISSUANCE.iter(),
             Self::Transaction => TRANSACTION.iter(),
         }
+    }
+
+    /// Display category as proper documentation name.
+    pub fn to_pretty_string(self) -> String {
+        match self {
+            Self::MultiBitLogic => "Multi-bit logic",
+            Self::Arithmetic => "Arithmetic",
+            Self::HashFunctions => "Hash functions",
+            Self::EllipticCurveFunctions => "Elliptic curve functions",
+            Self::DigitalSignatures => "Digital Signatures",
+            Self::BitcoinWithoutPrimitives => "Bitcoin",
+            Self::SignatureHashModes => "Elements signature hash modes",
+            Self::TimeLocks => "Time locks",
+            Self::Issuance => "Issuance",
+            Self::Transaction => "Transaction",
+        }
+        .to_string()
     }
 }
 
