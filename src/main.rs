@@ -2,7 +2,8 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
-use simplicityhl::{AbiMeta, CompiledProgram};
+use simplicityhl::{AbiMeta, TemplateProgram, UnstableFlags};
+use simplicityhl::unstable_flags::UnstableFlag;
 use std::{env, fmt};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -83,6 +84,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .action(ArgAction::SetTrue)
                     .help("Additional ABI .simf contract types"),
             )
+            .arg(
+                Arg::new("deny_warnings")
+                    .long("deny-warnings")
+                    .action(ArgAction::SetTrue)
+                    .help("Treat warnings as errors"),
+            )
+            .arg(
+                Arg::new("unstable_flags")
+                    .short('Z')
+                    .value_name("FLAG")
+                    .action(ArgAction::Append)
+                    .help(
+                        "Enable an unstable feature flag (can be passed multiple times). \
+                         Known flags: infix_arithmetic_operators",
+                    ),
+            )
     };
 
     let matches = command.get_matches();
@@ -113,7 +130,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         simplicityhl::Arguments::default()
     };
 
-    let compiled = match CompiledProgram::new(prog_text, args_opt, include_debug_symbols) {
+    let deny_warnings = matches.get_flag("deny_warnings");
+
+    let mut flags = UnstableFlags::new();
+    for flag_str in matches
+        .get_many::<String>("unstable_flags")
+        .unwrap_or_default()
+    {
+        match flag_str.parse::<UnstableFlag>() {
+            Ok(flag) => flags.enable(flag),
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let template = match TemplateProgram::new(prog_text, deny_warnings, flags) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
+    let n_warnings = template.warnings().len();
+    if n_warnings > 0 {
+        eprint!("{}", template.format_warnings(prog_file));
+        let word = if n_warnings == 1 {
+            "warning"
+        } else {
+            "warnings"
+        };
+        eprintln!(
+            "\x1b[1;33mwarning\x1b[0m: `{}` generated {} {}",
+            prog_file, n_warnings, word,
+        );
+    }
+    let compiled = match template.instantiate(args_opt, include_debug_symbols) {
         Ok(program) => program,
         Err(e) => {
             eprintln!("{}", e);

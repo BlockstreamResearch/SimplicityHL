@@ -680,7 +680,8 @@ impl Value {
                 | S::Parameter(..)
                 | S::Variable(..)
                 | S::Call(..)
-                | S::Match(..) => return None, // not const
+                | S::Match(..)
+                | S::BinaryOp { .. } => return None, // not const
                 S::Expression(..) => continue, // skip
                 S::Tuple(..) => {
                     let elements = output.split_off(output.len() - size);
@@ -784,7 +785,11 @@ impl Value {
     /// Parse a value of the given type from a string.
     pub fn parse_from_str(s: &str, ty: &ResolvedType) -> Result<Self, RichError> {
         let parse_expr = parse::Expression::parse_from_str(s)?;
-        let ast_expr = ast::Expression::analyze_const(&parse_expr, ty)?;
+        let (ast_expr, _warnings) = ast::Expression::analyze_const(&parse_expr, ty)?;
+        // TODO: confirm what to do with warnings here. There shouldn't be any.
+        // if !warnings.is_empty() {}
+        // Throw away warnings for now
+
         Self::from_const_expr(&ast_expr)
             .ok_or(Error::ExpressionUnexpectedType(ty.clone()))
             .with_span(s)
@@ -1317,7 +1322,7 @@ mod tests {
 
         for (string, ty, expected_value) in string_ty_value {
             let parse_expr = parse::Expression::parse_from_str(string).unwrap();
-            let ast_expr = ast::Expression::analyze_const(&parse_expr, &ty).unwrap();
+            let (ast_expr, _warnings) = ast::Expression::analyze_const(&parse_expr, &ty).unwrap();
             let parsed_value = Value::from_const_expr(&ast_expr).unwrap();
             assert_eq!(parsed_value, expected_value);
             assert!(parsed_value.is_of_type(&ty));

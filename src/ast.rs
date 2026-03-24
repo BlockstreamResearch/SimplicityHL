@@ -1,5 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::fmt;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -239,6 +240,16 @@ pub enum SingleExpressionInner {
     Call(Call),
     /// Match expression.
     Match(Match),
+    /// Infix operator expression: calls an arithmetic or comparison jet.
+    BinaryOp {
+        jet: Elements,
+        lhs: Arc<Expression>,
+        rhs: Arc<Expression>,
+        assert_no_carry: bool,
+        swap_args: bool,
+        negate_result: bool,
+        check_nonzero_divisor: bool,
+    },
 }
 
 /// Call of a user-defined or of a builtin function.
@@ -502,6 +513,9 @@ impl TreeLike for ExprTree<'_> {
                 }
                 S::Call(call) => Tree::Unary(Self::Call(call)),
                 S::Match(match_) => Tree::Unary(Self::Match(match_)),
+                S::BinaryOp { lhs, rhs, .. } => {
+                    Tree::Nary(Arc::new([Self::Expression(lhs), Self::Expression(rhs)]))
+                }
             },
             Self::Call(call) => Tree::Nary(call.args().iter().map(Self::Expression).collect()),
             Self::Match(match_) => Tree::Nary(Arc::new([
@@ -704,6 +718,60 @@ impl Scope {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum WarningName {
+    ModuleItemIgnored,
+    ArithmeticOperationCouldOverflow,
+    DivisionCouldPanicOnZero,
+}
+
+impl fmt::Display for WarningName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WarningName::ModuleItemIgnored => write!(f, "ModuleItem was ignored"),
+            WarningName::ArithmeticOperationCouldOverflow => write!(f, "This operator panics if the result overflows. To handle overflow, use the jet directly and destructure the (bool, uN) result."),
+            WarningName::DivisionCouldPanicOnZero => write!(f, "This operator panics if the divisor is zero. To handle division by zero, use a jet and check the divisor before using it."),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Warning {
+    /// Canonical name used for allowing and denying specific warnings.
+    pub canonical_name: WarningName,
+    /// Span in which this warning occured.
+    pub span: Span,
+}
+
+impl Warning {
+    fn module_item_ignored<S: Into<Span>>(span: S) -> Self {
+        Warning {
+            canonical_name: WarningName::ModuleItemIgnored,
+            span: span.into(),
+        }
+    }
+
+    fn arthimetic_operation_could_overflow<S: Into<Span>>(span: S) -> Self {
+        Warning {
+            canonical_name: WarningName::ArithmeticOperationCouldOverflow,
+            span: span.into(),
+        }
+    }
+
+    fn division_could_panic_on_zero<S: Into<Span>>(span: S) -> Self {
+        Warning {
+            canonical_name: WarningName::DivisionCouldPanicOnZero,
+            span: span.into(),
+        }
+    }
+}
+
+impl From<Warning> for RichError {
+    fn from(value: Warning) -> Self {
+        RichError::new(Error::DeniedWarning(value.canonical_name), value.span)
+    }
+}
+
 /// Part of the abstract syntax tree that can be generated from a precursor in the parse tree.
 trait AbstractSyntaxTree: Sized {
     /// Component of the parse tree.
@@ -714,41 +782,61 @@ trait AbstractSyntaxTree: Sized {
     ///
     /// Check if the analyzed expression is of the expected type.
     /// Statements return no values so their expected type is always unit.
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError>;
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<(Self, Vec<Warning>), RichError>;
 }
 
 impl Program {
-    pub fn analyze(from: &parse::Program) -> Result<Self, RichError> {
+    pub fn analyze(from: &parse::Program) -> Result<(Self, Vec<Warning>), RichError> {
         let unit = ResolvedType::unit();
         let mut scope = Scope::default();
-        let items = from
+        let items: Vec<(Item, Vec<Warning>)> = from
             .items()
             .iter()
             .map(|s| Item::analyze(s, &unit, &mut scope))
-            .collect::<Result<Vec<Item>, RichError>>()?;
+            .collect::<Result<_, RichError>>()?;
         debug_assert!(scope.is_topmost());
         let (parameters, witness_types, call_tracker) = scope.destruct();
-        let mut iter = items.into_iter().filter_map(|item| match item {
-            Item::Function(Function::Main(expr)) => Some(expr),
-            _ => None,
-        });
-        let main = iter.next().ok_or(Error::MainRequired).with_span(from)?;
-        if iter.next().is_some() {
-            return Err(Error::FunctionRedefined(FunctionName::main())).with_span(from);
+        let mut all_warnings: Vec<Warning> = vec![];
+        let mut main_expr = None;
+        let mut main_seen = false;
+        for (item, mut warnings) in items {
+            all_warnings.append(&mut warnings);
+            match item {
+                Item::Function(Function::Main(expr)) => {
+                    if main_seen {
+                        return Err(Error::FunctionRedefined(FunctionName::main())).with_span(from);
+                    }
+                    main_expr = Some(expr);
+                    main_seen = true;
+                }
+                _ => {}
+            }
         }
-        Ok(Self {
-            main,
-            parameters,
-            witness_types,
-            call_tracker: Arc::new(call_tracker),
-        })
+        let main = main_expr.ok_or(Error::MainRequired).with_span(from)?;
+        Ok((
+            Self {
+                main,
+                parameters,
+                witness_types,
+                call_tracker: Arc::new(call_tracker),
+            },
+            all_warnings,
+        ))
     }
 }
 
 impl AbstractSyntaxTree for Item {
     type From = parse::Item;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<(Self, Vec<Warning>), RichError> {
         assert!(ty.is_unit(), "Items cannot return anything");
         assert!(scope.is_topmost(), "Items live in the topmost scope only");
 
@@ -757,12 +845,11 @@ impl AbstractSyntaxTree for Item {
                 scope
                     .insert_alias(alias.name().clone(), alias.ty().clone())
                     .with_span(alias)?;
-                Ok(Self::TypeAlias)
+                Ok((Self::TypeAlias, vec![]))
             }
-            parse::Item::Function(function) => {
-                Function::analyze(function, ty, scope).map(Self::Function)
-            }
-            parse::Item::Module => Ok(Self::Module),
+            parse::Item::Function(function) => Function::analyze(function, ty, scope)
+                .map(|(f, warnings)| (Self::Function(f), warnings)),
+            parse::Item::Module => Ok((Self::Module, vec![])),
         }
     }
 }
@@ -770,7 +857,11 @@ impl AbstractSyntaxTree for Item {
 impl AbstractSyntaxTree for Function {
     type From = parse::Function;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<(Self, Vec<Warning>), RichError> {
         assert!(ty.is_unit(), "Function definitions cannot return anything");
         assert!(scope.is_topmost(), "Items live in the topmost scope only");
 
@@ -795,15 +886,18 @@ impl AbstractSyntaxTree for Function {
             for param in params.iter() {
                 scope.insert_variable(param.identifier().clone(), param.ty().clone());
             }
-            let body = Expression::analyze(from.body(), &ret, scope).map(Arc::new)?;
+            let (body, warnings) = Expression::analyze(from.body(), &ret, scope)?;
             scope.pop_scope();
             debug_assert!(scope.is_topmost());
-            let function = CustomFunction { params, body };
+            let function = CustomFunction {
+                params,
+                body: Arc::new(body),
+            };
             scope
                 .insert_function(from.name().clone(), function)
                 .with_span(from)?;
 
-            return Ok(Self::Custom);
+            return Ok((Self::Custom, warnings));
         }
 
         if !from.params().is_empty() {
@@ -817,24 +911,26 @@ impl AbstractSyntaxTree for Function {
         }
 
         scope.push_main_scope();
-        let body = Expression::analyze(from.body(), ty, scope)?;
+        let (body, warnings) = Expression::analyze(from.body(), ty, scope)?;
         scope.pop_main_scope();
-        Ok(Self::Main(body))
+        Ok((Self::Main(body), warnings))
     }
 }
 
 impl AbstractSyntaxTree for Statement {
     type From = parse::Statement;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<(Self, Vec<Warning>), RichError> {
         assert!(ty.is_unit(), "Statements cannot return anything");
         match from {
-            parse::Statement::Assignment(assignment) => {
-                Assignment::analyze(assignment, ty, scope).map(Self::Assignment)
-            }
-            parse::Statement::Expression(expression) => {
-                Expression::analyze(expression, ty, scope).map(Self::Expression)
-            }
+            parse::Statement::Assignment(assignment) => Assignment::analyze(assignment, ty, scope)
+                .map(|(a, warnings)| (Self::Assignment(a), warnings)),
+            parse::Statement::Expression(expression) => Expression::analyze(expression, ty, scope)
+                .map(|(e, warnings)| (Self::Expression(e), warnings)),
         }
     }
 }
@@ -842,24 +938,31 @@ impl AbstractSyntaxTree for Statement {
 impl AbstractSyntaxTree for Assignment {
     type From = parse::Assignment;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<(Self, Vec<Warning>), RichError> {
         assert!(ty.is_unit(), "Assignments cannot return anything");
         // The assignment is a statement that returns nothing.
         //
         // However, the expression evaluated in the assignment does have a type,
         // namely the type specified in the assignment.
         let ty_expr = scope.resolve(from.ty()).with_span(from)?;
-        let expression = Expression::analyze(from.expression(), &ty_expr, scope)?;
+        let (expression, warnings) = Expression::analyze(from.expression(), &ty_expr, scope)?;
         let typed_variables = from.pattern().is_of_type(&ty_expr).with_span(from)?;
         for (identifier, ty) in typed_variables {
             scope.insert_variable(identifier, ty);
         }
 
-        Ok(Self {
-            pattern: from.pattern().clone(),
-            expression,
-            span: *from.as_ref(),
-        })
+        Ok((
+            Self {
+                pattern: from.pattern().clone(),
+                expression,
+                span: *from.as_ref(),
+            },
+            warnings,
+        ))
     }
 }
 
@@ -872,7 +975,10 @@ impl Expression {
     ///
     /// The returned expression might not be evaluable at compile time.
     /// The details depend on the current state of the SimplicityHL compiler.
-    pub fn analyze_const(from: &parse::Expression, ty: &ResolvedType) -> Result<Self, RichError> {
+    pub fn analyze_const(
+        from: &parse::Expression,
+        ty: &ResolvedType,
+    ) -> Result<(Self, Vec<Warning>), RichError> {
         let mut empty_scope = Scope::default();
         Self::analyze(from, ty, &mut empty_scope)
     }
@@ -881,27 +987,33 @@ impl Expression {
 impl AbstractSyntaxTree for Expression {
     type From = parse::Expression;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<(Self, Vec<Warning>), RichError> {
         match from.inner() {
             parse::ExpressionInner::Single(single) => {
-                let ast_single = SingleExpression::analyze(single, ty, scope)?;
-                Ok(Self {
-                    ty: ty.clone(),
-                    inner: ExpressionInner::Single(ast_single),
-                    span: *from.as_ref(),
-                })
+                let (ast_single, warnings) = SingleExpression::analyze(single, ty, scope)?;
+                Ok((
+                    Self {
+                        ty: ty.clone(),
+                        inner: ExpressionInner::Single(ast_single),
+                        span: *from.as_ref(),
+                    },
+                    warnings,
+                ))
             }
             parse::ExpressionInner::Block(statements, expression) => {
                 scope.push_scope();
-                let ast_statements = statements
+                let ast_statements: Vec<(Statement, Vec<Warning>)> = statements
                     .iter()
                     .map(|s| Statement::analyze(s, &ResolvedType::unit(), scope))
-                    .collect::<Result<Arc<[Statement]>, RichError>>()?;
-                let ast_expression = match expression {
+                    .collect::<Result<_, RichError>>()?;
+                let (ast_expression, mut ast_warnings) = match expression {
                     Some(expression) => Expression::analyze(expression, ty, scope)
-                        .map(Arc::new)
-                        .map(Some),
-                    None if ty.is_unit() => Ok(None),
+                        .map(|(e, warnings)| (Some(Arc::new(e)), warnings)),
+                    None if ty.is_unit() => Ok((None, vec![])),
                     None => Err(Error::ExpressionTypeMismatch(
                         ty.clone(),
                         ResolvedType::unit(),
@@ -910,21 +1022,227 @@ impl AbstractSyntaxTree for Expression {
                 }?;
                 scope.pop_scope();
 
-                Ok(Self {
-                    ty: ty.clone(),
-                    inner: ExpressionInner::Block(ast_statements, ast_expression),
-                    span: *from.as_ref(),
-                })
+                let mut all_warnings = vec![];
+                let mut all_statements = vec![];
+                for (statement, mut warnings) in ast_statements {
+                    all_warnings.append(&mut warnings);
+                    all_statements.push(statement);
+                }
+                all_warnings.append(&mut ast_warnings);
+
+                Ok((
+                    Self {
+                        ty: ty.clone(),
+                        inner: ExpressionInner::Block(all_statements.into(), ast_expression),
+                        span: *from.as_ref(),
+                    },
+                    all_warnings,
+                ))
             }
         }
+    }
+}
+
+/// Tries to infer the type of a parse expression using the current scope,
+/// without performing a full analysis. Returns `None` if the type cannot be determined.
+fn peek_expression_type(expr: &parse::Expression, scope: &Scope) -> Option<ResolvedType> {
+    match expr.inner() {
+        parse::ExpressionInner::Single(single) => peek_single_expression_type(single, scope),
+        parse::ExpressionInner::Block(_, Some(end_expr)) => peek_expression_type(end_expr, scope),
+        parse::ExpressionInner::Block(_, None) => Some(ResolvedType::unit()),
+    }
+}
+
+fn peek_single_expression_type(
+    expr: &parse::SingleExpression,
+    scope: &Scope,
+) -> Option<ResolvedType> {
+    match expr.inner() {
+        parse::SingleExpressionInner::Variable(id) => scope.get_variable(id).cloned(),
+        parse::SingleExpressionInner::Expression(inner) => peek_expression_type(inner, scope),
+        _ => None,
+    }
+}
+
+/// Maps a comparison infix operator and operand type to:
+/// - the Simplicity jet
+/// - whether arguments should be swapped (for `>` and `>=`) Note: there are no GreaterThan jets, so the
+///   args must be swapped.
+/// - whether the result should be negated (for `!=`)
+///
+/// Returns `Err` if there is no jet for the given combination.
+fn determine_comparison_op_jet(
+    op: &parse::InfixOp,
+    arg_ty: &ResolvedType,
+) -> Result<(Elements, bool, bool), Error> {
+    use parse::InfixOp::*;
+    use UIntType::*;
+
+    let uint_ty = arg_ty
+        .as_integer()
+        .ok_or_else(|| Error::ExpressionUnexpectedType(arg_ty.clone()))?;
+
+    match op {
+        Eq | Ne => {
+            let jet = match uint_ty {
+                U1 => Elements::Eq1,
+                U8 => Elements::Eq8,
+                U16 => Elements::Eq16,
+                U32 => Elements::Eq32,
+                U64 => Elements::Eq64,
+                _ => return Err(Error::ExpressionUnexpectedType(arg_ty.clone())),
+            };
+            Ok((jet, false, matches!(op, Ne)))
+        }
+        Lt | Gt => {
+            let jet = match uint_ty {
+                U8 => Elements::Lt8,
+                U16 => Elements::Lt16,
+                U32 => Elements::Lt32,
+                U64 => Elements::Lt64,
+                _ => return Err(Error::ExpressionUnexpectedType(arg_ty.clone())),
+            };
+            // Gt(a, b) = Lt(b, a) → swap_args=true for Gt
+            Ok((jet, matches!(op, Gt), false))
+        }
+        Le | Ge => {
+            let jet = match uint_ty {
+                U8 => Elements::Le8,
+                U16 => Elements::Le16,
+                U32 => Elements::Le32,
+                U64 => Elements::Le64,
+                _ => return Err(Error::ExpressionUnexpectedType(arg_ty.clone())),
+            };
+            // Ge(a, b) = Le(b, a) → swap_args=true for Ge
+            Ok((jet, matches!(op, Ge), false))
+        }
+        _ => Err(Error::ExpressionUnexpectedType(arg_ty.clone())),
+    }
+}
+
+/// Maps an infix operator and the expected output type to the corresponding Simplicity jet,
+/// the expected input argument type, and whether the jet's raw output is `(bool, uN)`
+/// and requires a carry/overflow assertion.
+///
+/// Returns `Err` if there is no jet for the given operator + output type combination.
+///
+/// | Operator | Output type | Jet         | Input type | Assert no carry |
+/// |----------|-------------|-------------|------------|-----------------|
+/// | `+`      | `uN`        | `AddN`      | `uN`       | yes             |
+/// | `-`      | `uN`        | `SubtractN` | `uN`       | yes             |
+/// | `*`      | `u(2N)`     | `MultiplyN` | `uN`       | no              |
+/// | `/`      | `uN`        | `DivideN`   | `uN`       | no              |
+/// | `%`      | `uN`        | `ModuloN`   | `uN`       | no              |
+/// Maps a bitwise infix operator and operand type to the corresponding Simplicity jet.
+///
+/// | Operator | Output type | Jet    | Input type |
+/// |----------|-------------|--------|------------|
+/// | `&`      | `uN`        | `AndN` | `uN`       |
+/// | `\|`     | `uN`        | `OrN`  | `uN`       |
+/// | `^`      | `uN`        | `XorN` | `uN`       |
+fn determine_infix_bitwise_op_jet(
+    op: &parse::InfixOp,
+    ty: &ResolvedType,
+) -> Result<Elements, Error> {
+    use parse::InfixOp::*;
+    use UIntType::*;
+
+    let uint_ty = ty
+        .as_integer()
+        .ok_or_else(|| Error::ExpressionUnexpectedType(ty.clone()))?;
+
+    match (op, uint_ty) {
+        (BitAnd, U1) => Ok(Elements::And1),
+        (BitAnd, U8) => Ok(Elements::And8),
+        (BitAnd, U16) => Ok(Elements::And16),
+        (BitAnd, U32) => Ok(Elements::And32),
+        (BitAnd, U64) => Ok(Elements::And64),
+        (BitOr, U1) => Ok(Elements::Or1),
+        (BitOr, U8) => Ok(Elements::Or8),
+        (BitOr, U16) => Ok(Elements::Or16),
+        (BitOr, U32) => Ok(Elements::Or32),
+        (BitOr, U64) => Ok(Elements::Or64),
+        (BitXor, U1) => Ok(Elements::Xor1),
+        (BitXor, U8) => Ok(Elements::Xor8),
+        (BitXor, U16) => Ok(Elements::Xor16),
+        (BitXor, U32) => Ok(Elements::Xor32),
+        (BitXor, U64) => Ok(Elements::Xor64),
+        _ => Err(Error::ExpressionUnexpectedType(ty.clone())),
+    }
+}
+
+fn determine_infix_arith_op_jet(
+    op: &parse::InfixOp,
+    ty: &ResolvedType,
+) -> Result<(Elements, ResolvedType, bool), Error> {
+    use parse::InfixOp::*;
+    use UIntType::*;
+
+    match op {
+        // Add and Sub: jet produces (bool, uN); assert no carry, then return uN
+        Add | Sub => {
+            let uint_ty = ty
+                .as_integer()
+                .ok_or_else(|| Error::ExpressionUnexpectedType(ty.clone()))?;
+
+            let jet = match (op, uint_ty) {
+                (Add, U8) => Elements::Add8,
+                (Add, U16) => Elements::Add16,
+                (Add, U32) => Elements::Add32,
+                (Add, U64) => Elements::Add64,
+                (Sub, U8) => Elements::Subtract8,
+                (Sub, U16) => Elements::Subtract16,
+                (Sub, U32) => Elements::Subtract32,
+                (Sub, U64) => Elements::Subtract64,
+                _ => return Err(Error::ExpressionUnexpectedType(ty.clone())),
+            };
+
+            Ok((jet, ResolvedType::from(uint_ty), true))
+        }
+        // Mul: jet takes (uN, uN) and produces u(2N), no overflow possible
+        Mul => {
+            let (jet, arg_uint) = match ty.as_integer() {
+                Some(U16) => (Elements::Multiply8, U8),
+                Some(U32) => (Elements::Multiply16, U16),
+                Some(U64) => (Elements::Multiply32, U32),
+                Some(U128) => (Elements::Multiply64, U64),
+                _ => return Err(Error::ExpressionUnexpectedType(ty.clone())),
+            };
+            Ok((jet, ResolvedType::from(arg_uint), false))
+        }
+        // Div and Rem: jet takes (uN, uN) and produces uN, no overflow flag
+        Div | Rem => {
+            let uint_ty = ty
+                .as_integer()
+                .ok_or_else(|| Error::ExpressionUnexpectedType(ty.clone()))?;
+
+            let jet = match (op, uint_ty) {
+                (Div, U8) => Elements::Divide8,
+                (Div, U16) => Elements::Divide16,
+                (Div, U32) => Elements::Divide32,
+                (Div, U64) => Elements::Divide64,
+                (Rem, U8) => Elements::Modulo8,
+                (Rem, U16) => Elements::Modulo16,
+                (Rem, U32) => Elements::Modulo32,
+                (Rem, U64) => Elements::Modulo64,
+                _ => return Err(Error::ExpressionUnexpectedType(ty.clone())),
+            };
+            Ok((jet, ResolvedType::from(uint_ty), false))
+        }
+        // Comparison ops are handled by comparison_op_jet, not here
+        _ => Err(Error::ExpressionUnexpectedType(ty.clone())),
     }
 }
 
 impl AbstractSyntaxTree for SingleExpression {
     type From = parse::SingleExpression;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
-        let inner = match from.inner() {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<(Self, Vec<Warning>), RichError> {
+        let (inner, warnings) = match from.inner() {
             parse::SingleExpressionInner::Boolean(bit) => {
                 if !ty.is_boolean() {
                     return Err(Error::ExpressionTypeMismatch(
@@ -933,17 +1251,20 @@ impl AbstractSyntaxTree for SingleExpression {
                     ))
                     .with_span(from);
                 }
-                SingleExpressionInner::Constant(Value::from(*bit))
+                (SingleExpressionInner::Constant(Value::from(*bit)), vec![])
             }
             parse::SingleExpressionInner::Decimal(decimal) => {
                 let ty = ty
                     .as_integer()
                     .ok_or(Error::ExpressionUnexpectedType(ty.clone()))
                     .with_span(from)?;
-                UIntValue::parse_decimal(decimal, ty)
-                    .with_span(from)
-                    .map(Value::from)
-                    .map(SingleExpressionInner::Constant)?
+                (
+                    UIntValue::parse_decimal(decimal, ty)
+                        .with_span(from)
+                        .map(Value::from)
+                        .map(SingleExpressionInner::Constant)?,
+                    vec![],
+                )
             }
             parse::SingleExpressionInner::Binary(bits) => {
                 let ty = ty
@@ -951,23 +1272,26 @@ impl AbstractSyntaxTree for SingleExpression {
                     .ok_or(Error::ExpressionUnexpectedType(ty.clone()))
                     .with_span(from)?;
                 let value = UIntValue::parse_binary(bits, ty).with_span(from)?;
-                SingleExpressionInner::Constant(Value::from(value))
+                (SingleExpressionInner::Constant(Value::from(value)), vec![])
             }
             parse::SingleExpressionInner::Hexadecimal(bytes) => {
                 let value = Value::parse_hexadecimal(bytes, ty).with_span(from)?;
-                SingleExpressionInner::Constant(value)
+                (SingleExpressionInner::Constant(value), vec![])
             }
             parse::SingleExpressionInner::Witness(name) => {
                 scope
                     .insert_witness(name.clone(), ty.clone())
                     .with_span(from)?;
-                SingleExpressionInner::Witness(name.clone())
+                (SingleExpressionInner::Witness(name.clone()), vec![])
             }
             parse::SingleExpressionInner::Parameter(name) => {
                 scope
                     .insert_parameter(name.shallow_clone(), ty.clone())
                     .with_span(from)?;
-                SingleExpressionInner::Parameter(name.shallow_clone())
+                (
+                    SingleExpressionInner::Parameter(name.shallow_clone()),
+                    vec![],
+                )
             }
             parse::SingleExpressionInner::Variable(identifier) => {
                 let bound_ty = scope
@@ -979,12 +1303,12 @@ impl AbstractSyntaxTree for SingleExpression {
                         .with_span(from);
                 }
                 scope.insert_variable(identifier.clone(), ty.clone());
-                SingleExpressionInner::Variable(identifier.clone())
+                (SingleExpressionInner::Variable(identifier.clone()), vec![])
             }
             parse::SingleExpressionInner::Expression(parse) => {
-                Expression::analyze(parse, ty, scope)
-                    .map(Arc::new)
-                    .map(SingleExpressionInner::Expression)?
+                Expression::analyze(parse, ty, scope).map(|(e, warnings)| {
+                    (SingleExpressionInner::Expression(Arc::new(e)), warnings)
+                })?
             }
             parse::SingleExpressionInner::Tuple(tuple) => {
                 let types = ty
@@ -994,12 +1318,23 @@ impl AbstractSyntaxTree for SingleExpression {
                 if tuple.len() != types.len() {
                     return Err(Error::ExpressionUnexpectedType(ty.clone())).with_span(from);
                 }
-                tuple
+                let inner: Vec<(Expression, Vec<Warning>)> = tuple
                     .iter()
                     .zip(types.iter())
                     .map(|(el_parse, el_ty)| Expression::analyze(el_parse, el_ty, scope))
-                    .collect::<Result<Arc<[Expression]>, RichError>>()
-                    .map(SingleExpressionInner::Tuple)?
+                    .collect::<Result<_, RichError>>()?;
+
+                let mut all_warnings = vec![];
+                let mut all_expressions: Vec<Expression> = vec![];
+                for i in inner {
+                    all_warnings.extend_from_slice(&i.1);
+                    all_expressions.push(i.0);
+                }
+
+                (
+                    SingleExpressionInner::Tuple(all_expressions.into()),
+                    all_warnings,
+                )
             }
             parse::SingleExpressionInner::Array(array) => {
                 let (el_ty, size) = ty
@@ -1009,11 +1344,22 @@ impl AbstractSyntaxTree for SingleExpression {
                 if array.len() != size {
                     return Err(Error::ExpressionUnexpectedType(ty.clone())).with_span(from);
                 }
-                array
+                let inner: Vec<(Expression, Vec<Warning>)> = array
                     .iter()
                     .map(|el_parse| Expression::analyze(el_parse, el_ty, scope))
-                    .collect::<Result<Arc<[Expression]>, RichError>>()
-                    .map(SingleExpressionInner::Array)?
+                    .collect::<Result<_, RichError>>()?;
+
+                let mut all_warnings = vec![];
+                let mut all_expressions: Vec<Expression> = vec![];
+                for i in inner {
+                    all_warnings.extend_from_slice(&i.1);
+                    all_expressions.push(i.0);
+                }
+
+                (
+                    SingleExpressionInner::Array(all_expressions.into()),
+                    all_warnings,
+                )
             }
             parse::SingleExpressionInner::List(list) => {
                 let (el_ty, bound) = ty
@@ -1023,10 +1369,22 @@ impl AbstractSyntaxTree for SingleExpression {
                 if bound.get() <= list.len() {
                     return Err(Error::ExpressionUnexpectedType(ty.clone())).with_span(from);
                 }
-                list.iter()
-                    .map(|e| Expression::analyze(e, el_ty, scope))
-                    .collect::<Result<Arc<[Expression]>, RichError>>()
-                    .map(SingleExpressionInner::List)?
+                let inner: Vec<(Expression, Vec<Warning>)> = list
+                    .iter()
+                    .map(|el_parse| Expression::analyze(el_parse, el_ty, scope))
+                    .collect::<Result<_, RichError>>()?;
+
+                let mut all_warnings = vec![];
+                let mut all_expressions: Vec<Expression> = vec![];
+                for i in inner {
+                    all_warnings.extend_from_slice(&i.1);
+                    all_expressions.push(i.0);
+                }
+
+                (
+                    SingleExpressionInner::List(all_expressions.into()),
+                    all_warnings,
+                )
             }
             parse::SingleExpressionInner::Either(either) => {
                 let (ty_l, ty_r) = ty
@@ -1035,13 +1393,11 @@ impl AbstractSyntaxTree for SingleExpression {
                     .with_span(from)?;
                 match either {
                     Either::Left(parse_l) => Expression::analyze(parse_l, ty_l, scope)
-                        .map(Arc::new)
-                        .map(Either::Left),
+                        .map(|(l, warnings)| (Either::Left(Arc::new(l)), warnings)),
                     Either::Right(parse_r) => Expression::analyze(parse_r, ty_r, scope)
-                        .map(Arc::new)
-                        .map(Either::Right),
+                        .map(|(r, warnings)| (Either::Right(Arc::new(r)), warnings)),
                 }
-                .map(SingleExpressionInner::Either)?
+                .map(|(e, warnings)| (SingleExpressionInner::Either(e), warnings))?
             }
             parse::SingleExpressionInner::Option(maybe_parse) => {
                 let ty = ty
@@ -1049,33 +1405,180 @@ impl AbstractSyntaxTree for SingleExpression {
                     .ok_or(Error::ExpressionUnexpectedType(ty.clone()))
                     .with_span(from)?;
                 match maybe_parse {
-                    Some(parse) => {
-                        Some(Expression::analyze(parse, ty, scope).map(Arc::new)).transpose()
-                    }
-                    None => Ok(None),
+                    Some(parse) => Expression::analyze(parse, ty, scope)
+                        .map(|(e, warnings)| (Some(Arc::new(e)), warnings)),
+                    None => Ok((None, vec![])),
                 }
-                .map(SingleExpressionInner::Option)?
+                .map(|(o, warnings)| (SingleExpressionInner::Option(o), warnings))?
             }
-            parse::SingleExpressionInner::Call(call) => {
-                Call::analyze(call, ty, scope).map(SingleExpressionInner::Call)?
-            }
-            parse::SingleExpressionInner::Match(match_) => {
-                Match::analyze(match_, ty, scope).map(SingleExpressionInner::Match)?
+            parse::SingleExpressionInner::Call(call) => Call::analyze(call, ty, scope)
+                .map(|(c, warnings)| (SingleExpressionInner::Call(c), warnings))?,
+            parse::SingleExpressionInner::Match(match_) => Match::analyze(match_, ty, scope)
+                .map(|(m, warnings)| (SingleExpressionInner::Match(m), warnings))?,
+            parse::SingleExpressionInner::BinaryOp(binary) => {
+                use parse::InfixOp::*;
+                match binary.op() {
+                    Eq | Ne | Lt | Le | Gt | Ge => {
+                        // Comparison operators: output type must be bool
+                        if !ty.is_boolean() {
+                            return Err(Error::ExpressionUnexpectedType(ty.clone()))
+                                .with_span(from);
+                        }
+                        // Infer operand type from lhs expression
+                        let arg_ty = peek_expression_type(binary.lhs(), scope)
+                            .ok_or(Error::ExpressionUnexpectedType(ty.clone()))
+                            .with_span(from)?;
+                        let (jet, swap_args, negate_result) =
+                            determine_comparison_op_jet(binary.op(), &arg_ty).with_span(from)?;
+                        let (lhs, mut lhs_warnings) =
+                            Expression::analyze(binary.lhs(), &arg_ty, scope)?;
+                        let (rhs, mut rhs_warnings) =
+                            Expression::analyze(binary.rhs(), &arg_ty, scope)?;
+                        lhs_warnings.append(&mut rhs_warnings);
+                        scope.track_call(from, TrackedCallName::Jet);
+                        (
+                            SingleExpressionInner::BinaryOp {
+                                jet,
+                                lhs: Arc::new(lhs),
+                                rhs: Arc::new(rhs),
+                                assert_no_carry: false,
+                                swap_args,
+                                negate_result,
+                                check_nonzero_divisor: false,
+                            },
+                            lhs_warnings,
+                        )
+                    }
+                    LogicalAnd | LogicalOr => {
+                        // Desugar to a match so the Simplicity `case` combinator
+                        // provides natural short-circuit evaluation — only the
+                        // taken branch is evaluated.
+                        //
+                        // a && b  =>  match a { false => false, true => b }
+                        // a || b  =>  match a { false => b,     true => true }
+                        if !ty.is_boolean() {
+                            return Err(Error::ExpressionUnexpectedType(ty.clone()))
+                                .with_span(from);
+                        }
+                        let bool_ty = ResolvedType::boolean();
+                        let span = *from.as_ref();
+                        let (lhs, mut lhs_warnings) =
+                            Expression::analyze(binary.lhs(), &bool_ty, scope)?;
+                        let (rhs, mut rhs_warnings) =
+                            Expression::analyze(binary.rhs(), &bool_ty, scope)?;
+                        lhs_warnings.append(&mut rhs_warnings);
+
+                        let make_bool = |b: bool| -> Expression {
+                            Expression {
+                                inner: ExpressionInner::Single(SingleExpression {
+                                    inner: SingleExpressionInner::Constant(Value::from(b)),
+                                    ty: bool_ty.clone(),
+                                    span,
+                                }),
+                                ty: bool_ty.clone(),
+                                span,
+                            }
+                        };
+
+                        let (left_expr, right_expr) = match binary.op() {
+                            LogicalAnd => (make_bool(false), rhs),
+                            LogicalOr => (rhs, make_bool(true)),
+                            _ => unreachable!(),
+                        };
+                        (
+                            SingleExpressionInner::Match(Match {
+                                scrutinee: Arc::new(lhs),
+                                left: MatchArm {
+                                    pattern: MatchPattern::False,
+                                    expression: Arc::new(left_expr),
+                                },
+                                right: MatchArm {
+                                    pattern: MatchPattern::True,
+                                    expression: Arc::new(right_expr),
+                                },
+                                span,
+                            }),
+                            lhs_warnings,
+                        )
+                    }
+                    BitAnd | BitOr | BitXor => {
+                        // Bitwise operators: same input and output type, no carry or overflow
+                        let jet =
+                            determine_infix_bitwise_op_jet(binary.op(), ty).with_span(from)?;
+                        let (lhs, mut lhs_warnings) =
+                            Expression::analyze(binary.lhs(), ty, scope)?;
+                        let (rhs, mut rhs_warnings) =
+                            Expression::analyze(binary.rhs(), ty, scope)?;
+                        lhs_warnings.append(&mut rhs_warnings);
+                        scope.track_call(from, TrackedCallName::Jet);
+                        (
+                            SingleExpressionInner::BinaryOp {
+                                jet,
+                                lhs: Arc::new(lhs),
+                                rhs: Arc::new(rhs),
+                                assert_no_carry: false,
+                                swap_args: false,
+                                negate_result: false,
+                                check_nonzero_divisor: false,
+                            },
+                            lhs_warnings,
+                        )
+                    }
+                    Add | Sub | Mul | Div | Rem => {
+                        // Arithmetic operators
+                        let (jet, arg_ty, assert_no_carry) =
+                            determine_infix_arith_op_jet(binary.op(), ty).with_span(from)?;
+                        let (lhs, mut lhs_warnings) =
+                            Expression::analyze(binary.lhs(), &arg_ty, scope)?;
+                        let (rhs, mut rhs_warnings) =
+                            Expression::analyze(binary.rhs(), &arg_ty, scope)?;
+                        lhs_warnings.append(&mut rhs_warnings);
+                        if assert_no_carry {
+                            lhs_warnings.push(Warning::arthimetic_operation_could_overflow(&from))
+                        }
+                        if matches!(binary.op(), parse::InfixOp::Div | parse::InfixOp::Rem) {
+                            lhs_warnings.push(Warning::division_could_panic_on_zero(&from))
+                        }
+                        scope.track_call(from, TrackedCallName::Jet);
+                        (
+                            SingleExpressionInner::BinaryOp {
+                                jet,
+                                lhs: Arc::new(lhs),
+                                rhs: Arc::new(rhs),
+                                assert_no_carry,
+                                swap_args: false,
+                                negate_result: false,
+                                check_nonzero_divisor: matches!(
+                                    binary.op(),
+                                    parse::InfixOp::Div | parse::InfixOp::Rem
+                                ),
+                            },
+                            lhs_warnings,
+                        )
+                    }
+                }
             }
         };
 
-        Ok(Self {
-            inner,
-            ty: ty.clone(),
-            span: *from.as_ref(),
-        })
+        Ok((
+            Self {
+                inner,
+                ty: ty.clone(),
+                span: *from.as_ref(),
+            },
+            warnings,
+        ))
     }
 }
 
 impl AbstractSyntaxTree for Call {
     type From = parse::Call;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<(Self, Vec<Warning>), RichError> {
         fn check_argument_types(
             parse_args: &[parse::Expression],
             expected_tys: &[ResolvedType],
@@ -1108,17 +1611,23 @@ impl AbstractSyntaxTree for Call {
             parse_args: &[parse::Expression],
             args_tys: &[ResolvedType],
             scope: &mut Scope,
-        ) -> Result<Arc<[Expression]>, RichError> {
-            let args = parse_args
+        ) -> Result<(Arc<[Expression]>, Vec<Warning>), RichError> {
+            let args: Vec<(Expression, Vec<Warning>)> = parse_args
                 .iter()
                 .zip(args_tys.iter())
                 .map(|(arg_parse, arg_ty)| Expression::analyze(arg_parse, arg_ty, scope))
-                .collect::<Result<Arc<[Expression]>, RichError>>()?;
-            Ok(args)
+                .collect::<Result<_, RichError>>()?;
+            let mut all_warns = vec![];
+            let mut all_args = vec![];
+            for (e, mut w) in args {
+                all_warns.append(&mut w);
+                all_args.push(e);
+            }
+            Ok((all_args.into(), all_warns))
         }
 
-        let name = CallName::analyze(from, ty, scope)?;
-        let args = match name.clone() {
+        let (name, name_warnings) = CallName::analyze(from, ty, scope)?;
+        let (args, mut args_warnings) = match name.clone() {
             CallName::Jet(jet) => {
                 let args_tys = crate::jet::source_type(jet)
                     .iter()
@@ -1275,11 +1784,16 @@ impl AbstractSyntaxTree for Call {
             }
         };
 
-        Ok(Self {
-            name,
-            args,
-            span: *from.as_ref(),
-        })
+        let mut all_warnings = name_warnings;
+        all_warnings.append(&mut args_warnings);
+        Ok((
+            Self {
+                name,
+                args,
+                span: *from.as_ref(),
+            },
+            all_warnings,
+        ))
     }
 }
 
@@ -1291,36 +1805,38 @@ impl AbstractSyntaxTree for CallName {
         from: &Self::From,
         _ty: &ResolvedType,
         scope: &mut Scope,
-    ) -> Result<Self, RichError> {
+    ) -> Result<(Self, Vec<Warning>), RichError> {
         match from.name() {
             parse::CallName::Jet(name) => match Elements::from_str(name.as_inner()) {
                 Ok(Elements::CheckSigVerify | Elements::Verify) | Err(_) => {
                     Err(Error::JetDoesNotExist(name.clone())).with_span(from)
                 }
-                Ok(jet) => Ok(Self::Jet(jet)),
+                Ok(jet) => Ok((Self::Jet(jet), vec![])),
             },
             parse::CallName::UnwrapLeft(right_ty) => scope
                 .resolve(right_ty)
-                .map(Self::UnwrapLeft)
+                .map(|c| (Self::UnwrapLeft(c), vec![]))
                 .with_span(from),
             parse::CallName::UnwrapRight(left_ty) => scope
                 .resolve(left_ty)
-                .map(Self::UnwrapRight)
+                .map(|c| (Self::UnwrapRight(c), vec![]))
                 .with_span(from),
-            parse::CallName::IsNone(some_ty) => {
-                scope.resolve(some_ty).map(Self::IsNone).with_span(from)
-            }
-            parse::CallName::Unwrap => Ok(Self::Unwrap),
-            parse::CallName::Assert => Ok(Self::Assert),
-            parse::CallName::Panic => Ok(Self::Panic),
-            parse::CallName::Debug => Ok(Self::Debug),
-            parse::CallName::TypeCast(target) => {
-                scope.resolve(target).map(Self::TypeCast).with_span(from)
-            }
+            parse::CallName::IsNone(some_ty) => scope
+                .resolve(some_ty)
+                .map(|c| (Self::IsNone(c), vec![]))
+                .with_span(from),
+            parse::CallName::Unwrap => Ok((Self::Unwrap, vec![])),
+            parse::CallName::Assert => Ok((Self::Assert, vec![])),
+            parse::CallName::Panic => Ok((Self::Panic, vec![])),
+            parse::CallName::Debug => Ok((Self::Debug, vec![])),
+            parse::CallName::TypeCast(target) => scope
+                .resolve(target)
+                .map(|c| (Self::TypeCast(c), vec![]))
+                .with_span(from),
             parse::CallName::Custom(name) => scope
                 .get_function(name)
                 .cloned()
-                .map(Self::Custom)
+                .map(|c| (Self::Custom(c), vec![]))
                 .ok_or(Error::FunctionUndefined(name.clone()))
                 .with_span(from),
             parse::CallName::ArrayFold(name, size) => {
@@ -1335,7 +1851,7 @@ impl AbstractSyntaxTree for CallName {
                 {
                     Err(Error::FunctionNotFoldable(name.clone())).with_span(from)
                 } else {
-                    Ok(Self::ArrayFold(function, *size))
+                    Ok((Self::ArrayFold(function, *size), vec![]))
                 }
             }
             parse::CallName::Fold(name, bound) => {
@@ -1350,7 +1866,7 @@ impl AbstractSyntaxTree for CallName {
                 {
                     Err(Error::FunctionNotFoldable(name.clone())).with_span(from)
                 } else {
-                    Ok(Self::Fold(function, *bound))
+                    Ok((Self::Fold(function, *bound), vec![]))
                 }
             }
             parse::CallName::ForWhile(name) => {
@@ -1382,7 +1898,7 @@ impl AbstractSyntaxTree for CallName {
                         | UIntType::U4
                         | UIntType::U8
                         | UIntType::U16),
-                    ) => Ok(Self::ForWhile(function, int_ty.bit_width())),
+                    ) => Ok((Self::ForWhile(function, int_ty.bit_width()), vec![])),
                     _ => Err(Error::FunctionNotLoopable(name.clone())).with_span(from),
                 }
             }
@@ -1393,11 +1909,15 @@ impl AbstractSyntaxTree for CallName {
 impl AbstractSyntaxTree for Match {
     type From = parse::Match;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<(Self, Vec<Warning>), RichError> {
         let scrutinee_ty = from.scrutinee_type();
         let scrutinee_ty = scope.resolve(&scrutinee_ty).with_span(from)?;
-        let scrutinee =
-            Expression::analyze(from.scrutinee(), &scrutinee_ty, scope).map(Arc::new)?;
+        let (scrutinee, scrutinee_warnings) =
+            Expression::analyze(from.scrutinee(), &scrutinee_ty, scope)?;
 
         scope.push_scope();
         if let Some((pat_l, ty_l)) = from.left().pattern().as_typed_pattern() {
@@ -1407,7 +1927,7 @@ impl AbstractSyntaxTree for Match {
                 scope.insert_variable(identifier, ty);
             }
         }
-        let ast_l = Expression::analyze(from.left().expression(), ty, scope).map(Arc::new)?;
+        let (ast_l, mut ast_l_warnings) = Expression::analyze(from.left().expression(), ty, scope)?;
         scope.pop_scope();
         scope.push_scope();
         if let Some((pat_r, ty_r)) = from.right().pattern().as_typed_pattern() {
@@ -1417,42 +1937,51 @@ impl AbstractSyntaxTree for Match {
                 scope.insert_variable(identifier, ty);
             }
         }
-        let ast_r = Expression::analyze(from.right().expression(), ty, scope).map(Arc::new)?;
+        let (ast_r, mut ast_r_warnings) =
+            Expression::analyze(from.right().expression(), ty, scope)?;
         scope.pop_scope();
 
-        Ok(Self {
-            scrutinee,
-            left: MatchArm {
-                pattern: from.left().pattern().clone(),
-                expression: ast_l,
+        let mut all_warnings = scrutinee_warnings;
+        all_warnings.append(&mut ast_l_warnings);
+        all_warnings.append(&mut ast_r_warnings);
+
+        Ok((
+            Self {
+                scrutinee: Arc::new(scrutinee),
+                left: MatchArm {
+                    pattern: from.left().pattern().clone(),
+                    expression: Arc::new(ast_l),
+                },
+                right: MatchArm {
+                    pattern: from.right().pattern().clone(),
+                    expression: Arc::new(ast_r),
+                },
+                span: *from.as_ref(),
             },
-            right: MatchArm {
-                pattern: from.right().pattern().clone(),
-                expression: ast_r,
-            },
-            span: *from.as_ref(),
-        })
+            all_warnings,
+        ))
     }
 }
 
 fn analyze_named_module(
     name: ModuleName,
     from: &parse::ModuleProgram,
-) -> Result<HashMap<WitnessName, Value>, RichError> {
+) -> Result<(HashMap<WitnessName, Value>, Vec<Warning>), RichError> {
     let unit = ResolvedType::unit();
     let mut scope = Scope::default();
-    let items = from
+    let items: Vec<(ModuleItem, Vec<Warning>)> = from
         .items()
         .iter()
         .map(|s| ModuleItem::analyze(s, &unit, &mut scope))
-        .collect::<Result<Vec<ModuleItem>, RichError>>()?;
+        .collect::<Result<_, RichError>>()?;
+
     debug_assert!(scope.is_topmost());
-    let mut iter = items.into_iter().filter_map(|item| match item {
-        ModuleItem::Module(module) if module.name == name => Some(module),
+    let mut iter = items.into_iter().filter_map(|(item, warnings)| match item {
+        ModuleItem::Module(module) if module.name == name => Some((module, warnings)),
         _ => None,
     });
-    let Some(witness_module) = iter.next() else {
-        return Ok(HashMap::new()); // "not present" is equivalent to empty
+    let Some((witness_module, warnings)) = iter.next() else {
+        return Ok((HashMap::new(), vec![])); // "not present" is equivalent to empty
     };
     if iter.next().is_some() {
         return Err(Error::ModuleRedefined(name)).with_span(from);
@@ -1468,32 +1997,43 @@ fn analyze_named_module(
             assignment.value().clone(),
         );
     }
-    Ok(map)
+    Ok((map, warnings))
 }
 
 impl WitnessValues {
-    pub fn analyze(from: &parse::ModuleProgram) -> Result<Self, RichError> {
-        analyze_named_module(ModuleName::witness(), from).map(Self::from)
+    pub fn analyze(from: &parse::ModuleProgram) -> Result<(Self, Vec<Warning>), RichError> {
+        analyze_named_module(ModuleName::witness(), from)
+            .map(|(i, warnings)| (Self::from(i), warnings))
     }
 }
 
 impl crate::witness::Arguments {
-    pub fn analyze(from: &parse::ModuleProgram) -> Result<Self, RichError> {
-        analyze_named_module(ModuleName::param(), from).map(Self::from)
+    pub fn analyze(from: &parse::ModuleProgram) -> Result<(Self, Vec<Warning>), RichError> {
+        analyze_named_module(ModuleName::param(), from).map(|(i, warning)| (Self::from(i), warning))
     }
 }
 
 impl AbstractSyntaxTree for ModuleItem {
     type From = parse::ModuleItem;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<(Self, Vec<Warning>), RichError> {
         assert!(ty.is_unit(), "Items cannot return anything");
         assert!(scope.is_topmost(), "Items live in the topmost scope only");
         match from {
-            parse::ModuleItem::Ignored => Ok(Self::Ignored),
-            parse::ModuleItem::Module(witness_module) => {
-                Module::analyze(witness_module, ty, scope).map(Self::Module)
+            parse::ModuleItem::Ignored => {
+                // TODO: confirm if this is a warning.
+                // TODO: find the correct span
+                Ok((
+                    Self::Ignored,
+                    vec![Warning::module_item_ignored(Span::new(0, 0))],
+                ))
             }
+            parse::ModuleItem::Module(witness_module) => Module::analyze(witness_module, ty, scope)
+                .map(|(m, warning)| (Self::Module(m), warning)),
         }
     }
 }
@@ -1501,40 +2041,61 @@ impl AbstractSyntaxTree for ModuleItem {
 impl AbstractSyntaxTree for Module {
     type From = parse::Module;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<(Self, Vec<Warning>), RichError> {
         assert!(ty.is_unit(), "Modules cannot return anything");
         assert!(scope.is_topmost(), "Modules live in the topmost scope only");
-        let assignments = from
+        let assignments: Vec<(ModuleAssignment, Vec<Warning>)> = from
             .assignments()
             .iter()
             .map(|s| ModuleAssignment::analyze(s, ty, scope))
-            .collect::<Result<Arc<[ModuleAssignment]>, RichError>>()?;
+            .collect::<Result<_, RichError>>()?;
         debug_assert!(scope.is_topmost());
 
-        Ok(Self {
-            name: from.name().shallow_clone(),
-            span: *from.as_ref(),
-            assignments,
-        })
+        let mut all_warnings = vec![];
+        let mut all_assignments = vec![];
+        for (a, mut warnings) in assignments {
+            all_warnings.append(&mut warnings);
+            all_assignments.push(a);
+        }
+
+        Ok((
+            Self {
+                name: from.name().shallow_clone(),
+                span: *from.as_ref(),
+                assignments: all_assignments.into(),
+            },
+            all_warnings,
+        ))
     }
 }
 
 impl AbstractSyntaxTree for ModuleAssignment {
     type From = parse::ModuleAssignment;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<(Self, Vec<Warning>), RichError> {
         assert!(ty.is_unit(), "Assignments cannot return anything");
         let ty_expr = scope.resolve(from.ty()).with_span(from)?;
-        let expression = Expression::analyze(from.expression(), &ty_expr, scope)?;
+        let (expression, warnings) = Expression::analyze(from.expression(), &ty_expr, scope)?;
         let value = Value::from_const_expr(&expression)
             .ok_or(Error::ExpressionUnexpectedType(ty_expr.clone()))
             .with_span(from.expression())?;
 
-        Ok(Self {
-            name: from.name().clone(),
-            value,
-            span: *from.as_ref(),
-        })
+        Ok((
+            Self {
+                name: from.name().clone(),
+                value,
+                span: *from.as_ref(),
+            },
+            warnings,
+        ))
     }
 }
 
@@ -1577,5 +2138,250 @@ impl AsRef<Span> for Module {
 impl AsRef<Span> for ModuleAssignment {
     fn as_ref(&self) -> &Span {
         &self.span
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use simplicity::jet::Elements;
+
+    use crate::parse::InfixOp;
+    use crate::types::{ResolvedType, TypeConstructible};
+
+    use super::determine_infix_arith_op_jet;
+
+    // --- infix_op_jet: Add ---
+
+    #[test]
+    fn infix_op_jet_add_u8() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Add, &ResolvedType::u8()).unwrap();
+        assert_eq!(jet, Elements::Add8);
+        assert_eq!(arg, ResolvedType::u8());
+        assert!(carry);
+    }
+
+    #[test]
+    fn infix_op_jet_add_u16() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Add, &ResolvedType::u16()).unwrap();
+        assert_eq!(jet, Elements::Add16);
+        assert_eq!(arg, ResolvedType::u16());
+        assert!(carry);
+    }
+
+    #[test]
+    fn infix_op_jet_add_u32() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Add, &ResolvedType::u32()).unwrap();
+        assert_eq!(jet, Elements::Add32);
+        assert_eq!(arg, ResolvedType::u32());
+        assert!(carry);
+    }
+
+    #[test]
+    fn infix_op_jet_add_u64() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Add, &ResolvedType::u64()).unwrap();
+        assert_eq!(jet, Elements::Add64);
+        assert_eq!(arg, ResolvedType::u64());
+        assert!(carry);
+    }
+
+    // --- infix_op_jet: Sub ---
+
+    #[test]
+    fn infix_op_jet_sub_u8() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Sub, &ResolvedType::u8()).unwrap();
+        assert_eq!(jet, Elements::Subtract8);
+        assert_eq!(arg, ResolvedType::u8());
+        assert!(carry);
+    }
+
+    #[test]
+    fn infix_op_jet_sub_u16() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Sub, &ResolvedType::u16()).unwrap();
+        assert_eq!(jet, Elements::Subtract16);
+        assert_eq!(arg, ResolvedType::u16());
+        assert!(carry);
+    }
+
+    #[test]
+    fn infix_op_jet_sub_u32() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Sub, &ResolvedType::u32()).unwrap();
+        assert_eq!(jet, Elements::Subtract32);
+        assert_eq!(arg, ResolvedType::u32());
+        assert!(carry);
+    }
+
+    #[test]
+    fn infix_op_jet_sub_u64() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Sub, &ResolvedType::u64()).unwrap();
+        assert_eq!(jet, Elements::Subtract64);
+        assert_eq!(arg, ResolvedType::u64());
+        assert!(carry);
+    }
+
+    // --- infix_op_jet: Mul ---
+
+    #[test]
+    fn infix_op_jet_mul_u16() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Mul, &ResolvedType::u16()).unwrap();
+        assert_eq!(jet, Elements::Multiply8);
+        assert_eq!(arg, ResolvedType::u8());
+        assert!(!carry);
+    }
+
+    #[test]
+    fn infix_op_jet_mul_u32() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Mul, &ResolvedType::u32()).unwrap();
+        assert_eq!(jet, Elements::Multiply16);
+        assert_eq!(arg, ResolvedType::u16());
+        assert!(!carry);
+    }
+
+    #[test]
+    fn infix_op_jet_mul_u64() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Mul, &ResolvedType::u64()).unwrap();
+        assert_eq!(jet, Elements::Multiply32);
+        assert_eq!(arg, ResolvedType::u32());
+        assert!(!carry);
+    }
+
+    #[test]
+    fn infix_op_jet_mul_u128() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Mul, &ResolvedType::u128()).unwrap();
+        assert_eq!(jet, Elements::Multiply64);
+        assert_eq!(arg, ResolvedType::u64());
+        assert!(!carry);
+    }
+
+    // --- infix_op_jet: Div ---
+
+    #[test]
+    fn infix_op_jet_div_u8() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Div, &ResolvedType::u8()).unwrap();
+        assert_eq!(jet, Elements::Divide8);
+        assert_eq!(arg, ResolvedType::u8());
+        assert!(!carry);
+    }
+
+    #[test]
+    fn infix_op_jet_div_u16() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Div, &ResolvedType::u16()).unwrap();
+        assert_eq!(jet, Elements::Divide16);
+        assert_eq!(arg, ResolvedType::u16());
+        assert!(!carry);
+    }
+
+    #[test]
+    fn infix_op_jet_div_u32() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Div, &ResolvedType::u32()).unwrap();
+        assert_eq!(jet, Elements::Divide32);
+        assert_eq!(arg, ResolvedType::u32());
+        assert!(!carry);
+    }
+
+    #[test]
+    fn infix_op_jet_div_u64() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Div, &ResolvedType::u64()).unwrap();
+        assert_eq!(jet, Elements::Divide64);
+        assert_eq!(arg, ResolvedType::u64());
+        assert!(!carry);
+    }
+
+    // --- infix_op_jet: Rem ---
+
+    #[test]
+    fn infix_op_jet_rem_u8() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Rem, &ResolvedType::u8()).unwrap();
+        assert_eq!(jet, Elements::Modulo8);
+        assert_eq!(arg, ResolvedType::u8());
+        assert!(!carry);
+    }
+
+    #[test]
+    fn infix_op_jet_rem_u16() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Rem, &ResolvedType::u16()).unwrap();
+        assert_eq!(jet, Elements::Modulo16);
+        assert_eq!(arg, ResolvedType::u16());
+        assert!(!carry);
+    }
+
+    #[test]
+    fn infix_op_jet_rem_u32() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Rem, &ResolvedType::u32()).unwrap();
+        assert_eq!(jet, Elements::Modulo32);
+        assert_eq!(arg, ResolvedType::u32());
+        assert!(!carry);
+    }
+
+    #[test]
+    fn infix_op_jet_rem_u64() {
+        let (jet, arg, carry) =
+            determine_infix_arith_op_jet(&InfixOp::Rem, &ResolvedType::u64()).unwrap();
+        assert_eq!(jet, Elements::Modulo64);
+        assert_eq!(arg, ResolvedType::u64());
+        assert!(!carry);
+    }
+
+    // --- infix_op_jet: error cases ---
+
+    #[test]
+    fn infix_op_jet_add_wrong_type_unit() {
+        let result = determine_infix_arith_op_jet(&InfixOp::Add, &ResolvedType::unit());
+        assert!(
+            result.is_err(),
+            "Expected Err for Add with unit output type"
+        );
+    }
+
+    #[test]
+    fn infix_op_jet_sub_wrong_type_unit() {
+        let result = determine_infix_arith_op_jet(&InfixOp::Sub, &ResolvedType::unit());
+        assert!(
+            result.is_err(),
+            "Expected Err for Sub with unit output type"
+        );
+    }
+
+    #[test]
+    fn infix_op_jet_mul_wrong_type_u8() {
+        // `*` on u8 inputs would produce u16, so u8 as output type is wrong
+        let result = determine_infix_arith_op_jet(&InfixOp::Mul, &ResolvedType::u8());
+        assert!(result.is_err(), "Expected Err for Mul with u8 output type");
+    }
+
+    #[test]
+    fn infix_op_jet_div_wrong_type_bool() {
+        let result = determine_infix_arith_op_jet(&InfixOp::Div, &ResolvedType::boolean());
+        assert!(
+            result.is_err(),
+            "Expected Err for Div with bool output type"
+        );
+    }
+
+    #[test]
+    fn infix_op_jet_rem_wrong_type_bool() {
+        let result = determine_infix_arith_op_jet(&InfixOp::Rem, &ResolvedType::boolean());
+        assert!(
+            result.is_err(),
+            "Expected Err for Rem with bool output type"
+        );
     }
 }

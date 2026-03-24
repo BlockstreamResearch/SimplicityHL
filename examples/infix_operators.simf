@@ -1,0 +1,86 @@
+/*
+ * INFIX OPERATORS
+ *
+ * Demonstrates all infix operators: +, -, *, /, %, &, |, ^, &&, ||, ==, !=, <, <=, >, >=
+ *
+ * Addition and subtraction panic at runtime on overflow/underflow.
+ * Multiplication returns a type twice the width of the operands (no overflow).
+ * Division and modulo return the same type as the operands.
+ * Bitwise operators return the same type as the operands.
+ * Logical operators short-circuit and return bool.
+ * Comparison operators return bool.
+ *
+ * Arithmetic operators require: simc -Z infix_arithmetic_operators
+ */
+fn main() {
+    let a: u8 = 20;
+    let b: u8 = 6;
+
+    // run `simc` with `-Z infix_arithmetic_operators` to allow these.
+    // Addition: u8 + u8 → u8, panics on overflow
+    // let sum: u8 = a + b;
+    // assert!(jet::eq_8(sum, 26));
+
+    // Subtraction: u8 - u8 → u8, panics on underflow
+    // let diff: u8 = a - b;
+    // assert!(jet::eq_8(diff, 14));
+
+    // Multiplication: u8 * u8 → u16 (full precision, no overflow possible)
+    // let product: u16 = a * b;
+    // assert!(jet::eq_16(product, 120));
+
+    // Division: u8 / u8 → u8, panics if divisor is zero
+    // let quotient: u8 = a / b;
+    // assert!(jet::eq_8(quotient, 3));
+
+    // Modulo: u8 % u8 → u8, panics if divisor is zero
+    // let remainder: u8 = a % b;
+    // assert!(jet::eq_8(remainder, 2));
+
+    // Bitwise AND: u8 & u8 → u8
+    let and: u8 = a & b;
+    assert!(jet::eq_8(and, 4));   // 0b00010100 & 0b00000110 = 0b00000100
+
+    // Bitwise OR: u8 | u8 → u8
+    let or: u8 = a | b;
+    assert!(jet::eq_8(or, 22));   // 0b00010100 | 0b00000110 = 0b00010110
+
+    // Bitwise XOR: u8 ^ u8 → u8
+    let xor: u8 = a ^ b;
+    assert!(jet::eq_8(xor, 18));  // 0b00010100 ^ 0b00000110 = 0b00010010
+
+    // Logical AND: bool && bool → bool, short-circuits (rhs not evaluated if lhs is false)
+    let a_eq_a: bool = a == a;  // true
+    let b_eq_b: bool = b == b;  // true
+    let a_eq_b: bool = a == b;  // false
+    assert!(a_eq_a && b_eq_b);  // true && true = true
+    assert!(true && true);
+    // false && _ short-circuits to false:
+    let and_false: bool = a_eq_b && b_eq_b;
+    assert!(match and_false { false => true, true => false, });
+
+    // Logical OR: bool || bool → bool, short-circuits (rhs not evaluated if lhs is true)
+    assert!(a_eq_a || a_eq_b);  // true || _ = true (rhs not evaluated)
+    assert!(false || true);
+    // false || false = false:
+    let or_false: bool = a_eq_b || a_eq_b;
+    assert!(match or_false { false => true, true => false, });
+
+    // Equality: u8 == u8 → bool
+    assert!(a == a);   // 20 == 20 is true
+    assert!(a != b);   // 20 != 6 is true
+
+    // Less than: u8 < u8 → bool
+    assert!(b < a);   // 6 < 20
+
+    // Greater than: u8 > u8 → bool
+    assert!(a > b);   // 20 > 6
+
+    // Less or equal: u8 <= u8 → bool
+    assert!(b <= a);  // 6 <= 20
+    assert!(b <= b);  // 6 <= 6
+
+    // Greater or equal: u8 >= u8 → bool
+    assert!(a >= b);  // 20 >= 6
+    assert!(a >= a);  // 20 >= 20
+}

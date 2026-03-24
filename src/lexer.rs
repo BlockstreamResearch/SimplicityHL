@@ -19,20 +19,64 @@ pub enum Token<'src> {
     Match,
 
     // Control symbols
+    /// `->`
     Arrow,
+    /// `:`
     Colon,
+    /// `;`
     Semi,
+    /// `,`
     Comma,
+    /// `=`
     Eq,
+    /// `=>`
     FatArrow,
+    /// `(`
     LParen,
+    /// `)`
     RParen,
+    /// `[`
     LBracket,
+    /// `]`
     RBracket,
+    /// `{`
     LBrace,
+    /// `}`
     RBrace,
+    /// `<`
     LAngle,
+    /// `>`
     RAngle,
+
+    // Infix operators
+    /// `+`
+    Plus,
+    /// `-`
+    Minus,
+    /// `*`
+    Star,
+    /// `/`
+    Slash,
+    /// `%`
+    Percent,
+    /// `&&`
+    AmpAmp,
+    /// `||`
+    PipePipe,
+    /// `&`
+    Ampersand,
+    /// `|`
+    Pipe,
+    /// `^`
+    Caret,
+    /// `==`
+    EqEq,
+    /// `!=`
+    BangEq,
+    /// `<=`
+    LtEq,
+    /// `>=`
+    GtEq,
 
     // Number literals
     DecLiteral(Decimal),
@@ -84,6 +128,21 @@ impl<'src> fmt::Display for Token<'src> {
             Token::RBrace => write!(f, "}}"),
             Token::LAngle => write!(f, "<"),
             Token::RAngle => write!(f, ">"),
+
+            Token::Plus => write!(f, "+"),
+            Token::Minus => write!(f, "-"),
+            Token::Star => write!(f, "*"),
+            Token::Slash => write!(f, "/"),
+            Token::Percent => write!(f, "%"),
+            Token::AmpAmp => write!(f, "&&"),
+            Token::PipePipe => write!(f, "||"),
+            Token::Ampersand => write!(f, "&"),
+            Token::Pipe => write!(f, "|"),
+            Token::Caret => write!(f, "^"),
+            Token::EqEq => write!(f, "=="),
+            Token::BangEq => write!(f, "!="),
+            Token::LtEq => write!(f, "<="),
+            Token::GtEq => write!(f, ">="),
 
             Token::DecLiteral(s) => write!(f, "{}", s),
             Token::HexLiteral(s) => write!(f, "0x{}", s),
@@ -159,20 +218,38 @@ pub fn lexer<'src>(
         .map(Token::Param);
 
     let op = choice((
-        just("->").to(Token::Arrow),
-        just("=>").to(Token::FatArrow),
-        just("=").to(Token::Eq),
-        just(":").to(Token::Colon),
-        just(";").to(Token::Semi),
-        just(",").to(Token::Comma),
-        just("(").to(Token::LParen),
-        just(")").to(Token::RParen),
-        just("[").to(Token::LBracket),
-        just("]").to(Token::RBracket),
-        just("{").to(Token::LBrace),
-        just("}").to(Token::RBrace),
-        just("<").to(Token::LAngle),
-        just(">").to(Token::RAngle),
+        choice((
+            just("->").to(Token::Arrow),
+            just("=>").to(Token::FatArrow),
+            just("==").to(Token::EqEq),
+            just("!=").to(Token::BangEq),
+            just("=").to(Token::Eq),
+            just(":").to(Token::Colon),
+            just(";").to(Token::Semi),
+            just(",").to(Token::Comma),
+            just("(").to(Token::LParen),
+            just(")").to(Token::RParen),
+            just("[").to(Token::LBracket),
+            just("]").to(Token::RBracket),
+            just("{").to(Token::LBrace),
+            just("}").to(Token::RBrace),
+        )),
+        choice((
+            just("<=").to(Token::LtEq),
+            just("<").to(Token::LAngle),
+            just(">=").to(Token::GtEq),
+            just(">").to(Token::RAngle),
+            just("+").to(Token::Plus),
+            just("-").to(Token::Minus),
+            just("*").to(Token::Star),
+            just("/").to(Token::Slash),
+            just("%").to(Token::Percent),
+            just("&&").to(Token::AmpAmp),
+            just("||").to(Token::PipePipe),
+            just("&").to(Token::Ampersand),
+            just("|").to(Token::Pipe),
+            just("^").to(Token::Caret),
+        )),
     ));
 
     let comment = just("//")
@@ -258,6 +335,167 @@ mod tests {
         let (tokens, errors) = lexer().parse(input).into_output_errors();
         let tokens = tokens.map(|vec| vec.iter().map(|(tok, _)| tok.clone()).collect::<Vec<_>>());
         (tokens, errors)
+    }
+
+    /// Helper function to get the variant name of a token
+    fn variant_name(token: &Token) -> &'static str {
+        match token {
+            Token::Fn => "Fn",
+            Token::Let => "Let",
+            Token::Type => "Type",
+            Token::Mod => "Mod",
+            Token::Const => "Const",
+            Token::Match => "Match",
+            Token::Arrow => "Arrow",
+            Token::Colon => "Colon",
+            Token::Semi => "Semi",
+            Token::Comma => "Comma",
+            Token::Eq => "Eq",
+            Token::FatArrow => "FatArrow",
+            Token::LParen => "LParen",
+            Token::RParen => "RParen",
+            Token::LBracket => "LBracket",
+            Token::RBracket => "RBracket",
+            Token::LBrace => "LBrace",
+            Token::RBrace => "RBrace",
+            Token::LAngle => "LAngle",
+            Token::RAngle => "RAngle",
+            Token::Plus => "Plus",
+            Token::Minus => "Minus",
+            Token::Star => "Star",
+            Token::Slash => "Slash",
+            Token::Percent => "Percent",
+            Token::AmpAmp => "AmpAmp",
+            Token::PipePipe => "PipePipe",
+            Token::Ampersand => "Ampersand",
+            Token::Pipe => "Pipe",
+            Token::Caret => "Caret",
+            Token::EqEq => "EqEq",
+            Token::BangEq => "BangEq",
+            Token::LtEq => "LtEq",
+            Token::GtEq => "GtEq",
+            Token::DecLiteral(_) => "DecLiteral",
+            Token::HexLiteral(_) => "HexLiteral",
+            Token::BinLiteral(_) => "BinLiteral",
+            Token::Bool(_) => "Bool",
+            Token::Ident(_) => "Ident",
+            Token::Jet(_) => "Jet",
+            Token::Witness(_) => "Witness",
+            Token::Param(_) => "Param",
+            Token::Macro(_) => "Macro",
+            Token::Comment => "Comment",
+            Token::BlockComment => "BlockComment",
+        }
+    }
+
+    /// Macro to assert that a sequence of tokens matches the expected variant types
+    macro_rules! assert_tokens_match {
+        ($tokens:expr, $($expected:ident),* $(,)?) => {
+            {
+                let tokens = $tokens.as_ref().expect("Expected Some tokens");
+                let expected_variants = vec![$( stringify!($expected) ),*];
+
+                assert_eq!(
+                    tokens.len(),
+                    expected_variants.len(),
+                    "Expected {} tokens, got {}.\nTokens: {:?}",
+                    expected_variants.len(),
+                    tokens.len(),
+                    tokens
+                );
+
+                for (idx, (token, expected_variant)) in tokens.iter().zip(expected_variants.iter()).enumerate() {
+                    let actual_variant = variant_name(token);
+                    assert_eq!(
+                        actual_variant,
+                        *expected_variant,
+                        "Token at index {} does not match: expected {}, got {} (token: {:?})",
+                        idx,
+                        expected_variant,
+                        actual_variant,
+                        token
+                    );
+                }
+            }
+        };
+    }
+
+    #[test]
+    fn test_infix_add() {
+        let input = "b1 + b2";
+        let (tokens, errors) = lex(input);
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_tokens_match!(tokens, Ident, Plus, Ident);
+    }
+
+    #[test]
+    fn test_infix_subtract() {
+        let input = "b1 - b2";
+        let (tokens, errors) = lex(input);
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_tokens_match!(tokens, Ident, Minus, Ident);
+    }
+
+    #[test]
+    fn test_infix_multiply() {
+        let input = "b1 * b2";
+        let (tokens, errors) = lex(input);
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_tokens_match!(tokens, Ident, Star, Ident);
+    }
+
+    #[test]
+    fn test_infix_divide() {
+        let input = "b1 / b2";
+        let (tokens, errors) = lex(input);
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_tokens_match!(tokens, Ident, Slash, Ident);
+    }
+
+    #[test]
+    fn test_infix_modulo() {
+        let input = "b1 % b2";
+        let (tokens, errors) = lex(input);
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_tokens_match!(tokens, Ident, Percent, Ident);
+    }
+
+    #[test]
+    fn test_infix_in_let_binding() {
+        let input = "let b3 : u8 = b1 + b2;";
+        let (tokens, errors) = lex(input);
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_tokens_match!(tokens, Let, Ident, Colon, Ident, Eq, Ident, Plus, Ident, Semi);
+    }
+
+    #[test]
+    fn test_slash_not_confused_with_comments() {
+        // `/` alone must lex as Slash, not the start of `//` or `/*`
+        let input = "a / b";
+        let (tokens, errors) = lex(input);
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_tokens_match!(tokens, Ident, Slash, Ident);
+
+        // `//` must lex as a comment, not two Slash tokens
+        let input = "a // b";
+        let (tokens, errors) = lex(input);
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_tokens_match!(tokens, Ident, Comment);
+
+        // `/*` must lex as a block comment, not Slash followed by Star
+        let input = "a /* b */";
+        let (tokens, errors) = lex(input);
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_tokens_match!(tokens, Ident, BlockComment);
+    }
+
+    #[test]
+    fn test_arrow_not_confused_with_minus() {
+        // `->` must lex as Arrow, not Minus followed by RAngle
+        let input = "fn foo() -> u8";
+        let (tokens, errors) = lex(input);
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_tokens_match!(tokens, Fn, Ident, LParen, RParen, Arrow, Ident);
     }
 
     #[test]
