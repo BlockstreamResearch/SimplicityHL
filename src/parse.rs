@@ -26,7 +26,7 @@ use crate::str::{
     AliasName, Binary, Decimal, FunctionName, Hexadecimal, Identifier, JetName, ModuleName,
     WitnessName,
 };
-use crate::types::{AliasedType, BuiltinAlias, TypeConstructible};
+use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
 
 /// A program is a sequence of items.
 #[derive(Clone, Debug)]
@@ -1002,26 +1002,17 @@ impl ChumskyParse for AliasedType {
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
         let atom = select! {
-            Token::Ident(ident) => {
-                match ident
-                {
-                    "u1" => AliasedType::u1(),
-                    "u2" =>  AliasedType::u2(),
-                    "u4" =>  AliasedType::u4(),
-                    "u8" => AliasedType::u8(),
-                    "u16" => AliasedType::u16(),
-                    "u32" => AliasedType::u32(),
-                    "u64" => AliasedType::u64(),
-                    "u128" => AliasedType::u128(),
-                    "u256" => AliasedType::u256(),
-                    "Ctx8" | "Pubkey" | "Message64" | "Message" | "Signature" | "Scalar" | "Fe" | "Gej"
-                    | "Ge" | "Point" | "Height" | "Time" | "Distance" | "Duration" | "Lock" | "Outpoint"
-                    | "Confidential1" | "ExplicitAsset" | "Asset1" | "ExplicitAmount" | "Amount1"
-                    | "ExplicitNonce" | "Nonce" | "TokenAmount1" => AliasedType::builtin(BuiltinAlias::from_str(ident).unwrap()),
-                    "bool" => AliasedType::boolean(),
-                    _ => AliasedType::alias(AliasName::from_str_unchecked(ident)),
+                Token::Ident(ident) => {
+                    if ident == "bool" {
+                        AliasedType::boolean()
+                    } else if let Ok(uint_type) = UIntType::from_str(ident) {
+                        AliasedType::from(uint_type)
+                    } else if let Ok(builtin) = BuiltinAlias::from_str(ident) {
+                        AliasedType::builtin(builtin)
+                    } else {
+                        AliasedType::alias(AliasName::from_str_unchecked(ident))
+                    }
                 }
-            },
         };
 
         let num = select! {
@@ -1461,7 +1452,25 @@ impl ChumskyParse for TypeAlias {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
-        let name = AliasName::parser().map_with(|name, e| (name, e.span()));
+        let name = AliasName::parser()
+            .validate(|name, e, emit| {
+                let ident = name.as_inner();
+                let known_type = if ident == "bool" {
+                    Some(AliasedType::boolean())
+                } else if let Ok(uint_type) = UIntType::from_str(ident) {
+                    Some(AliasedType::from(uint_type))
+                } else if let Ok(builtin) = BuiltinAlias::from_str(ident) {
+                    Some(AliasedType::builtin(builtin))
+                } else {
+                    None
+                };
+
+                if known_type.is_some() {
+                    emit.emit(Error::RedefinedAliasAsBuiltin(name.clone()).with_span(e.span()));
+                }
+                name
+            })
+            .map_with(|name, e| (name, e.span()));
 
         just(Token::Type)
             .ignore_then(name)
@@ -2161,5 +2170,21 @@ impl crate::ArbitraryRec for Match {
             },
             span: Span::DUMMY,
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_reject_redefined_builtin_type() {
+        let ty = TypeAlias::parse_from_str("type Ctx8 = u32")
+            .expect_err("Redifining built-in alias should be rejected");
+
+        assert_eq!(
+            ty.error(),
+            &Error::RedefinedAliasAsBuiltin(AliasName::from_str_unchecked("Ctx8"))
+        );
     }
 }

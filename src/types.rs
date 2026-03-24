@@ -37,7 +37,7 @@ impl<A> TypeInner<A> {
         match self {
             TypeInner::Either(_, _) => match n_children_yielded {
                 0 => f.write_str("Either<"),
-                1 => f.write_str(","),
+                1 => f.write_str(", "),
                 n => {
                     debug_assert_eq!(n, 2);
                     f.write_str(">")
@@ -189,6 +189,25 @@ impl fmt::Display for UIntType {
             UIntType::U64 => f.write_str("u64"),
             UIntType::U128 => f.write_str("u128"),
             UIntType::U256 => f.write_str("u256"),
+        }
+    }
+}
+
+impl FromStr for UIntType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "u1" => Ok(UIntType::U1),
+            "u2" => Ok(UIntType::U2),
+            "u4" => Ok(UIntType::U4),
+            "u8" => Ok(UIntType::U8),
+            "u16" => Ok(UIntType::U16),
+            "u32" => Ok(UIntType::U32),
+            "u64" => Ok(UIntType::U64),
+            "u128" => Ok(UIntType::U128),
+            "u256" => Ok(UIntType::U256),
+            _ => Err("Unknown integer type".to_string()),
         }
     }
 }
@@ -1094,5 +1113,7 @@ mod tests {
         assert_eq!("[(); 3]", &array.to_string());
         let list = ResolvedType::list(ResolvedType::unit(), NonZeroPow2Usize::TWO);
         assert_eq!("List<(), 2>", &list.to_string());
+        let either = ResolvedType::either(ResolvedType::unit(), ResolvedType::u32());
+        assert_eq!("Either<(), u32>", &either.to_string());
     }
 }

@@ -429,6 +429,7 @@ pub enum Error {
     IntegerOutOfBounds(UIntType),
     UndefinedVariable(Identifier),
     RedefinedAlias(AliasName),
+    RedefinedAliasAsBuiltin(AliasName),
     UndefinedAlias(AliasName),
     VariableReuseInPattern(Identifier),
     WitnessReused(WitnessName),
@@ -550,6 +551,10 @@ impl fmt::Display for Error {
             Error::RedefinedAlias(identifier) => write!(
                 f,
                 "Type alias `{identifier}` was defined multiple times"
+            ),
+            Error::RedefinedAliasAsBuiltin(identifier) => write!(
+                f,
+                "Type alias `{identifier}` is already exists as built-in alias"
             ),
             Error::UndefinedAlias(identifier) => write!(
                 f,
