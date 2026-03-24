@@ -656,9 +656,9 @@ impl Match {
         scope.insert(
             self.left()
                 .pattern()
-                .as_variable()
+                .as_pattern()
                 .cloned()
-                .map_or(Pattern::Ignore, Pattern::Identifier),
+                .unwrap_or(Pattern::Ignore),
         );
         let left = self.left().expression().compile(scope)?;
         scope.pop_scope();
@@ -667,9 +667,9 @@ impl Match {
         scope.insert(
             self.right()
                 .pattern()
-                .as_variable()
+                .as_pattern()
                 .cloned()
-                .map_or(Pattern::Ignore, Pattern::Identifier),
+                .unwrap_or(Pattern::Ignore),
         );
         let right = self.right().expression().compile(scope)?;
         scope.pop_scope();

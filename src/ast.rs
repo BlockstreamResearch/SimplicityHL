@@ -1400,16 +1400,22 @@ impl AbstractSyntaxTree for Match {
             Expression::analyze(from.scrutinee(), &scrutinee_ty, scope).map(Arc::new)?;
 
         scope.push_scope();
-        if let Some((id_l, ty_l)) = from.left().pattern().as_typed_variable() {
+        if let Some((pat_l, ty_l)) = from.left().pattern().as_typed_pattern() {
             let ty_l = scope.resolve(ty_l).with_span(from)?;
-            scope.insert_variable(id_l.clone(), ty_l);
+            let typed_variables = pat_l.is_of_type(&ty_l).with_span(from)?;
+            for (identifier, ty) in typed_variables {
+                scope.insert_variable(identifier, ty);
+            }
         }
         let ast_l = Expression::analyze(from.left().expression(), ty, scope).map(Arc::new)?;
         scope.pop_scope();
         scope.push_scope();
-        if let Some((id_r, ty_r)) = from.right().pattern().as_typed_variable() {
+        if let Some((pat_r, ty_r)) = from.right().pattern().as_typed_pattern() {
             let ty_r = scope.resolve(ty_r).with_span(from)?;
-            scope.insert_variable(id_r.clone(), ty_r);
+            let typed_variables = pat_r.is_of_type(&ty_r).with_span(from)?;
+            for (identifier, ty) in typed_variables {
+                scope.insert_variable(identifier, ty);
+            }
         }
         let ast_r = Expression::analyze(from.right().expression(), ty, scope).map(Arc::new)?;
         scope.pop_scope();
