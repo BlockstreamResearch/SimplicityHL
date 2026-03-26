@@ -5,6 +5,7 @@ use std::sync::Arc;
 use chumsky::error::Error as ChumskyError;
 use chumsky::input::ValueInput;
 use chumsky::label::LabelError;
+use chumsky::text::Char;
 use chumsky::util::MaybeRef;
 use chumsky::DefaultExpected;
 
@@ -193,19 +194,20 @@ impl fmt::Display for RichError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fn get_line_col(file: &str, offset: usize) -> (usize, usize) {
             let mut line = 1;
-            let mut last_newline_offset = 0;
+            let mut col = 0;
 
             let slice = file.get(0..offset).unwrap_or_default();
 
-            for (i, byte) in slice.bytes().enumerate() {
-                if byte == b'\n' {
+            for char in slice.chars() {
+                if char.is_newline() {
                     line += 1;
-                    last_newline_offset = i;
+                    col = 0;
+                } else {
+                    col += char.len_utf16();
                 }
             }
 
-            let col = (offset - last_newline_offset) + 1;
-            (line, col)
+            (line, col + 1)
         }
 
         match self.file {
@@ -701,5 +703,21 @@ let x: u32 = Left(
             .with_file(Arc::from(EMPTY_FILE));
         let expected = "Cannot parse: This error has an empty file";
         assert_eq!(&expected, &error.to_string());
+    }
+
+    #[test]
+    fn display_with_utf16_chars() {
+        let file = "/*😀*/ let a: u8 = 65536;";
+        let error = Error::CannotParse("number too large to fit in target type".to_string())
+            .with_span(Span::new(21, 26))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | /*😀*/ let a: u8 = 65536;
+  |                    ^^^^^ Cannot parse: number too large to fit in target type"#;
+
+        println!("{error}");
+        assert_eq!(&expected[1..], &error.to_string());
     }
 }
