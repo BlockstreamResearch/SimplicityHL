@@ -223,7 +223,9 @@ impl fmt::Display for RichError {
                 writeln!(f, "{:width$} |", " ", width = line_num_width)?;
 
                 let mut lines = file.lines().skip(start_line_index).peekable();
-                let start_line_len = lines.peek().map_or(0, |l| l.len());
+                let start_line_len = lines
+                    .peek()
+                    .map_or(0, |l| l.chars().map(char::len_utf16).sum());
 
                 for (relative_line_index, line_str) in lines.take(n_spanned_lines).enumerate() {
                     let line_num = start_line_index + relative_line_index + 1;
@@ -716,6 +718,29 @@ let x: u32 = Left(
   |
 1 | /*😀*/ let a: u8 = 65536;
   |                    ^^^^^ Cannot parse: number too large to fit in target type"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn multiline_display_with_utf16_chars() {
+        let file = r#"/*😀 this symbol should not break the rendering*/
+let a: u8 = 65536;
+let x: u32 = Left(
+    Right(0)
+);"#;
+        let error = Error::CannotParse("This span covers the entire file".to_string())
+            .with_span(Span::from(file))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | /*😀 this symbol should not break the rendering*/
+2 | let a: u8 = 65536;
+3 | let x: u32 = Left(
+4 |     Right(0)
+5 | );
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Cannot parse: This span covers the entire file"#;
 
         assert_eq!(&expected[1..], &error.to_string());
     }
