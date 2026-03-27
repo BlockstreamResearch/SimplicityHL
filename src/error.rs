@@ -222,7 +222,11 @@ impl fmt::Display for RichError {
 
                 writeln!(f, "{:width$} |", " ", width = line_num_width)?;
 
-                let mut lines = file.lines().skip(start_line_index).peekable();
+                let mut lines = file
+                    .split(|c: char| c.is_newline())
+                    .skip(start_line_index)
+                    .peekable();
+
                 let start_line_len = lines
                     .peek()
                     .map_or(0, |l| l.chars().map(char::len_utf16).sum());
@@ -741,6 +745,21 @@ let x: u32 = Left(
 4 |     Right(0)
 5 | );
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Cannot parse: This span covers the entire file"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_with_unicode_separator() {
+        let file = "let a: u8 = 65536;\u{2028}let b: u8 = 0;";
+        let error = Error::CannotParse("number too large to fit in target type".to_string())
+            .with_span(Span::new(12, 17))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | let a: u8 = 65536;
+  |             ^^^^^ Cannot parse: number too large to fit in target type"#;
 
         assert_eq!(&expected[1..], &error.to_string());
     }
