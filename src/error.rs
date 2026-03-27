@@ -240,7 +240,7 @@ impl fmt::Display for RichError {
 
                 let (underline_start, underline_length) = match is_multiline {
                     true => (0, start_line_len),
-                    false => (start_col, end_col - start_col),
+                    false => (start_col, (end_col - start_col).max(1)),
                 };
                 write!(f, "{:width$} |", " ", width = line_num_width)?;
                 write!(f, "{:width$}", " ", width = underline_start)?;
@@ -760,6 +760,35 @@ let x: u32 = Left(
   |
 1 | let a: u8 = 65536;
   |             ^^^^^ Cannot parse: number too large to fit in target type"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_span_as_point() {
+        let file = "fn main()";
+        let error = Error::Grammar("Error span at (0,0)".to_string())
+            .with_span(Span::new(0, 0))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | fn main()
+  | ^ Grammar error: Error span at (0,0)"#;
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_span_as_point_on_trailing_empty_line() {
+        let file = "fn main(){\n    let a:\n";
+        let error = Error::CannotParse("eof".to_string())
+            .with_span(Span::new(file.len(), file.len()))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+3 | 
+  | ^ Cannot parse: eof"#;
 
         assert_eq!(&expected[1..], &error.to_string());
     }
