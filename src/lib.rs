@@ -14,6 +14,7 @@ pub mod named;
 pub mod num;
 pub mod parse;
 pub mod pattern;
+pub mod resolution;
 #[cfg(feature = "serde")]
 mod serde;
 pub mod str;
