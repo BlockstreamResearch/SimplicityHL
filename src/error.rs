@@ -717,7 +717,6 @@ let x: u32 = Left(
 1 | /*😀*/ let a: u8 = 65536;
   |                    ^^^^^ Cannot parse: number too large to fit in target type"#;
 
-        println!("{error}");
         assert_eq!(&expected[1..], &error.to_string());
     }
 }
