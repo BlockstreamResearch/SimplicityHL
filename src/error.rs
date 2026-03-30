@@ -5,7 +5,6 @@ use std::sync::Arc;
 use chumsky::error::Error as ChumskyError;
 use chumsky::input::ValueInput;
 use chumsky::label::LabelError;
-use chumsky::text::Char;
 use chumsky::util::MaybeRef;
 use chumsky::DefaultExpected;
 
@@ -192,22 +191,67 @@ impl RichError {
 
 impl fmt::Display for RichError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fn get_line_col(file: &str, offset: usize) -> (usize, usize) {
-            let mut line = 1;
-            let mut col = 0;
+        fn next_newline(s: &str) -> Option<(usize, usize)> {
+            let mut it = s.char_indices().peekable();
 
-            let slice = file.get(0..offset).unwrap_or_default();
+            while let Some((i, ch)) = it.next() {
+                if ch == '\r' {
+                    // Treat CRLF as one logical newline.
+                    if matches!(it.peek(), Some((_, c)) if *c == '\n') {
+                        it.next();
+                        return Some((i, '\r'.len_utf8() + '\n'.len_utf8()));
+                    }
 
-            for char in slice.chars() {
-                if char.is_newline() {
-                    line += 1;
-                    col = 0;
-                } else {
-                    col += char.len_utf16();
+                    // Support lone CR for compatibility with current lexer behavior.
+                    return Some((i, ch.len_utf8()));
+                }
+
+                // Support LF newline.
+                if ch == '\n' {
+                    return Some((i, ch.len_utf8()));
+                }
+
+                // Unicode newline support.
+                if ch == '\u{2028}' || ch == '\u{2029}' {
+                    return Some((i, ch.len_utf8()));
                 }
             }
 
-            (line, col + 1)
+            None
+        }
+        fn get_line_col(file: &str, offset: usize) -> (usize, usize) {
+            let s = file.get(..offset).unwrap_or_default();
+            let mut line = 1usize;
+            let mut last_line_start = 0usize;
+            let mut rest = s;
+            let mut consumed = 0usize;
+
+            while let Some((i, nl_len)) = next_newline(rest) {
+                line += 1;
+                consumed += i + nl_len;
+                last_line_start = consumed;
+                rest = &rest[i + nl_len..];
+            }
+
+            let col = 1 + s[last_line_start..]
+                .chars()
+                .map(char::len_utf16)
+                .sum::<usize>();
+
+            (line, col)
+        }
+
+        fn split_lines_preserving_crlf(file: &str) -> Vec<&str> {
+            let mut out = Vec::new();
+            let mut rest = file;
+
+            while let Some((i, nl_len)) = next_newline(rest) {
+                out.push(&rest[..i]);
+                rest = &rest[i + nl_len..];
+            }
+
+            out.push(rest);
+            out
         }
 
         match self.file {
@@ -222,24 +266,28 @@ impl fmt::Display for RichError {
 
                 writeln!(f, "{:width$} |", " ", width = line_num_width)?;
 
-                let mut lines = file
-                    .split(|c: char| c.is_newline())
-                    .skip(start_line_index)
-                    .peekable();
+                let split_lines = split_lines_preserving_crlf(file);
+                let mut lines = split_lines.into_iter().skip(start_line_index).peekable();
 
                 let start_line_len = lines
                     .peek()
-                    .map_or(0, |l| l.chars().map(char::len_utf16).sum());
+                    .map_or(0, |l| l.chars().map(char::len_utf16).sum::<usize>());
 
                 for (relative_line_index, line_str) in lines.take(n_spanned_lines).enumerate() {
                     let line_num = start_line_index + relative_line_index + 1;
-                    writeln!(f, "{line_num:line_num_width$} | {line_str}")?;
+                    write!(f, "{line_num:line_num_width$} |")?;
+                    if !line_str.is_empty() {
+                        write!(f, " {line_str}")?;
+                    }
+                    writeln!(f)?;
                 }
 
                 let is_multiline = end_line > start_line;
 
                 let (underline_start, underline_length) = match is_multiline {
-                    true => (0, start_line_len),
+                    // For multiline spans, preserve the existing display style:
+                    // underline the full first displayed line.
+                    true => (1, start_line_len),
                     false => (start_col, (end_col - start_col).max(1)),
                 };
                 write!(f, "{:width$} |", " ", width = line_num_width)?;
@@ -765,6 +813,81 @@ let x: u32 = Left(
     }
 
     #[test]
+    fn display_with_windows_crlf_newlines() {
+        let file = "let a: u8 = 65536;\r\nlet b: u8 = 0;";
+        let error = Error::CannotParse("number too large to fit in target type".to_string())
+            .with_span(Span::new(12, 17))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | let a: u8 = 65536;
+  |             ^^^^^ Cannot parse: number too large to fit in target type"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_with_unix_lf_newlines() {
+        let file = "let a: u8 = 65536;\nlet b: u8 = 0;";
+        let error = Error::CannotParse("number too large to fit in target type".to_string())
+            .with_span(Span::new(12, 17))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | let a: u8 = 65536;
+  |             ^^^^^ Cannot parse: number too large to fit in target type"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_with_mixed_newlines_on_second_line() {
+        let file = "line1\r\nline2\nline3";
+        let error = Error::CannotParse("err".to_string())
+            .with_span(Span::new(7, 12))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+2 | line2
+  | ^^^^^ Cannot parse: err"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_does_not_insert_extra_blank_line_for_crlf() {
+        let file = "a\r\nb";
+        let error = Error::CannotParse("err".to_string())
+            .with_span(Span::new(3, 4))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+2 | b
+  | ^ Cannot parse: err"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_handles_utf16_columns_after_newline() {
+        let file = "x\r\n😀ab";
+        let error = Error::CannotParse("err".to_string())
+            .with_span(Span::new(7, 9))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+2 | 😀ab
+  |   ^^ Cannot parse: err"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
     fn display_span_as_point() {
         let file = "fn main()";
         let error = Error::Grammar("Error span at (0,0)".to_string())
@@ -787,7 +910,52 @@ let x: u32 = Left(
 
         let expected = r#"
   |
-3 | 
+3 |
+  | ^ Cannot parse: eof"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_zero_length_span_shows_single_caret() {
+        let file = "let a: u8 = 1;";
+        let error = Error::CannotParse("err".to_string())
+            .with_span(Span::new(12, 12))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | let a: u8 = 1;
+  |             ^ Cannot parse: err"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_with_cr_only_newlines() {
+        let file = "let a: u8 = 0;\rlet b: u8 = 65536;";
+        let error = Error::CannotParse("number too large to fit in target type".to_string())
+            .with_span(Span::new(27, 32))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+2 | let b: u8 = 65536;
+  |             ^^^^^ Cannot parse: number too large to fit in target type"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_span_as_point_on_trailing_cr_only_empty_line() {
+        let file = "fn main(){\r    let a:\r";
+        let error = Error::CannotParse("eof".to_string())
+            .with_span(Span::new(file.len(), file.len()))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+3 |
   | ^ Cannot parse: eof"#;
 
         assert_eq!(&expected[1..], &error.to_string());
