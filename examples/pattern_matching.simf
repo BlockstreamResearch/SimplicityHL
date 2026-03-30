@@ -1,3 +1,5 @@
+#![compiler_version("0.5.0-rc.0")]
+
 fn main() {
   let complex_pattern: Either<(u32, u32, (u1, u1)), [u1; 8]> = Left((32, 3, (0, 1)));
 

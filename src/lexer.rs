@@ -36,11 +36,14 @@ pub enum Token<'src> {
     RBrace,
     LAngle,
     RAngle,
+    Hash,
+    Bang,
 
     // Number literals
     DecLiteral(Decimal),
     HexLiteral(Hexadecimal),
     BinLiteral(Binary),
+    StringLiteral(&'src str),
 
     // Boolean literal
     Bool(bool),
@@ -88,10 +91,13 @@ impl<'src> fmt::Display for Token<'src> {
             Token::RBrace => write!(f, "}}"),
             Token::LAngle => write!(f, "<"),
             Token::RAngle => write!(f, ">"),
+            Token::Hash => write!(f, "#"),
+            Token::Bang => write!(f, "!"),
 
             Token::DecLiteral(s) => write!(f, "{}", s),
             Token::HexLiteral(s) => write!(f, "0x{}", s),
             Token::BinLiteral(s) => write!(f, "0b{}", s),
+            Token::StringLiteral(s) => write!(f, "\"{}\"", s),
 
             Token::Ident(s) => write!(f, "{}", s),
 
@@ -149,6 +155,11 @@ pub fn lexer<'src>(
         _ => Token::Ident(s),
     });
 
+    let string_literal = just('"')
+        .ignore_then(any().and_is(just('"').not()).repeated().to_slice())
+        .then_ignore(just('"'))
+        .map(Token::StringLiteral);
+
     let jet = just("jet")
         .ignore_then(just("::"))
         .ignore_then(text::ident())
@@ -178,6 +189,8 @@ pub fn lexer<'src>(
         just("}").to(Token::RBrace),
         just("<").to(Token::LAngle),
         just(">").to(Token::RAngle),
+        just("#").to(Token::Hash),
+        just("!").to(Token::Bang),
     ));
 
     let comment = just("//")
@@ -204,6 +217,7 @@ pub fn lexer<'src>(
         param,
         macros,
         keyword,
+        string_literal,
         hex,
         bin,
         num,
@@ -357,5 +371,58 @@ mod tests {
         let _ = tokens.unwrap();
 
         assert!(lex_errs.is_empty());
+    }
+
+    #[test]
+    fn test_lex_compiler_version_exact() {
+        let input = "#![compiler_version(\"0.5.0\")]";
+        let (tokens, errors) = lex(input);
+
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+
+        let tokens = tokens.unwrap();
+        assert_eq!(tokens[0], Token::Hash);
+        assert_eq!(tokens[1], Token::Bang);
+        assert_eq!(tokens[2], Token::LBracket);
+        assert_eq!(tokens[3], Token::Ident("compiler_version"));
+        assert_eq!(tokens[4], Token::LParen);
+        assert_eq!(tokens[5], Token::StringLiteral("0.5.0"));
+        assert_eq!(tokens[6], Token::RParen);
+        assert_eq!(tokens[7], Token::RBracket);
+    }
+
+    #[test]
+    fn test_lex_compiler_version_complex_string() {
+        // Proves the lexer captures all symbols (>, =, <, ^, ~) inside the quotes as a single string token
+        let input = "#![compiler_version(\">= 0.0.1, <= 1.0.0, ^0.5.0, ~0.6.0\")]";
+        let (tokens, errors) = lex(input);
+
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+
+        let tokens = tokens.unwrap();
+        assert_eq!(
+            tokens[5],
+            Token::StringLiteral(">= 0.0.1, <= 1.0.0, ^0.5.0, ~0.6.0")
+        );
+    }
+
+    #[test]
+    fn test_lex_identifier_boundary() {
+        // Ensures the lexer doesn't accidentally break if a user creates a variable named `compiler_version`
+        let input = "let compiler_version = 1;";
+        let (tokens, errors) = lex(input);
+
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+
+        let tokens = tokens.unwrap();
+        assert_eq!(tokens[0], Token::Let);
+        assert_eq!(tokens[1], Token::Ident("compiler_version"));
+        assert_eq!(tokens[2], Token::Eq);
+
+        assert_eq!(
+            tokens[3],
+            Token::DecLiteral(crate::str::Decimal::from_str_unchecked("1"))
+        );
+        assert_eq!(tokens[4], Token::Semi);
     }
 }

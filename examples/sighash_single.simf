@@ -2,6 +2,8 @@
  * This program verifies a Schnorr signature based on
  * SIGHASH_SINGLE.
  */
+#![compiler_version("0.5.0-rc.0")]
+
 fn main() {
     let ctx: Ctx8 = jet::sha_256_ctx_8_init();
     // Blockchain

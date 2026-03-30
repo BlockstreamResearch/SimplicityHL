@@ -323,7 +323,19 @@ pub(crate) mod tests {
         }
 
         pub fn template_text(program_text: Cow<str>) -> Self {
-            let program = match TemplateProgram::new(program_text.as_ref()) {
+            let clean_text = program_text
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("#![compiler_version"))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let current_version = env!("CARGO_PKG_VERSION");
+            let injected_text = format!(
+                "#![compiler_version(\"{}\")]\n{}",
+                current_version, clean_text
+            );
+
+            let program = match TemplateProgram::new(injected_text.as_str()) {
                 Ok(x) => x,
                 Err(error) => panic!("{error}"),
             };
@@ -658,14 +670,19 @@ pub(crate) mod tests {
 
     #[test]
     fn empty_function_body_nonempty_return() {
-        let prog_text = r#"fn my_true() -> bool {
+        let prog_text = format!(
+            "#![compiler_version(\"{}\")]\n{}",
+            env!("CARGO_PKG_VERSION"),
+            r#"
+fn my_true() -> bool {
     // function body is empty, although function must return `bool`
 }
 
 fn main() {
     assert!(my_true());
 }
-"#;
+"#
+        );
         match SatisfiedProgram::new(
             prog_text,
             Arguments::default(),
@@ -868,5 +885,81 @@ fn main() {
         fn transfer_with_timeout_regression() {
             regression_test("transfer_with_timeout");
         }
+    }
+
+    #[test]
+    fn test_compiler_version_missing() {
+        let missing = "fn main() {}";
+        let err = TemplateProgram::new(missing).unwrap_err();
+        assert!(err.contains("Missing compiler version"));
+    }
+
+    #[test]
+    fn test_compiler_version_exact_match() {
+        let exact = format!(
+            "#![compiler_version(\"{}\")]\nfn main() {{}}",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(TemplateProgram::new(exact.as_str()).is_ok());
+    }
+
+    #[test]
+    fn test_compiler_version_mismatch_too_old() {
+        // We require 99.99.99, meaning the current compiler is TOO OLD
+        let too_old = "#![compiler_version(\">= 99.99.99\")]\nfn main() {}";
+        let err = TemplateProgram::new(too_old).unwrap_err();
+        assert!(
+            err.contains("Compiler too old"),
+            "Expected 'Compiler too old', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_compiler_version_contract_too_old() {
+        // We strictly require an ancient version, meaning the contract is TOO OLD for this compiler
+        let contract_too_old = "#![compiler_version(\"< 0.0.1\")]\nfn main() {}";
+        let err = TemplateProgram::new(contract_too_old).unwrap_err();
+        assert!(
+            err.contains("Contract too old"),
+            "Expected 'Contract too old', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_compiler_version_exact_mismatch() {
+        let exact_mismatch = "#![compiler_version(\"= 0.0.1\")]\nfn main() {}";
+        let err = TemplateProgram::new(exact_mismatch).unwrap_err();
+        assert!(
+            err.contains("Exact version mismatch"),
+            "Expected 'Exact version mismatch', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_compiler_version_operator_caret() {
+        let caret = format!(
+            "#![compiler_version(\"^{}\")]\nfn main() {{}}",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(TemplateProgram::new(caret.as_str()).is_ok());
+    }
+
+    #[test]
+    fn test_compiler_version_operator_gte() {
+        let gte = format!(
+            "#![compiler_version(\">={}\")]\nfn main() {{}}",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(TemplateProgram::new(gte.as_str()).is_ok());
+    }
+
+    #[test]
+    fn test_compiler_version_syntax_garbage_version() {
+        let garbage = "#![compiler_version(\"i-love-rust\")]\nfn main() {}";
+        let err = TemplateProgram::new(garbage).unwrap_err();
+        assert!(err.contains("Invalid version syntax"));
     }
 }

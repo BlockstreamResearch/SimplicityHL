@@ -406,6 +406,27 @@ impl fmt::Display for ErrorCollector {
 /// Records _what_ happened but not where.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Error {
+    MissingSimcVersion {
+        compiler: String,
+    },
+    InvalidSimcVersionSyntax(String),
+    SimcVersionExactMismatch {
+        required: String,
+        current: String,
+    },
+    SimcVersionCompilerTooOld {
+        required: String,
+        current: String,
+    },
+    SimcVersionContractTooOld {
+        required: String,
+        current: String,
+    },
+    SimcVersionIncompatible {
+        required: String,
+        current: String,
+    },
+
     ArraySizeNonZero(usize),
     ListBoundPow2(usize),
     BitStringPow2(usize),
@@ -453,6 +474,13 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::MissingSimcVersion { compiler } => write!(f, "Missing compiler version: Contract must declare a version, e.g., `#![compiler_version(\"{}\")]`", compiler),
+            Error::InvalidSimcVersionSyntax(err) => write!(f, "Invalid version syntax: {}", err),
+            Error::SimcVersionExactMismatch { required, current } => write!(f, "Exact version mismatch: Contract requires {}, but compiler is {}", required, current),
+            Error::SimcVersionCompilerTooOld { required, current } => write!(f, "Compiler too old: Contract requires {}, but compiler is {}. Please upgrade.", required, current),
+            Error::SimcVersionContractTooOld { required, current } => write!(f, "Contract too old: Contract requires {}, which is not supported by compiler {}.", required, current),
+            Error::SimcVersionIncompatible { required, current } => write!(f, "Incompatible version: Contract requirement '{}' is not satisfied by compiler {}.", required, current),
+
             Error::ArraySizeNonZero(size) => write!(
                 f,
                 "Expected a non-negative integer as array size, found {size}"
@@ -789,6 +817,110 @@ let x: u32 = Left(
   |
 3 | 
   | ^ Cannot parse: eof"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_compiler_version_missing() {
+        let file = "fn main() {}";
+        let error = Error::MissingSimcVersion {
+            compiler: "0.5.0".to_string(),
+        }
+        .with_span(Span::new(0, 0))
+        .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | fn main() {}
+  | ^ Missing compiler version: Contract must declare a version, e.g., `#![compiler_version("0.5.0")]`"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_compiler_version_invalid_syntax() {
+        let file = "#![compiler_version(\"abc\")]\nfn main() {}";
+        let error = Error::InvalidSimcVersionSyntax("unexpected character 'a'".to_string())
+            .with_span(Span::new(0, 27))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | #![compiler_version("abc")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ Invalid version syntax: unexpected character 'a'"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_compiler_version_exact_mismatch() {
+        let file = "#![compiler_version(\"= 0.4.0\")]\nfn main() {}";
+        let error = Error::SimcVersionExactMismatch {
+            required: "= 0.4.0".to_string(),
+            current: "0.5.0".to_string(),
+        }
+        .with_span(Span::new(0, 31))
+        .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | #![compiler_version("= 0.4.0")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Exact version mismatch: Contract requires = 0.4.0, but compiler is 0.5.0"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_compiler_version_too_old() {
+        let file = "#![compiler_version(\">= 0.6.0\")]\nfn main() {}";
+        let error = Error::SimcVersionCompilerTooOld {
+            required: ">= 0.6.0".to_string(),
+            current: "0.5.0".to_string(),
+        }
+        .with_span(Span::new(0, 32))
+        .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | #![compiler_version(">= 0.6.0")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Compiler too old: Contract requires >= 0.6.0, but compiler is 0.5.0. Please upgrade."#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_compiler_version_contract_too_old() {
+        let file = "#![compiler_version(\"< 0.4.0\")]\nfn main() {}";
+        let error = Error::SimcVersionContractTooOld {
+            required: "< 0.4.0".to_string(),
+            current: "0.5.0".to_string(),
+        }
+        .with_span(Span::new(0, 31))
+        .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | #![compiler_version("< 0.4.0")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Contract too old: Contract requires < 0.4.0, which is not supported by compiler 0.5.0."#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_compiler_version_incompatible() {
+        let file = "#![compiler_version(\"~0.6.0\")]\nfn main() {}";
+        let error = Error::SimcVersionIncompatible {
+            required: "~0.6.0".to_string(),
+            current: "0.5.0".to_string(),
+        }
+        .with_span(Span::new(0, 30))
+        .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | #![compiler_version("~0.6.0")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Incompatible version: Contract requirement '~0.6.0' is not satisfied by compiler 0.5.0."#;
 
         assert_eq!(&expected[1..], &error.to_string());
     }

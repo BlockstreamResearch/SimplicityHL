@@ -7,6 +7,8 @@
  *
  * https://docs.ivylang.org/bitcoin/language/ExampleContracts.html#escrowwithdelay
  */
+#![compiler_version("0.5.0-rc.0")]
+
 fn not(bit: bool) -> bool {
     <u1>::into(jet::complement_1(<bool>::into(bit)))
 }

@@ -9,6 +9,8 @@
  *
  * https://docs.ivylang.org/bitcoin/language/ExampleContracts.html#htlc
  */
+#![compiler_version("0.5.0-rc.0")]
+
 fn sha2(string: u256) -> u256 {
     let hasher: Ctx8 = jet::sha_256_ctx_8_init();
     let hasher: Ctx8 = jet::sha_256_ctx_8_add_32(hasher, string);

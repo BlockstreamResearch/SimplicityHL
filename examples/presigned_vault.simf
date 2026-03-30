@@ -16,6 +16,8 @@
  *
  * https://docs.ivylang.org/bitcoin/language/ExampleContracts.html#vaultspend
  */
+#![compiler_version("0.5.0-rc.0")]
+
 fn checksig(pk: Pubkey, sig: Signature) {
     let msg: u256 = jet::sig_all_hash();
     jet::bip_0340_verify((pk, msg), sig);
