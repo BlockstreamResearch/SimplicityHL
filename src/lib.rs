@@ -33,7 +33,7 @@ pub extern crate simplicity;
 pub use simplicity::elements;
 
 use crate::debug::DebugSymbols;
-use crate::error::{ErrorCollector, WithFile};
+use crate::error::{ErrorCollector, WithContent};
 use crate::parse::ParseFromStrWithErrors;
 pub use crate::types::ResolvedType;
 pub use crate::value::Value;
@@ -56,10 +56,10 @@ impl TemplateProgram {
     /// The string is not a valid SimplicityHL program.
     pub fn new<Str: Into<Arc<str>>>(s: Str) -> Result<Self, String> {
         let file = s.into();
-        let mut error_handler = ErrorCollector::new(Arc::clone(&file));
+        let mut error_handler = ErrorCollector::new();
         let parse_program = parse::Program::parse_from_str_with_errors(&file, &mut error_handler);
         if let Some(program) = parse_program {
-            let ast_program = ast::Program::analyze(&program).with_file(Arc::clone(&file))?;
+            let ast_program = ast::Program::analyze(&program).with_content(Arc::clone(&file))?;
             Ok(Self {
                 simfony: ast_program,
                 file,
@@ -97,7 +97,7 @@ impl TemplateProgram {
         let commit = self
             .simfony
             .compile(arguments, include_debug_symbols)
-            .with_file(Arc::clone(&self.file))?;
+            .with_content(Arc::clone(&self.file))?;
 
         Ok(CompiledProgram {
             debug_symbols: self.simfony.debug_symbols(self.file.as_ref()),

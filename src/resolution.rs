@@ -5,7 +5,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct SourceFile {
     /// The name or path of the source file (e.g., "./simf/main.simf").
-    name: Arc<Path>,
+    name: Option<Arc<Path>>,
     /// The actual text content of the source file.
     content: Arc<str>,
 }
@@ -13,22 +13,31 @@ pub struct SourceFile {
 impl From<(&Path, &str)> for SourceFile {
     fn from((name, content): (&Path, &str)) -> Self {
         Self {
-            name: Arc::from(name),
+            name: Some(Arc::from(name)),
             content: Arc::from(content),
         }
     }
 }
 
 impl SourceFile {
+    /// Creates a standard `SourceFile` from a file path and its content.
     pub fn new(name: &Path, content: Arc<str>) -> Self {
         Self {
-            name: Arc::from(name),
+            name: Some(Arc::from(name)),
             content,
         }
     }
 
-    pub fn name(&self) -> &Path {
-        self.name.as_ref()
+    /// Creates an anonymous `SourceFile` without a file path (e.g., for a single-file programs)
+    pub fn anonymous(content: Arc<str>) -> Self {
+        Self {
+            name: None,
+            content,
+        }
+    }
+
+    pub fn name(&self) -> &Option<Arc<Path>> {
+        &self.name
     }
 
     pub fn content(&self) -> Arc<str> {
