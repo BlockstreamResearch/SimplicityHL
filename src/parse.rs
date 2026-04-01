@@ -22,6 +22,7 @@ use crate::impl_eq_hash;
 use crate::lexer::Token;
 use crate::num::NonZeroPow2Usize;
 use crate::pattern::Pattern;
+use crate::resolution::SourceFile;
 use crate::str::{
     AliasName, Binary, Decimal, FunctionName, Hexadecimal, Identifier, JetName, ModuleName,
     WitnessName,
@@ -1062,7 +1063,8 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStrWithErrors for A {
     fn parse_from_str_with_errors(s: &str, handler: &mut ErrorCollector) -> Option<Self> {
         let (tokens, lex_errs) = crate::lexer::lex(s);
 
-        handler.update(lex_errs);
+        let source = SourceFile::anonymous(Arc::from(s));
+        handler.extend(source.clone(), lex_errs);
         let tokens = tokens?;
 
         let (ast, parse_errs) = A::parser()
@@ -1074,14 +1076,14 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStrWithErrors for A {
             )
             .into_output_errors();
 
-        handler.update(parse_errs);
+        handler.extend(source, parse_errs);
 
         // TODO: We should return parsed result if we found errors, but because analyzing in `ast` module
         // is not handling poisoned tree right now, we don't return parsed result
-        if handler.get().is_empty() {
-            ast
-        } else {
+        if handler.has_errors() {
             None
+        } else {
+            ast
         }
     }
 }
@@ -2397,7 +2399,7 @@ mod test {
     #[test]
     fn test_double_colon() {
         let input = "fn main() { let ab: u8 = <(u4, u4)> : :into((0b1011, 0b1101)); }";
-        let mut error_handler = ErrorCollector::new(Arc::from(input));
+        let mut error_handler = ErrorCollector::new();
         let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
 
         assert!(parse_program.is_none());
@@ -2407,7 +2409,7 @@ mod test {
     #[test]
     fn test_double_double_colon() {
         let input = "fn main() { let pk: Pubkey = witnes::::PK; }";
-        let mut error_handler = ErrorCollector::new(Arc::from(input));
+        let mut error_handler = ErrorCollector::new();
         let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
 
         assert!(parse_program.is_none());

@@ -4,7 +4,7 @@
 fn do_test(data: &[u8]) {
     use arbitrary::Arbitrary;
 
-    use simplicityhl::error::WithFile;
+    use simplicityhl::error::WithContent;
     use simplicityhl::{ast, named, parse, ArbitraryOfType, Arguments};
 
     let mut u = arbitrary::Unstructured::new(data);
@@ -22,7 +22,7 @@ fn do_test(data: &[u8]) {
     };
     let simplicity_named_construct = ast_program
         .compile(arguments, false)
-        .with_file("")
+        .with_content("")
         .expect("AST should compile with given arguments");
     let _simplicity_commit = named::forget_names(&simplicity_named_construct);
 }
