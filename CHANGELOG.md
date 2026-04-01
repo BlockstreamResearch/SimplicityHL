@@ -1,3 +1,7 @@
+# Unreleased
+
+* Replaced the deprecated `WithFile` trait with `WithContent` and `WithSource` to cleanly separate single-file execution from multi-file environments. Additionally, replaced the `file()` method on `RichError` with `source()`. [#266](https://github.com/BlockstreamResearch/SimplicityHL/pull/266)
+
 # 0.5.0-rc.0 - 2026-03-14
 
 * Migrate from the `pest` parser to a new `chumsky`-based parser, improving parser recovery and enabling multiple parse errors to be reported in one pass [#185](https://github.com/BlockstreamResearch/SimplicityHL/pull/185)
