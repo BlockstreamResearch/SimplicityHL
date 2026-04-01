@@ -1,5 +1,5 @@
 // Add counter to streaming hash and finalize when the loop exists
-fn hash_counter_8(ctx: Ctx8, unused: (), byte: u8) -> Either<u256, Ctx8> {
+fn hash_counter_8(ctx: Ctx8, _unused: (), byte: u8) -> Either<u256, Ctx8> {
     let new_ctx: Ctx8 = jet::sha_256_ctx_8_add_1(ctx, byte);
     match jet::all_8(byte) {
         true => Left(jet::sha_256_ctx_8_finalize(new_ctx)),
@@ -8,7 +8,7 @@ fn hash_counter_8(ctx: Ctx8, unused: (), byte: u8) -> Either<u256, Ctx8> {
 }
 
 // Add counter to streaming hash and finalize when the loop exists
-fn hash_counter_16(ctx: Ctx8, unused: (), bytes: u16) -> Either<u256, Ctx8> {
+fn hash_counter_16(ctx: Ctx8, _unused: (), bytes: u16) -> Either<u256, Ctx8> {
     let new_ctx: Ctx8 = jet::sha_256_ctx_8_add_2(ctx, bytes);
     match jet::all_16(bytes) {
         true => Left(jet::sha_256_ctx_8_finalize(new_ctx)),
