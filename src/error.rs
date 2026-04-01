@@ -1,5 +1,6 @@
 use std::fmt;
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chumsky::error::Error as ChumskyError;
@@ -137,9 +138,14 @@ impl<T> WithFile<T> for Result<T, RichError> {
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct RichError {
     /// The error that occurred.
-    error: Error,
+    ///
+    /// Wrapped in a `Box` to keep the `RichError` struct small on the stack,
+    /// ensuring cheap moves when returning errors inside a `Result`.
+    error: Box<Error>,
+
     /// Area that the error spans inside the file.
     span: Span,
+
     /// File in which the error occurred.
     ///
     /// Required to print pretty errors.
@@ -150,7 +156,7 @@ impl RichError {
     /// Create a new error with context.
     pub fn new(error: Error, span: Span) -> RichError {
         RichError {
-            error,
+            error: Box::new(error),
             span,
             file: None,
         }
@@ -171,7 +177,7 @@ impl RichError {
     /// a problem on the parsing side.
     pub fn parsing_error(reason: &str) -> Self {
         Self {
-            error: Error::CannotParse(reason.to_string()),
+            error: Box::new(Error::CannotParse(reason.to_string())),
             span: Span::new(0, 0),
             file: None,
         }
@@ -258,7 +264,7 @@ impl std::error::Error for RichError {}
 
 impl From<RichError> for Error {
     fn from(error: RichError) -> Self {
-        error.error
+        *error.error
     }
 }
 
@@ -274,7 +280,7 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
 {
     fn merge(self, other: Self) -> Self {
-        match (&self.error, &other.error) {
+        match (self.error.as_ref(), other.error.as_ref()) {
             (Error::Grammar(_), Error::Grammar(_)) => other,
             (Error::Grammar(_), _) => other,
             (_, Error::Grammar(_)) => self,
@@ -310,11 +316,11 @@ where
         let found_string = found.map(|t| t.to_string());
 
         Self {
-            error: Error::Syntax {
+            error: Box::new(Error::Syntax {
                 expected: expected_tokens,
                 label: None,
                 found: found_string,
-            },
+            }),
             span,
             file: None,
         }
@@ -337,11 +343,11 @@ where
         let found_string = found.map(|t| t.to_string());
 
         Self {
-            error: Error::Syntax {
+            error: Box::new(Error::Syntax {
                 expected: expected_strings,
                 label: None,
                 found: found_string,
-            },
+            }),
             span,
             file: None,
         }
@@ -350,7 +356,7 @@ where
     fn label_with(&mut self, label: &'tokens str) {
         if let Error::Syntax {
             label: ref mut l, ..
-        } = &mut self.error
+        } = self.error.as_mut()
         {
             *l = Some(label.to_string());
         }
@@ -406,6 +412,8 @@ impl fmt::Display for ErrorCollector {
 /// Records _what_ happened but not where.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Error {
+    Internal(String),
+    UnknownLibrary(String),
     ArraySizeNonZero(usize),
     ListBoundPow2(usize),
     BitStringPow2(usize),
@@ -423,6 +431,15 @@ pub enum Error {
     CannotCompile(String),
     JetDoesNotExist(JetName),
     InvalidCast(ResolvedType, ResolvedType),
+    FileNotFound(PathBuf),
+    UnresolvedItem {
+        name: String,
+        target_file: PathBuf,
+    },
+    PrivateItem {
+        name: String,
+        target_file: PathBuf,
+    },
     MainNoInputs,
     MainNoOutput,
     MainRequired,
@@ -439,6 +456,10 @@ pub enum Error {
     RedefinedAlias(AliasName),
     RedefinedAliasAsBuiltin(AliasName),
     UndefinedAlias(AliasName),
+    DuplicateAlias {
+        name: String,
+        target_file: PathBuf,
+    },
     VariableReuseInPattern(Identifier),
     WitnessReused(WitnessName),
     WitnessTypeMismatch(WitnessName, ResolvedType, ResolvedType),
@@ -453,6 +474,14 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::Internal(err) => write!(
+                f,
+                "INTERNAL ERROR: {err}"
+            ),
+            Error::UnknownLibrary(name) => write!(
+                f,
+                "Unknown module or library '{name}'"
+            ),
             Error::ArraySizeNonZero(size) => write!(
                 f,
                 "Expected a non-negative integer as array size, found {size}"
@@ -472,6 +501,10 @@ impl fmt::Display for Error {
             Error::Grammar(description) => write!(
                 f,
                 "Grammar error: {description}"
+            ),
+            Error::FileNotFound(path) => write!(
+                f,
+                "File `{}` not found", path.to_string_lossy()
             ),
             Error::Syntax { expected, label, found } => {
                 let found_text = found.clone().unwrap_or("end of input".to_string());
@@ -524,6 +557,16 @@ impl fmt::Display for Error {
                 f,
                 "Function `{name}` was called but not defined"
             ),
+            Error::UnresolvedItem { name, target_file } => write!(
+                f,
+                "Item `{}` could not be fouhnd in the file `{}`",
+                name, target_file.to_string_lossy()
+            ),
+            Error::PrivateItem { name, target_file } => write!(
+                f,
+                "Item `{}` is private in module `{}`",
+                name, target_file.to_string_lossy()
+            ),
             Error::InvalidNumberOfArguments(expected, found) => write!(
                 f,
                 "Expected {expected} arguments, found {found} arguments"
@@ -567,6 +610,11 @@ impl fmt::Display for Error {
             Error::UndefinedAlias(identifier) => write!(
                 f,
                 "Type alias `{identifier}` is not defined"
+            ),
+            Error::DuplicateAlias { name, target_file } => write!(
+                f,
+                "The alias `{}` was defined multiple times for `{}`",
+                name, target_file.to_string_lossy()
             ),
             Error::VariableReuseInPattern(identifier) => write!(
                 f,
