@@ -60,3 +60,10 @@ impl From<LspError> for Error {
         }
     }
 }
+
+/// Convert [`LspError`] to [`tower_lsp_server::jsonrpc::Error`].
+impl From<ropey::Error> for LspError {
+    fn from(err: ropey::Error) -> Self {
+        LspError::Internal(err.to_string())
+    }
+}
