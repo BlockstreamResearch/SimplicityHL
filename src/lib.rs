@@ -20,6 +20,7 @@ pub mod str;
 pub mod tracker;
 pub mod types;
 pub mod value;
+pub mod warning;
 mod witness;
 
 use std::sync::Arc;
@@ -32,10 +33,12 @@ pub extern crate simplicity;
 pub use simplicity::elements;
 
 use crate::debug::DebugSymbols;
-use crate::error::{ErrorCollector, WithFile};
+pub use crate::error::get_line_col;
+use crate::error::{ErrorCollector, WithFile, WithFilePath};
 use crate::parse::ParseFromStrWithErrors;
 pub use crate::types::ResolvedType;
 pub use crate::value::Value;
+pub use crate::warning::{WarnCategory, Warning};
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 
 /// The template of a SimplicityHL program.
@@ -45,6 +48,8 @@ pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 pub struct TemplateProgram {
     simfony: ast::Program,
     file: Arc<str>,
+    file_path: Arc<str>,
+    warnings: Vec<Warning>,
 }
 
 impl TemplateProgram {
@@ -54,18 +59,88 @@ impl TemplateProgram {
     ///
     /// The string is not a valid SimplicityHL program.
     pub fn new<Str: Into<Arc<str>>>(s: Str) -> Result<Self, String> {
+        Self::new_with_path(s, "")
+    }
+
+    /// Parse the template of a SimplicityHL program, attaching a file path for error display.
+    ///
+    /// `path` is shown on the ` --> ` line in error and warning output (e.g. `"src/main.simf"`).
+    ///
+    /// ## Errors
+    ///
+    /// The string is not a valid SimplicityHL program.
+    pub fn new_with_path<Str: Into<Arc<str>>, Path: Into<Arc<str>>>(
+        s: Str,
+        path: Path,
+    ) -> Result<Self, String> {
         let file = s.into();
-        let mut error_handler = ErrorCollector::new(Arc::clone(&file));
+        let file_path: Arc<str> = path.into();
+        let mut error_handler =
+            ErrorCollector::new_with_path(Arc::clone(&file), Arc::clone(&file_path));
         let parse_program = parse::Program::parse_from_str_with_errors(&file, &mut error_handler);
         if let Some(program) = parse_program {
-            let ast_program = ast::Program::analyze(&program).with_file(Arc::clone(&file))?;
+            let (ast_program, warnings) = ast::Program::analyze(&program)
+                .with_file(Arc::clone(&file))
+                .with_file_path(Arc::clone(&file_path))?;
             Ok(Self {
                 simfony: ast_program,
                 file,
+                file_path,
+                warnings,
             })
         } else {
             Err(ErrorCollector::to_string(&error_handler))?
         }
+    }
+
+    /// Treat all warnings as hard errors.
+    ///
+    /// Returns `self` unchanged if there are no warnings.
+    ///
+    /// ## Errors
+    ///
+    /// The program produced one or more warnings.
+    pub fn deny_warnings(self) -> Result<Self, String> {
+        if self.warnings.is_empty() {
+            return Ok(self);
+        }
+        let mut error_handler =
+            ErrorCollector::new_with_path(Arc::clone(&self.file), Arc::clone(&self.file_path));
+        error_handler.update(self.warnings.iter().cloned().map(|w| w.into()));
+        Err(ErrorCollector::to_string(&error_handler))
+    }
+
+    /// Treat warnings of the given category as hard errors.
+    ///
+    /// Returns `self` unchanged if no warnings of that category exist.
+    ///
+    /// ## Errors
+    ///
+    /// The program produced one or more warnings in the given category.
+    pub fn deny_warning(self, category: WarnCategory) -> Result<Self, String> {
+        let matching: Vec<_> = self
+            .warnings
+            .iter()
+            .filter(|w| w.canonical_name.category() == category)
+            .cloned()
+            .collect();
+        if matching.is_empty() {
+            return Ok(self);
+        }
+        let mut error_handler =
+            ErrorCollector::new_with_path(Arc::clone(&self.file), Arc::clone(&self.file_path));
+        error_handler.update(matching.into_iter().map(|w| w.into()));
+        Err(ErrorCollector::to_string(&error_handler))
+    }
+
+    /// Silence warnings of the given category.
+    ///
+    /// The matching warnings are removed from [`TemplateProgram::warnings`] and will
+    /// not appear in [`format_warnings`](Self::format_warnings) output.
+    pub fn allow_warning(mut self, category: WarnCategory) -> Self {
+        self.warnings
+            .retain(|w| w.canonical_name.category() != category);
+        self
     }
 
     /// Access the parameters of the program.
@@ -76,6 +151,42 @@ impl TemplateProgram {
     /// Access the witness types of the program.
     pub fn witness_types(&self) -> &WitnessTypes {
         self.simfony.witness_types()
+    }
+
+    /// Access any warnings produced during compilation.
+    pub fn warnings(&self) -> &[Warning] {
+        &self.warnings
+    }
+
+    /// Format warnings for display in rustc style, with source location and yellow color.
+    pub fn format_warnings(&self, file_path: &str) -> String {
+        use crate::error::SpanDisplay;
+        use std::fmt::Write as _;
+
+        const YELLOW_BOLD: &str = "\x1b[1;33m";
+        const RESET: &str = "\x1b[0m";
+
+        let mut out = String::new();
+        for warning in &self.warnings {
+            let message = warning.canonical_name.to_string();
+            let _ = writeln!(out, "{YELLOW_BOLD}warning{RESET}: {message}");
+
+            if !self.file.is_empty() {
+                let sd = SpanDisplay::new(&self.file, warning.span);
+                let _ = writeln!(out, " --> {file_path}:{}:{}", sd.start_line, sd.start_col);
+                let _ = write!(out, "{}", sd.lines_block);
+                let _ = write!(out, "{:width$} |", " ", width = sd.line_num_width);
+                let _ = write!(out, "{:width$}", " ", width = sd.underline_start);
+                let _ = writeln!(
+                    out,
+                    "{YELLOW_BOLD}{:^<width$}{RESET}",
+                    "",
+                    width = sd.underline_len
+                );
+            }
+            let _ = writeln!(out);
+        }
+        out
     }
 
     /// Instantiate the template program with the given `arguments`.

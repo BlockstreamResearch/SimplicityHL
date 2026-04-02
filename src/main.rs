@@ -2,8 +2,16 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
-use simplicityhl::{AbiMeta, CompiledProgram};
+use simplicityhl::{get_line_col, AbiMeta, TemplateProgram, WarnCategory};
 use std::{env, fmt};
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+struct OutputWarning {
+    message: String,
+    file: String,
+    line: usize,
+    column: usize,
+}
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 /// The compilation output.
@@ -16,6 +24,8 @@ struct Output {
     abi_meta: Option<AbiMeta>,
     /// Commitment Merkle Root (CMR) of the program, hex encoded.
     cmr: String,
+    /// Compiler warnings produced during compilation.
+    warnings: Vec<OutputWarning>,
 }
 
 impl fmt::Display for Output {
@@ -83,6 +93,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .action(ArgAction::SetTrue)
                     .help("Additional ABI .simf contract types"),
             )
+            .arg(
+                Arg::new("deny_warnings")
+                    .long("deny-warnings")
+                    .action(ArgAction::SetTrue)
+                    .help("Treat warnings as errors"),
+            )
+            .arg(
+                Arg::new("deny_warning")
+                    .long("deny-warning")
+                    .value_name("CATEGORY")
+                    .action(ArgAction::Append)
+                    .help("Treat warnings of a specific category as errors (unused-variable)"),
+            )
+            .arg(
+                Arg::new("allow_warning")
+                    .long("allow-warning")
+                    .value_name("CATEGORY")
+                    .action(ArgAction::Append)
+                    .help("Silence warnings of a specific category (unused-variable)"),
+            )
     };
 
     let matches = command.get_matches();
@@ -113,7 +143,81 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         simplicityhl::Arguments::default()
     };
 
-    let compiled = match CompiledProgram::new(prog_text, args_opt, include_debug_symbols) {
+    let deny_warnings = matches.get_flag("deny_warnings");
+
+    let deny_categories: Vec<WarnCategory> = matches
+        .get_many::<String>("deny_warning")
+        .unwrap_or_default()
+        .map(|s| parse_warn_category(s))
+        .collect::<Result<_, _>>()
+        .unwrap_or_else(|e| {
+            eprintln!("\x1b[1;31merror\x1b[0m: {e}");
+            std::process::exit(1);
+        });
+
+    let allow_categories: Vec<WarnCategory> = matches
+        .get_many::<String>("allow_warning")
+        .unwrap_or_default()
+        .map(|s| parse_warn_category(s))
+        .collect::<Result<_, _>>()
+        .unwrap_or_else(|e| {
+            eprintln!("\x1b[1;31merror\x1b[0m: {e}");
+            std::process::exit(1);
+        });
+
+    let template = match TemplateProgram::new_with_path(prog_text.clone(), prog_file.as_str()) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let template = allow_categories
+        .iter()
+        .fold(template, |t, &cat| t.allow_warning(cat));
+
+    let template = deny_categories
+        .iter()
+        .try_fold(template, |t, &cat| t.deny_warning(cat))
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        });
+
+    let n_warnings = template.warnings().len();
+    let warning_strings: Vec<OutputWarning> = template
+        .warnings()
+        .iter()
+        .map(|w| {
+            let (line, column) = get_line_col(&prog_text, w.span.start);
+            OutputWarning {
+                message: w.canonical_name.to_string(),
+                file: prog_file.clone(),
+                line,
+                column,
+            }
+        })
+        .collect();
+    if n_warnings > 0 {
+        if !output_json {
+            eprint!("{}", template.format_warnings(prog_file));
+            let word = if n_warnings == 1 {
+                "warning"
+            } else {
+                "warnings"
+            };
+            eprintln!(
+                "\x1b[1;33mwarning\x1b[0m: `{}` generated {} {}",
+                prog_file, n_warnings, word,
+            );
+        }
+        if deny_warnings {
+            eprintln!("\x1b[1;31merror\x1b[0m: warnings treated as errors (--deny-warnings)");
+            std::process::exit(1);
+        }
+    }
+    let compiled = match template.instantiate(args_opt, include_debug_symbols) {
         Ok(program) => program,
         Err(e) => {
             eprintln!("{}", e);
@@ -165,6 +269,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         witness: witness_bytes.map(|bytes| Base64Display::new(&bytes, &STANDARD).to_string()),
         abi_meta: abi_opt,
         cmr: cmr_hex,
+        warnings: warning_strings,
     };
 
     if output_json {
@@ -179,4 +284,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+fn parse_warn_category(s: &str) -> Result<WarnCategory, String> {
+    match s {
+        "unused-variable" => Ok(WarnCategory::UnusedVariable),
+        other => Err(format!(
+            "unknown warning category `{other}`; valid categories: unused-variable"
+        )),
+    }
 }

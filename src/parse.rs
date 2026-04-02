@@ -103,6 +103,7 @@ impl_eq_hash!(Function; name, params, ret, body);
 pub struct FunctionParam {
     identifier: Identifier,
     ty: AliasedType,
+    span: Span,
 }
 
 impl FunctionParam {
@@ -114,6 +115,11 @@ impl FunctionParam {
     /// Access the type of the parameter.
     pub fn ty(&self) -> &AliasedType {
         &self.ty
+    }
+
+    /// Access the span of this parameter declaration.
+    pub fn span(&self) -> Span {
+        self.span
     }
 }
 
@@ -130,6 +136,7 @@ pub enum Statement {
 #[derive(Clone, Debug)]
 pub struct Assignment {
     pattern: Pattern,
+    pattern_span: Span,
     ty: AliasedType,
     expression: Expression,
     span: Span,
@@ -139,6 +146,11 @@ impl Assignment {
     /// Access the pattern of the assignment.
     pub fn pattern(&self) -> &Pattern {
         &self.pattern
+    }
+
+    /// Access the span of just the pattern (not the full assignment).
+    pub fn pattern_span(&self) -> Span {
+        self.pattern_span
     }
 
     /// Access the return type of assigned expression.
@@ -410,6 +422,8 @@ impl_eq_hash!(Match; scrutinee, left, right);
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct MatchArm {
     pattern: MatchPattern,
+    /// Span of the pattern, if it binds a variable (`Left`, `Right`, `Some`).
+    pattern_span: Option<Span>,
     expression: Arc<Expression>,
 }
 
@@ -417,6 +431,11 @@ impl MatchArm {
     /// Access the pattern that guards the match arm.
     pub fn pattern(&self) -> &MatchPattern {
         &self.pattern
+    }
+
+    /// Access the span of the binding pattern, if present.
+    pub fn pattern_span(&self) -> Option<Span> {
+        self.pattern_span
     }
 
     /// Access the expression that is executed in the match arm.
@@ -1222,7 +1241,11 @@ impl ChumskyParse for FunctionParam {
         identifier
             .then_ignore(just(Token::Colon))
             .then(ty)
-            .map(|(identifier, ty)| Self { identifier, ty })
+            .map_with(|(identifier, ty), e| Self {
+                identifier,
+                ty,
+                span: e.span(),
+            })
     }
 }
 
@@ -1251,13 +1274,14 @@ impl Assignment {
         E: Parser<'tokens, I, Expression, ParseError<'src>> + Clone + 'tokens,
     {
         just(Token::Let)
-            .ignore_then(Pattern::parser())
+            .ignore_then(Pattern::parser().map_with(|pat, e| (pat, e.span())))
             .then_ignore(parse_token_with_recovery(Token::Colon))
             .then(AliasedType::parser())
             .then_ignore(parse_token_with_recovery(Token::Eq))
             .then(expr)
-            .map_with(|((pattern, ty), expression), e| Self {
+            .map_with(|(((pattern, pattern_span), ty), expression), e| Self {
                 pattern,
+                pattern_span,
                 ty,
                 expression,
                 span: e.span(),
@@ -1668,26 +1692,39 @@ impl MatchArm {
         E: Parser<'tokens, I, Expression, ParseError<'src>> + Clone + 'tokens,
     {
         MatchPattern::parser()
+            .map_with(|pat, e| {
+                let has_binding = matches!(
+                    pat,
+                    MatchPattern::Left(..) | MatchPattern::Right(..) | MatchPattern::Some(..)
+                );
+                let pattern_span = if has_binding { Some(e.span()) } else { None };
+                (pat, pattern_span)
+            })
             .then_ignore(just(Token::FatArrow))
             .then(expr.map(Arc::new))
             .then(just(Token::Comma).or_not())
-            .validate(|((pattern, expression), comma), e, emitter| {
-                let is_block = matches!(expression.as_ref().inner, ExpressionInner::Block(_, _));
+            .validate(
+                |(((pattern, pattern_span), expression), comma), e, emitter| {
+                    let is_block =
+                        matches!(expression.as_ref().inner, ExpressionInner::Block(_, _));
 
-                if !is_block && comma.is_none() {
-                    emitter.emit(
-                        Error::Grammar(
-                            "Missing ',' after a match arm that isn't block expression".to_string(),
-                        )
-                        .with_span(e.span()),
-                    );
-                }
+                    if !is_block && comma.is_none() {
+                        emitter.emit(
+                            Error::Grammar(
+                                "Missing ',' after a match arm that isn't block expression"
+                                    .to_string(),
+                            )
+                            .with_span(e.span()),
+                        );
+                    }
 
-                Self {
-                    pattern,
-                    expression,
-                }
-            })
+                    Self {
+                        pattern,
+                        pattern_span,
+                        expression,
+                    }
+                },
+            )
     }
 }
 
@@ -1763,6 +1800,7 @@ impl Match {
                     let match_arm_fallback = MatchArm {
                         expression: Arc::new(Expression::empty(Span::new(0, 0))),
                         pattern: MatchPattern::False,
+                        pattern_span: None,
                     };
 
                     let (left, right) = (
@@ -2031,6 +2069,7 @@ impl crate::ArbitraryRec for Assignment {
 
         Ok(Self {
             pattern,
+            pattern_span: Span::DUMMY,
             ty,
             expression,
             span: Span::DUMMY,
@@ -2160,10 +2199,12 @@ impl crate::ArbitraryRec for Match {
             scrutinee,
             left: MatchArm {
                 pattern: pat_l,
+                pattern_span: None,
                 expression: expr_l,
             },
             right: MatchArm {
                 pattern: pat_r,
+                pattern_span: None,
                 expression: expr_r,
             },
             span: Span::DUMMY,
