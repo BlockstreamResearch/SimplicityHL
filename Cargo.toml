@@ -8,6 +8,7 @@ repository = "https://github.com/BlockstreamResearch/SimplicityHL"
 description = "Rust-like language that compiles to Simplicity bytecode."
 edition = "2021"
 rust-version = "1.79.0"
+default-run = "simc"
 
 [lib]
 name = "simplicityhl"
@@ -17,9 +18,15 @@ path = "src/lib.rs"
 name = "simc"
 path = "src/main.rs"
 
+[[bin]]
+name = "simplicityhl-codegen"
+path = "codegen/src/main.rs"
+required-features = ["docs", "serde"]
+
 [features]
 default = [ "serde" ]
 serde = ["dep:serde", "dep:serde_json"]
+docs = []
 
 [dependencies]
 base64 = "0.21.2"

@@ -6,4 +6,8 @@ description = "Generator of Rust code as interface between SimplicityHL and Rust
 publish = false
 
 [dependencies]
-simplicityhl = { path = ".." }
+simplicityhl = { path = ".." , features = ["docs"]}
+
+serde = { version = "1.0.188", features = ["derive"]}
+serde_json = { version = "1.0.105"}
+clap = "4.5.37"

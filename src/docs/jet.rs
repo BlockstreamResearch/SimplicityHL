@@ -1,9 +1,19 @@
-use simplicityhl::simplicity::jet::Elements;
+use crate::simplicity::jet::Elements;
 use std::fmt;
 
-#[rustfmt::skip]
-pub fn documentation(jet: Elements) -> &'static str {
-    match jet {
+/// Interface for providing information about jets.
+pub trait JetInfo {
+    /// The description of the jet.
+    fn documentation(&self) -> &'static str;
+
+    /// Indicates whether the jet is deprecated or disabled.
+    fn is_deprecated(&self) -> bool;
+}
+
+impl JetInfo for Elements {
+    #[rustfmt::skip]
+    fn documentation(&self) -> &'static str {
+    match self {
         // Multi-bit logic
         Elements::All8  => "Check if the value is [`u8::MAX`].",
         Elements::All16 => "Check if the value is [`u16::MAX`].",
@@ -30,40 +40,40 @@ pub fn documentation(jet: Elements) -> &'static str {
         Elements::Eq32  => "Check if two 32-bit values are equal.",
         Elements::Eq64  => "Check if two 64-bit values are equal.",
         Elements::Eq256 => "Check if two 256-bit values are equal.",
-        Elements::FullLeftShift8_1    => "Helper for left-shifting  bits. The bits are shifted from a 1-bit  value into a 8-bit  value. Return the shifted value and the 1  bit  that was  shifted out.",
-        Elements::FullLeftShift8_2    => "Helper for left-shifting  bits. The bits are shifted from a 2-bit  value into a 8-bit  value. Return the shifted value and the 2  bits that were shifted out.",
-        Elements::FullLeftShift8_4    => "Helper for left-shifting  bits. The bits are shifted from a 4-bit  value into a 8-bit  value. Return the shifted value and the 4  bits that were shifted out.",
+        Elements::FullLeftShift8_1    => "Helper for left-shifting  bits. The bits are shifted from a 1-bit  value into an 8-bit  value. Return the shifted value and the 1  bit  that was  shifted out.",
+        Elements::FullLeftShift8_2    => "Helper for left-shifting  bits. The bits are shifted from a 2-bit  value into an 8-bit  value. Return the shifted value and the 2  bits that were shifted out.",
+        Elements::FullLeftShift8_4    => "Helper for left-shifting  bits. The bits are shifted from a 4-bit  value into an 8-bit  value. Return the shifted value and the 4  bits that were shifted out.",
         Elements::FullLeftShift16_1   => "Helper for left-shifting  bits. The bits are shifted from a 1-bit  value into a 16-bit value. Return the shifted value and the 1  bit  that was  shifted out.",
         Elements::FullLeftShift16_2   => "Helper for left-shifting  bits. The bits are shifted from a 2-bit  value into a 16-bit value. Return the shifted value and the 2  bits that were shifted out.",
         Elements::FullLeftShift16_4   => "Helper for left-shifting  bits. The bits are shifted from a 4-bit  value into a 16-bit value. Return the shifted value and the 4  bits that were shifted out.",
-        Elements::FullLeftShift16_8   => "Helper for left-shifting  bits. The bits are shifted from a 8-bit  value into a 16-bit value. Return the shifted value and the 8  bits that were shifted out.",
+        Elements::FullLeftShift16_8   => "Helper for left-shifting  bits. The bits are shifted from an 8-bit  value into a 16-bit value. Return the shifted value and the 8  bits that were shifted out.",
         Elements::FullLeftShift32_1   => "Helper for left-shifting  bits. The bits are shifted from a 1-bit  value into a 32-bit value. Return the shifted value and the 1  bit  that was  shifted out.",
         Elements::FullLeftShift32_2   => "Helper for left-shifting  bits. The bits are shifted from a 2-bit  value into a 32-bit value. Return the shifted value and the 2  bits that were shifted out.",
         Elements::FullLeftShift32_4   => "Helper for left-shifting  bits. The bits are shifted from a 4-bit  value into a 32-bit value. Return the shifted value and the 4  bits that were shifted out.",
-        Elements::FullLeftShift32_8   => "Helper for left-shifting  bits. The bits are shifted from a 8-bit  value into a 32-bit value. Return the shifted value and the 8  bits that were shifted out.",
+        Elements::FullLeftShift32_8   => "Helper for left-shifting  bits. The bits are shifted from an 8-bit  value into a 32-bit value. Return the shifted value and the 8  bits that were shifted out.",
         Elements::FullLeftShift32_16  => "Helper for left-shifting  bits. The bits are shifted from a 16-bit value into a 32-bit value. Return the shifted value and the 16 bits that were shifted out.",
         Elements::FullLeftShift64_1   => "Helper for left-shifting  bits. The bits are shifted from a 1-bit  value into a 64-bit value. Return the shifted value and the 1  bit  that was  shifted out.",
         Elements::FullLeftShift64_2   => "Helper for left-shifting  bits. The bits are shifted from a 2-bit  value into a 64-bit value. Return the shifted value and the 2  bits that were shifted out.",
         Elements::FullLeftShift64_4   => "Helper for left-shifting  bits. The bits are shifted from a 4-bit  value into a 64-bit value. Return the shifted value and the 4  bits that were shifted out.",
-        Elements::FullLeftShift64_8   => "Helper for left-shifting  bits. The bits are shifted from a 8-bit  value into a 64-bit value. Return the shifted value and the 8  bits that were shifted out.",
+        Elements::FullLeftShift64_8   => "Helper for left-shifting  bits. The bits are shifted from an 8-bit  value into a 64-bit value. Return the shifted value and the 8  bits that were shifted out.",
         Elements::FullLeftShift64_16  => "Helper for left-shifting  bits. The bits are shifted from a 16-bit value into a 64-bit value. Return the shifted value and the 16 bits that were shifted out.",
         Elements::FullLeftShift64_32  => "Helper for left-shifting  bits. The bits are shifted from a 32-bit value into a 64-bit value. Return the shifted value and the 32 bits that were shifted out.",
-        Elements::FullRightShift8_1   => "Helper for right-shifting bits. The bits are shifted from a 1-bit  value into a 8-bit  value. Return the shifted value and the 1  bit  that was  shifted out.",
-        Elements::FullRightShift8_2   => "Helper for right-shifting bits. The bits are shifted from a 2-bit  value into a 8-bit  value. Return the shifted value and the 2  bits that were shifted out.",
-        Elements::FullRightShift8_4   => "Helper for right-shifting bits. The bits are shifted from a 4-bit  value into a 8-bit  value. Return the shifted value and the 4  bits that were shifted out.",
+        Elements::FullRightShift8_1   => "Helper for right-shifting bits. The bits are shifted from a 1-bit  value into an 8-bit  value. Return the shifted value and the 1  bit  that was  shifted out.",
+        Elements::FullRightShift8_2   => "Helper for right-shifting bits. The bits are shifted from a 2-bit  value into an 8-bit  value. Return the shifted value and the 2  bits that were shifted out.",
+        Elements::FullRightShift8_4   => "Helper for right-shifting bits. The bits are shifted from a 4-bit  value into an 8-bit  value. Return the shifted value and the 4  bits that were shifted out.",
         Elements::FullRightShift16_1  => "Helper for right-shifting bits. The bits are shifted from a 1-bit  value into a 16-bit value. Return the shifted value and the 1  bit  that was  shifted out.",
         Elements::FullRightShift16_2  => "Helper for right-shifting bits. The bits are shifted from a 2-bit  value into a 16-bit value. Return the shifted value and the 2  bits that were shifted out.",
         Elements::FullRightShift16_4  => "Helper for right-shifting bits. The bits are shifted from a 4-bit  value into a 16-bit value. Return the shifted value and the 4  bits that were shifted out.",
-        Elements::FullRightShift16_8  => "Helper for right-shifting bits. The bits are shifted from a 8-bit  value into a 16-bit value. Return the shifted value and the 8  bits that were shifted out.",
+        Elements::FullRightShift16_8  => "Helper for right-shifting bits. The bits are shifted from an 8-bit  value into a 16-bit value. Return the shifted value and the 8  bits that were shifted out.",
         Elements::FullRightShift32_1  => "Helper for right-shifting bits. The bits are shifted from a 1-bit  value into a 32-bit value. Return the shifted value and the 1  bit  that was  shifted out.",
         Elements::FullRightShift32_2  => "Helper for right-shifting bits. The bits are shifted from a 2-bit  value into a 32-bit value. Return the shifted value and the 2  bits that were shifted out.",
         Elements::FullRightShift32_4  => "Helper for right-shifting bits. The bits are shifted from a 4-bit  value into a 32-bit value. Return the shifted value and the 4  bits that were shifted out.",
-        Elements::FullRightShift32_8  => "Helper for right-shifting bits. The bits are shifted from a 8-bit  value into a 32-bit value. Return the shifted value and the 8  bits that were shifted out.",
+        Elements::FullRightShift32_8  => "Helper for right-shifting bits. The bits are shifted from an 8-bit  value into a 32-bit value. Return the shifted value and the 8  bits that were shifted out.",
         Elements::FullRightShift32_16 => "Helper for right-shifting bits. The bits are shifted from a 16-bit value into a 32-bit value. Return the shifted value and the 16 bits that were shifted out.",
         Elements::FullRightShift64_1  => "Helper for right-shifting bits. The bits are shifted from a 1-bit  value into a 64-bit value. Return the shifted value and the 1  bit  that was  shifted out.",
         Elements::FullRightShift64_2  => "Helper for right-shifting bits. The bits are shifted from a 2-bit  value into a 64-bit value. Return the shifted value and the 2  bits that were shifted out.",
         Elements::FullRightShift64_4  => "Helper for right-shifting bits. The bits are shifted from a 4-bit  value into a 64-bit value. Return the shifted value and the 4  bits that were shifted out.",
-        Elements::FullRightShift64_8  => "Helper for right-shifting bits. The bits are shifted from a 8-bit  value into a 64-bit value. Return the shifted value and the 8  bits that were shifted out.",
+        Elements::FullRightShift64_8  => "Helper for right-shifting bits. The bits are shifted from an 8-bit  value into a 64-bit value. Return the shifted value and the 8  bits that were shifted out.",
         Elements::FullRightShift64_16 => "Helper for right-shifting bits. The bits are shifted from a 16-bit value into a 64-bit value. Return the shifted value and the 16 bits that were shifted out.",
         Elements::FullRightShift64_32 => "Helper for right-shifting bits. The bits are shifted from a 32-bit value into a 64-bit value. Return the shifted value and the 32 bits that were shifted out.",
         Elements::High1  => "Return `u1::MAX` = 1.",
@@ -80,14 +90,14 @@ pub fn documentation(jet: Elements) -> &'static str {
         Elements::LeftExtend8_64   => "Extend an 8-bit value to a 64-bit value by padding its left with the MSB.",
         Elements::LeftExtend16_32  => "Extend a 16-bit value to a 32-bit value by padding its left with the MSB.",
         Elements::LeftExtend16_64  => "Extend a 16-bit value to a 64-bit value by padding its left with the MSB.",
-        Elements::LeftExtend32_64  => "Extend a 16-bit value to a 64-bit value by padding its left with the MSB.",
+        Elements::LeftExtend32_64  => "Extend a 32-bit value to a 64-bit value by padding its left with the MSB.",
         Elements::LeftPadHigh1_8   => "Extend a 1-bit  value to an 8-bit value by padding its left with ones.",
         Elements::LeftPadHigh1_16  => "Extend a 1-bit  value to a 16-bit value by padding its left with ones.",
         Elements::LeftPadHigh1_32  => "Extend a 1-bit  value to a 32-bit value by padding its left with ones.",
         Elements::LeftPadHigh1_64  => "Extend a 1-bit  value to a 64-bit value by padding its left with ones.",
         Elements::LeftPadHigh8_16  => "Extend an 8-bit value to a 16-bit value by padding its left with ones.",
         Elements::LeftPadHigh8_32  => "Extend an 8-bit value to a 32-bit value by padding its left with ones.",
-        Elements::LeftPadHigh8_64  => "Extend a 1-bit  value to a 64-bit value by padding its left with ones.",
+        Elements::LeftPadHigh8_64  => "Extend an 8-bit  value to a 64-bit value by padding its left with ones.",
         Elements::LeftPadHigh16_32 => "Extend a 16-bit value to a 32-bit value by padding its left with ones.",
         Elements::LeftPadHigh16_64 => "Extend a 16-bit value to a 64-bit value by padding its left with ones.",
         Elements::LeftPadHigh32_64 => "Extend a 32-bit value to a 64-bit value by padding its left with ones.",
@@ -113,9 +123,9 @@ pub fn documentation(jet: Elements) -> &'static str {
         Elements::LeftShiftWith16 => "Left-shift a 16-bit value by the given amount. Bits are filled with the given bit.",
         Elements::LeftShiftWith32 => "Left-shift a 32-bit value by the given amount. Bits are filled with the given bit.",
         Elements::LeftShiftWith64 => "Left-shift a 64-bit value by the given amount. Bits are filled with the given bit.",
-        Elements::Leftmost8_1   => "Return the most significant 1  bits of an 8-bit value.",
-        Elements::Leftmost8_2   => "Return the most significant 1  bits of an 8-bit value.",
-        Elements::Leftmost8_4   => "Return the most significant 1  bits of an 8-bit value.",
+        Elements::Leftmost8_1   => "Return the most significant 1  bit of an 8-bit value.",
+        Elements::Leftmost8_2   => "Return the most significant 2  bits of an 8-bit value.",
+        Elements::Leftmost8_4   => "Return the most significant 4  bits of an 8-bit value.",
         Elements::Leftmost16_1  => "Return the most significant 1  bit  of a 16-bit value.",
         Elements::Leftmost16_2  => "Return the most significant 2  bits of a 16-bit value.",
         Elements::Leftmost16_4  => "Return the most significant 4  bits of a 16-bit value.",
@@ -125,22 +135,22 @@ pub fn documentation(jet: Elements) -> &'static str {
         Elements::Leftmost32_4  => "Return the most significant 4  bits of a 32-bit value.",
         Elements::Leftmost32_8  => "Return the most significant 8  bits of a 32-bit value.",
         Elements::Leftmost32_16 => "Return the most significant 16 bits of a 32-bit value.",
-        Elements::Leftmost64_1  => "Return the most significant 1  bits of a 64-bit value.",
+        Elements::Leftmost64_1  => "Return the most significant 1  bit  of a 64-bit value.",
         Elements::Leftmost64_2  => "Return the most significant 2  bits of a 64-bit value.",
         Elements::Leftmost64_4  => "Return the most significant 4  bits of a 64-bit value.",
         Elements::Leftmost64_8  => "Return the most significant 8  bits of a 64-bit value.",
         Elements::Leftmost64_16 => "Return the most significant 16 bits of a 64-bit value.",
         Elements::Leftmost64_32 => "Return the most significant 32 bits of a 64-bit value.",
-        Elements::Low1  => "Return `u1::MIN` = 1.",
-        Elements::Low8  => "Return [`u8::MIN`].",
-        Elements::Low16 => "Return [`u16::MIN`].",
-        Elements::Low32 => "Return [`u32::MIN`].",
-        Elements::Low64 => "Return [`u64::MIN`].",
+        Elements::Low1  => "Return `u1::MIN` = 0.",
+        Elements::Low8  => "Return [`u8::MIN`] = 0.",
+        Elements::Low16 => "Return [`u16::MIN`] = 0.",
+        Elements::Low32 => "Return [`u32::MIN`] = 0.",
+        Elements::Low64 => "Return [`u64::MIN`] = 0.",
         Elements::Maj1  => "Bitwise MAJORITY of three 1-bit values. The output bit is false if two or more input bits are false, and true otherwise.",
-        Elements::Maj8  => "Bitwise MAJORITY of three 1-bit values. The output bit is false if two or more input bits are false, and true otherwise.",
-        Elements::Maj16 => "Bitwise MAJORITY of three 1-bit values. The output bit is false if two or more input bits are false, and true otherwise.",
-        Elements::Maj32 => "Bitwise MAJORITY of three 1-bit values. The output bit is false if two or more input bits are false, and true otherwise.",
-        Elements::Maj64 => "Bitwise MAJORITY of three 1-bit values. The output bit is false if two or more input bits are false, and true otherwise.",
+        Elements::Maj8  => "Bitwise MAJORITY of three 8-bit values. The output bit is false if two or more input bits are false, and true otherwise.",
+        Elements::Maj16 => "Bitwise MAJORITY of three 16-bit values. The output bit is false if two or more input bits are false, and true otherwise.",
+        Elements::Maj32 => "Bitwise MAJORITY of three 32-bit values. The output bit is false if two or more input bits are false, and true otherwise.",
+        Elements::Maj64 => "Bitwise MAJORITY of three 64-bit values. The output bit is false if two or more input bits are false, and true otherwise.",
         Elements::Or1  => "Bitwise OR of two 1-bit values.",
         Elements::Or8  => "Bitwise OR of two 8-bit values.",
         Elements::Or16 => "Bitwise OR of two 16-bit values.",
@@ -184,9 +194,9 @@ pub fn documentation(jet: Elements) -> &'static str {
         Elements::RightShiftWith16 => "Right-shift a 16-bit value by the given amount. Bits are filled with the given bit.",
         Elements::RightShiftWith32 => "Right-shift a 32-bit value by the given amount. Bits are filled with the given bit.",
         Elements::RightShiftWith64 => "Right-shift a 64-bit value by the given amount. Bits are filled with the given bit.",
-        Elements::Rightmost8_1   => "Return the least significant 1  bits of an 8-bit value.",
-        Elements::Rightmost8_2   => "Return the least significant 1  bits of an 8-bit value.",
-        Elements::Rightmost8_4   => "Return the least significant 1  bits of an 8-bit value.",
+        Elements::Rightmost8_1   => "Return the least significant 1  bit of an 8-bit value.",
+        Elements::Rightmost8_2   => "Return the least significant 2  bits of an 8-bit value.",
+        Elements::Rightmost8_4   => "Return the least significant 4  bits of an 8-bit value.",
         Elements::Rightmost16_1  => "Return the least significant 1  bit  of a 16-bit value.",
         Elements::Rightmost16_2  => "Return the least significant 2  bits of a 16-bit value.",
         Elements::Rightmost16_4  => "Return the least significant 4  bits of a 16-bit value.",
@@ -196,7 +206,7 @@ pub fn documentation(jet: Elements) -> &'static str {
         Elements::Rightmost32_4  => "Return the least significant 4  bits of a 32-bit value.",
         Elements::Rightmost32_8  => "Return the least significant 8  bits of a 32-bit value.",
         Elements::Rightmost32_16 => "Return the least significant 16 bits of a 32-bit value.",
-        Elements::Rightmost64_1  => "Return the least significant 1  bits of a 64-bit value.",
+        Elements::Rightmost64_1  => "Return the least significant 1  bit of a 64-bit value.",
         Elements::Rightmost64_2  => "Return the least significant 2  bits of a 64-bit value.",
         Elements::Rightmost64_4  => "Return the least significant 4  bits of a 64-bit value.",
         Elements::Rightmost64_8  => "Return the least significant 8  bits of a 64-bit value.",
@@ -207,10 +217,12 @@ pub fn documentation(jet: Elements) -> &'static str {
         Elements::Some16 => "Check if a 16-bit value is nonzero.",
         Elements::Some32 => "Check if a 32-bit value is nonzero.",
         Elements::Some64 => "Check if a 64-bit value is nonzero.",
-        Elements::Verify => r#"Assert that a bit is true.
+        Elements::Verify => r#"**Not available in SimplicityHL** Assert that a bit is true.
 
 ## Panics
-The assertion fails."#,
+The assertion fails.
+
+Note: This jet is used under the hood of `assert!` function in SimplicityHL"#,
         Elements::Xor1  => "Bitwise XOR of two 1-bit  values.",
         Elements::Xor8  => "Bitwise XOR of two 8-bit  values.",
         Elements::Xor16 => "Bitwise XOR of two 16-bit values.",
@@ -235,7 +247,7 @@ The assertion fails."#,
         | Elements::DivMod32
         | Elements::DivMod64 => "Divide the first integer by the second integer, and return the remainder.",
         Elements::DivMod128_64 => r#"Divide the 128-bit integer `a` by the 64-bit integer `b`.
-Return a tuple of the quotient `q` and the remainer `r`.
+Return a tuple of the quotient `q` and the remainder `r`.
 
 Use this jet to recursively define wide integer divisions.
 
@@ -404,7 +416,7 @@ in a [`hash_to_curve`] function. However, the distribution only approaches unifo
 
 ## Panics
 The assertion fails."#,
-        Elements::CheckSigVerify => r#"Assert that a Schnorr signature matches a public key and message, using a custom sighash mode.
+        Elements::CheckSigVerify => r#"**Not available in SimplicityHL** Assert that a Schnorr signature matches a public key and message, using a custom sighash mode.
 
 ## Panics
 The assertion fails.
@@ -414,7 +426,7 @@ This jet should not be used directly."#,
         // Bitcoin (without primitives)
         Elements::ParseLock => "Parse an integer as a consensus-encoded Bitcoin lock time.",
         Elements::ParseSequence => "Parse an integer as a consensus-encoded Bitcoin sequence number.",
-        Elements::TapdataInit => r#"Create a SHA256 context, initialized with a "TapData" tag."#,
+        Elements::TapdataInit => r#"Create a SHA256 context, initialized with a `TapData` tag."#,
         // Signature hash modes
         Elements::AnnexHash => r#"Continue a SHA256 hash with an optional hash by appending the following:
 - If there is no hash, then the byte `0x00`.
@@ -450,7 +462,7 @@ Note that situations 2 and 3 are cryptographically impossible to occur."#,
         Elements::InputOutpointsHash => r#"Return the SHA256 hash of the concatenation of the following for every input:
 - If the input is not a pegin, then the byte `0x00`.
 - If the input is a pegin, then the byte `0x01` followed by the parent chain's genesis hash (32 bytes).
-- The input's serialized previous transaction id (32 bytes).
+- The input's serialized previous transaction ID (32 bytes).
 - The input's previous transaction index in big endian format (4 bytes).
 
 IMPORTANT: the index is serialized in big endian format rather than little endian format."#,
@@ -462,7 +474,7 @@ such cases we still use the SHA256 hash of the empty string."#,
         Elements::InputSequencesHash => r#"Return the SHA256 hash of the concatenation of the following for every input:
 - The input's sequence number in big endian format (4 bytes).
 
-IMPORTANT, the sequence number is serialized in big endian format rather than little endian format."#,
+IMPORTANT: the sequence number is serialized in big endian format rather than little endian format."#,
         Elements::InputUtxoHash => r#"Return the SHA256 hash of the following:
 - The serialization of the input UTXO's asset and amount fields.
 - The SHA256 hash of the input UTXO's scriptPubKey.
@@ -474,7 +486,7 @@ Return `None` if the input does not exist."#,
         Elements::InputHash => r#"Return the SHA256 hash of the following:
 - If the input is not a pegin, then the byte `0x00`.
 - If the input is a pegin, then the byte `0x01` followed by the parent chain's genesis hash (32 bytes).
-- The input's serialized previous transaction id (32 bytes).
+- The input's serialized previous transaction ID (32 bytes).
 - The input's previous transaction index in big endian format (4 bytes).
 - The input's sequence number in big endian format (4 bytes).
 - If the input has no annex, or isn't a taproot spend, then the byte `0x00`.
@@ -495,14 +507,14 @@ bytes or 33 bytes).
 33 bytes).
 
 IMPORTANT: If there is an issuance but there are no asset issued (i.e. the amount is null) we serialize
-the vase as the explicit 0 amount, (i.e. `0x01 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00`).
+the value as the explicit 0 amount, (i.e. `0x01 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00`).
 
 Note, the issuance asset id is serialized in the same format as an explicit asset id would be."#,
         Elements::IssuanceBlindingEntropyHash => r#"Return the SHA256 hash of the concatenation of the following for every input:
 - If the input has no issuance then the byte `0x00`.
 - If the input is has a new issuance then the byte `0x01` followed by 32 `0x00` bytes and the new issuance's
 contract hash field (32 bytes).
-- If the input is has reissuance then the byte `0x01` followed by a serializaiton of the reissuance's blinding
+- If the input is has reissuance then the byte `0x01` followed by a serialization of the reissuance's blinding
 nonce field (32 bytes) and the reissuance's entropy field (32 bytes).
 
 Note that if the issuance is a new issuance then the blinding nonce field is 32 `0x00` bytes and new issuance's
@@ -523,7 +535,7 @@ bytes or 33 bytes).
 (32 bytes), followed by the serialization of the explicit 0 amount (i.e `0x01 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00`) (9 bytes).
 
 IMPORTANT: If there is an issuance but there are no tokens issued (i.e. the amount is null) we serialize
-the vase as the explicit 0 amount, (i.e. `0x01 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00`).
+the value as the explicit 0 amount, (i.e. `0x01 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00`).
 
 Note, the issuance token id is serialized in the same format as an explicit asset id would be."#,
         Elements::IssuanceHash => r#"Return the SHA256 hash of the following:
@@ -546,7 +558,7 @@ Note, the issuance token id is serialized in the same format as an explicit asse
     - If the input has no issuance then the byte `0x00`.
     - If the input is has a new issuance then the byte `0x01` followed by 32 `0x00` bytes and the new issuance's
     contract hash field (32 bytes).
-    - If the input is has reissuance then the byte `0x01` followed by a serializaiton of the reissuance's blinding
+    - If the input is has reissuance then the byte `0x01` followed by a serialization of the reissuance's blinding
     nonce field (32 bytes) and the reissuance's entropy field (32 bytes).
 
 Return `None` if the input does not exist."#,
@@ -559,7 +571,7 @@ Return `None` if the input does not exist."#,
         Elements::OutpointHash => r#"Continue the SHA256 hash with an optional pegin and an outpoint by appending the following:
 - If the input is not a pegin, then the byte `0x00`.
 - If the input is a pegin, then the byte `0x01` followed by the given parent genesis hash (32 bytes).
-- The input's previous transaction id (32 bytes).
+- The input's previous transaction ID (32 bytes).
 - The input's previous transaction index in big endian format (4 bytes)."#,
         Elements::OutputAmountsHash => "Return the SHA256 hash of the serialization of each output's asset and amount fields.",
         Elements::OutputNoncesHash => "Return the SHA256 hash of the serialization of each output's nonce field.",
@@ -605,7 +617,7 @@ Note: the two copies of the [`genesis_block_hash`] values effectively makes this
 - The byte `0x20` (1 byte).
 - The result of [`script_cmr`] (32 bytes).
 
-Note: this matches Element's modified BIP-0341 definition of tapleaf hash."#,
+Note: this matches Elements' modified BIP-0341 definition of tapleaf hash."#,
         Elements::TappathHash => r#"Return a hash of the current input's control block excluding the leaf version and the taproot internal key.
 
 Using the notation of BIP-0341, it returns the SHA256 hash of c[33: 33 + 32m]."#,
@@ -618,11 +630,11 @@ Using the notation of BIP-0341, it returns the SHA256 hash of c[33: 33 + 32m]."#
 - The result of [`output_surjection_proofs_hash`] (32 bytes).
 - The result of [`input_utxos_hash`] (32 bytes)."#,
         // Time locks
-        Elements::CheckLockDistance => r#"Assert that the value returned by [`tx_lock_distance`] is greater than or equal to the given value.
+        Elements::CheckLockDistance => r#"**Deprecated; do not use.** Assert that the value returned by [`tx_lock_distance`] is greater than or equal to the given value.
 
 ## Panics
 The assertion fails."#,
-        Elements::CheckLockDuration => r#"Assert that the value returned by [`tx_lock_duration`] is greater than or equal to the given value.
+        Elements::CheckLockDuration => r#"**Deprecated; do not use.** Assert that the value returned by [`tx_lock_duration`] is greater than or equal to the given value.
 
 ## Panics
 The assertion fails"#,
@@ -635,8 +647,8 @@ The assertion fails."#,
 ## Panics
 The assertion fails."#,
         Elements::TxIsFinal => "Check if the sequence numbers of all transaction inputs are at their maximum value.",
-        Elements::TxLockDistance => "If [`version`] returns 2 or greater, then return the greatest valid [`Distance`] value of any transaction input. Return zeroes otherwise.",
-        Elements::TxLockDuration => "If [`version`] returns 2 or greater, then return the greatest valid [`Duration`] value of any transaction input. Return zeroes otherwise.",
+        Elements::TxLockDistance => "**Deprecated; do not use.** If [`version`] returns 2 or greater, then return the greatest valid [`Distance`] value of any transaction input. Return zeroes otherwise.",
+        Elements::TxLockDuration => "**Deprecated; do not use.** If [`version`] returns 2 or greater, then return the greatest valid [`Duration`] value of any transaction input. Return zeroes otherwise.",
         Elements::TxLockHeight => "If [`tx_is_final`] returns false, then try to parse the transaction's lock time as a [`Height`] value. Return zeroes otherwise.",
         Elements::TxLockTime   => "If [`tx_is_final`] returns false, then try to parse the transaction's lock time as a [`Time`] value. Return zeroes otherwise.",
         // Issuance
@@ -648,7 +660,7 @@ The assertion fails."#,
 This entropy value is used to compute issued asset and token IDs."#,
         Elements::Issuance => r#"Return the kind of issuance of the input at the given index:
 - Return `Some(Some(false))` if the input has new issuance.
-- Return `Some(Some(true))` if the input as reissuance.
+- Return `Some(Some(true))` if the input has reissuance.
 - Return `Some(None)` if the input has no issuance.
 - Return `None` if the input does not exist."#,
         Elements::IssuanceAsset => r#"Return the ID of the issued asset of the input at the given index:
@@ -657,7 +669,7 @@ This entropy value is used to compute issued asset and token IDs."#,
 - Return `None` if the input does not exist."#,
         Elements::IssuanceEntropy => r#"Return the issuance entropy of the input at the given index:
 - Return `Some(Some(x))` if the input has reissuance with entropy `x` or if there is new issuance whose computed entropy is `x`.
-- Return `Some(Some(x))` if the input has no issuance.
+- Return `Some(None)` if the input has no issuance.
 - Return `None` if the input does not exist."#,
         Elements::IssuanceToken => r#"Return the reissuance token of the input at the given index:
 - Return `Some(Some(x))` if the input has issuance with the reissuance token ID `x`.
@@ -666,7 +678,7 @@ This entropy value is used to compute issued asset and token IDs."#,
         Elements::LbtcAsset => "Return the asset for Liquid Bitcoin.",
         // Transaction
         Elements::CurrentAmount => "Return the [`input_amount`] at the [`current_index`].",
-        Elements::CurrentAnnexHash => "Return the [`input_annex_hash`] at th [`current_index`].",
+        Elements::CurrentAnnexHash => "Return the [`input_annex_hash`] at the [`current_index`].",
         Elements::CurrentAsset => "Return the [`input_asset`] at the [`current_index`].",
         Elements::CurrentIndex => "Return the index of the current txin.",
         Elements::CurrentIssuanceAssetAmount => "Return the [`issuance_asset_amount`] at the [`current_index`].",
@@ -684,15 +696,14 @@ This entropy value is used to compute issued asset and token IDs."#,
 SegWit UTXOs enforce scriptSig to be the empty string. In such cases, we return the SHA256 hash of the empty string."#,
         Elements::CurrentSequence => r#"Return the nSequence of the current txin.
 
-Use this jet to obtain the raw, encoded sequence number.
-Use [`tx_lock_distance`] to obtain a relative block height, or [`tx_lock_duration`] to obtain a relative UNIX timestamp, in a safe manner."#,
+Use this jet to obtain the raw, encoded sequence number."#,
         Elements::GenesisBlockHash => "Return the SHA256 hash of the genesis block.",
         Elements::InputAmount => r#"Return the asset id and the asset amount at the given input index.
 
 Return `None` if the input does not exist."#,
         Elements::InputAnnexHash => r#"Return the SHA256 hash of the annex at the given input:
 - Return `Some(Some(x))` if the input has an annex that hashes to `x`.
-- Return `Some(None`) if the input has no annex.
+- Return `Some(None)` if the input has no annex.
 - Return `None` if the input does not exist."#,
         Elements::InputAsset => r#"Return the asset id of the input at the given index.
 
@@ -707,7 +718,7 @@ Return `None` if the input does not exist."#,
         Elements::InputScriptHash => r#"Return the SHA256 hash of the scriptPubKey of the UTXO of the input at the given index.
 
 Return `None` if the input does not exist."#,
-        Elements::InputScriptSigHash => r#"Return the SHA256 hash of the scriptSigKey of the input at the given index.
+        Elements::InputScriptSigHash => r#"Return the SHA256 hash of the scriptSig of the input at the given index.
 
 Return `None` if the input does not exist.
 
@@ -800,6 +811,19 @@ We assume that Simplicity can be spent in Taproot outputs only, so there always 
 Return zero for any asset without fees."#,
         Elements::TransactionId => "Return the transaction ID.",
         Elements::Version => "Return the version number of the transaction.",
+    }
+}
+
+    fn is_deprecated(&self) -> bool {
+        matches!(
+            self,
+            Elements::CheckLockDistance
+                | Elements::CheckLockDuration
+                | Elements::TxLockDistance
+                | Elements::TxLockDuration
+                | Elements::CheckSigVerify
+                | Elements::Verify
+        )
     }
 }
 
@@ -938,6 +962,23 @@ impl Category {
             Self::Issuance => ISSUANCE.iter(),
             Self::Transaction => TRANSACTION.iter(),
         }
+    }
+
+    /// Display category as proper documentation name.
+    pub fn to_pretty_string(self) -> String {
+        match self {
+            Self::MultiBitLogic => "Multi-bit logic",
+            Self::Arithmetic => "Arithmetic",
+            Self::HashFunctions => "Hash functions",
+            Self::EllipticCurveFunctions => "Elliptic curve functions",
+            Self::DigitalSignatures => "Digital Signatures",
+            Self::BitcoinWithoutPrimitives => "Bitcoin",
+            Self::SignatureHashModes => "Elements signature hash modes",
+            Self::TimeLocks => "Time locks",
+            Self::Issuance => "Issuance",
+            Self::Transaction => "Transaction",
+        }
+        .to_string()
     }
 }
 
