@@ -222,8 +222,14 @@ impl fmt::Display for RichError {
 
                 writeln!(f, "{:width$} |", " ", width = line_num_width)?;
 
-                let mut lines = file.lines().skip(start_line_index).peekable();
-                let start_line_len = lines.peek().map_or(0, |l| l.len());
+                let mut lines = file
+                    .split(|c: char| c.is_newline())
+                    .skip(start_line_index)
+                    .peekable();
+
+                let start_line_len = lines
+                    .peek()
+                    .map_or(0, |l| l.chars().map(char::len_utf16).sum());
 
                 for (relative_line_index, line_str) in lines.take(n_spanned_lines).enumerate() {
                     let line_num = start_line_index + relative_line_index + 1;
@@ -234,7 +240,7 @@ impl fmt::Display for RichError {
 
                 let (underline_start, underline_length) = match is_multiline {
                     true => (0, start_line_len),
-                    false => (start_col, end_col - start_col),
+                    false => (start_col, (end_col - start_col).max(1)),
                 };
                 write!(f, "{:width$} |", " ", width = line_num_width)?;
                 write!(f, "{:width$}", " ", width = underline_start)?;
@@ -717,7 +723,73 @@ let x: u32 = Left(
 1 | /*😀*/ let a: u8 = 65536;
   |                    ^^^^^ Cannot parse: number too large to fit in target type"#;
 
-        println!("{error}");
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn multiline_display_with_utf16_chars() {
+        let file = r#"/*😀 this symbol should not break the rendering*/
+let a: u8 = 65536;
+let x: u32 = Left(
+    Right(0)
+);"#;
+        let error = Error::CannotParse("This span covers the entire file".to_string())
+            .with_span(Span::from(file))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | /*😀 this symbol should not break the rendering*/
+2 | let a: u8 = 65536;
+3 | let x: u32 = Left(
+4 |     Right(0)
+5 | );
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Cannot parse: This span covers the entire file"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_with_unicode_separator() {
+        let file = "let a: u8 = 65536;\u{2028}let b: u8 = 0;";
+        let error = Error::CannotParse("number too large to fit in target type".to_string())
+            .with_span(Span::new(12, 17))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | let a: u8 = 65536;
+  |             ^^^^^ Cannot parse: number too large to fit in target type"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_span_as_point() {
+        let file = "fn main()";
+        let error = Error::Grammar("Error span at (0,0)".to_string())
+            .with_span(Span::new(0, 0))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | fn main()
+  | ^ Grammar error: Error span at (0,0)"#;
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_span_as_point_on_trailing_empty_line() {
+        let file = "fn main(){\n    let a:\n";
+        let error = Error::CannotParse("eof".to_string())
+            .with_span(Span::new(file.len(), file.len()))
+            .with_file(Arc::from(file));
+
+        let expected = r#"
+  |
+3 | 
+  | ^ Cannot parse: eof"#;
+
         assert_eq!(&expected[1..], &error.to_string());
     }
 }
