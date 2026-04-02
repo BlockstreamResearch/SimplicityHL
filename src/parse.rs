@@ -72,7 +72,7 @@ pub enum Visibility {
 ///
 /// This structure defines how items from other modules or files are brought into the
 /// current scope. Note that in this architecture, the first identifier in the path
-/// is always treated as an alias bound to a specific physical path.
+/// is always treated as an dependency root path name bound to a specific physical path.
 ///
 /// # Example
 /// ```text
@@ -86,8 +86,8 @@ pub struct UseDecl {
 
     /// The base path to the target file or module.
     ///
-    /// The first element is always the registered alias for the import path.
-    /// Subsequent elements represent nested modules or directories.
+    /// The first element is always the registered dependency root path name for
+    /// the import path. Subsequent elements represent nested modules or directories.
     path: Vec<Identifier>,
 
     /// The specific item or list of items being imported from the resolved path.
@@ -100,8 +100,25 @@ impl UseDecl {
         &self.visibility
     }
 
-    pub fn path(&self) -> &Vec<Identifier> {
-        &self.path
+    /// Returns the full logical module path as a vector of string slices.
+    ///
+    /// This includes the Dependency Root Path Name (the first segment)
+    /// followed by all subsequent sub-module segments.
+    pub fn path(&self) -> Vec<&str> {
+        self.path.iter().map(|s| s.as_inner()).collect()
+    }
+
+    /// Extracts the Dependency Root Path Name (the very first segment) from this path.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `RichError` if the use declaration path is completely empty.
+    pub fn drp_name(&self) -> Result<&str, RichError> {
+        let parts = self.path();
+        parts
+            .first()
+            .copied()
+            .ok_or_else(|| Error::CannotParse("Empty use path".to_string()).with_span(self.span))
     }
 
     pub fn items(&self) -> &UseItems {
@@ -113,7 +130,7 @@ impl UseDecl {
     }
 }
 
-impl_eq_hash!(UseDecl; visibility, path, items);
+impl_eq_hash!(UseDecl; visibility, path, drp_name, items);
 
 /// Specified the items being brought into scope at the end of a `use` declaration
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -2384,6 +2401,18 @@ impl crate::ArbitraryRec for Match {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    impl UseDecl {
+        /// Creates a dummy `UseDecl` specifically for testing `DependencyMap` resolution.
+        pub fn dummy_path(path: Vec<Identifier>) -> Self {
+            Self {
+                visibility: Visibility::default(),
+                path,
+                items: UseItems::List(Vec::new()),
+                span: Span::new(0, 0),
+            }
+        }
+    }
 
     #[test]
     fn test_reject_redefined_builtin_type() {
