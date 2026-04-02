@@ -293,3 +293,14 @@ impl ModuleName {
 }
 
 wrapped_string!(ModuleName, "module name");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl Identifier {
+        pub fn dummy(name: &str) -> Self {
+            Self(std::sync::Arc::from(name))
+        }
+    }
+}

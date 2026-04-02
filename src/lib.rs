@@ -18,6 +18,8 @@ pub mod resolution;
 #[cfg(feature = "serde")]
 mod serde;
 pub mod str;
+#[cfg(test)]
+pub mod test_utils;
 pub mod tracker;
 pub mod types;
 pub mod value;
