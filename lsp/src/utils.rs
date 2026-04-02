@@ -1,5 +1,3 @@
-use std::num::NonZeroUsize;
-
 use miniscript::iter::TreeLike;
 
 use crate::completion;
@@ -10,40 +8,88 @@ use tower_lsp_server::lsp_types::{
     self, MarkupContent, MarkupKind, ParameterInformation, ParameterLabel, SignatureInformation,
 };
 
-fn position_le(a: &simplicityhl::error::Position, b: &simplicityhl::error::Position) -> bool {
-    (a.line < b.line) || (a.line == b.line && a.col <= b.col)
-}
-
-fn position_ge(a: &simplicityhl::error::Position, b: &simplicityhl::error::Position) -> bool {
-    (a.line > b.line) || (a.line == b.line && a.col >= b.col)
-}
-
 pub fn span_contains(a: &simplicityhl::error::Span, b: &simplicityhl::error::Span) -> bool {
-    position_le(&a.start, &b.start) && position_ge(&a.end, &b.end)
+    a.start <= b.start && a.end >= b.end
+}
+
+/// Convert byte offset to [`lsp_types::Position`].
+///
+/// It's converting to UTF-16 column position because it's default to LSP settings. For more
+/// context, see [`lsp_types::PositionEncodingKind`]
+pub fn offset_to_position(offset: usize, rope: &Rope) -> Result<lsp_types::Position, LspError> {
+    let line = rope.try_byte_to_line(offset)?;
+    let first_byte_of_line = rope.try_line_to_byte(line)?;
+    let column = offset - first_byte_of_line;
+
+    let rope_line = rope
+        .get_line(line)
+        .ok_or_else(|| LspError::ConversionFailed("Offset to position".to_string()))?;
+
+    let utf16_offset: usize = rope_line
+        .get_byte_slice(..column)
+        .ok_or_else(|| LspError::ConversionFailed("Offset to position".to_string()))?
+        .chars()
+        .map(char::len_utf16)
+        .sum();
+
+    Ok(lsp_types::Position::new(
+        <u32>::try_from(line)?,
+        <u32>::try_from(utf16_offset)?,
+    ))
+}
+
+/// Convert [`lsp_types::Position`] to byte offset.
+pub fn position_to_offset(position: lsp_types::Position, rope: &Rope) -> Result<usize, LspError> {
+    let line_index = usize::try_from(position.line)?;
+    let target_utf16 = usize::try_from(position.character)?;
+
+    let line = rope
+        .get_line(line_index)
+        .ok_or_else(|| LspError::ConversionFailed("Position to offset".to_string()))?;
+
+    let line_start = rope.try_line_to_byte(line_index)?;
+    let mut utf16_offset_in_line = 0usize;
+    let mut byte_offset_in_line = 0usize;
+
+    // LSP positions use UTF-16 code units, but Rope is indexed by UTF-8 bytes. Walk the line
+    // until we reach the requested UTF-16 boundary so navigation features resolve the right byte.
+    for ch in line.chars() {
+        if utf16_offset_in_line == target_utf16 {
+            return Ok(line_start + byte_offset_in_line);
+        }
+
+        let ch_utf16 = ch.len_utf16();
+        // Reject positions that would land inside a single scalar value encoded as multiple
+        // UTF-16 code units, because spans can only point at byte boundaries between characters.
+        if utf16_offset_in_line + ch_utf16 > target_utf16 {
+            return Err(LspError::ConversionFailed(
+                "Position points inside a UTF-16 code unit sequence".to_string(),
+            ));
+        }
+
+        utf16_offset_in_line += ch_utf16;
+        byte_offset_in_line += ch.len_utf8();
+    }
+
+    // LSP allows the cursor to sit at end-of-line, so accept that exact boundary after the scan.
+    if utf16_offset_in_line == target_utf16 {
+        Ok(line_start + byte_offset_in_line)
+    } else {
+        Err(LspError::ConversionFailed("Position to offset".to_string()))
+    }
 }
 
 /// Convert [`simplicityhl::error::Span`] to [`tower_lsp_server::lsp_types::Position`]
 ///
-/// Converting is required because `simplicityhl::error::Span` using their own versions of `Position`,
-/// which contains non-zero column and line, so they are always starts with one.
-/// `Position` required for diagnostic starts with zero
+/// Converting is required because [`simplicityhl::error::Span`] contains byte offsets instead of
+/// `line` and `col` fields.
 pub fn span_to_positions(
     span: &simplicityhl::error::Span,
+    rope: &Rope,
 ) -> Result<(lsp_types::Position, lsp_types::Position), LspError> {
-    let start_line = u32::try_from(span.start.line.get())?;
-    let start_col = u32::try_from(span.start.col.get())?;
-    let end_line = u32::try_from(span.end.line.get())?;
-    let end_col = u32::try_from(span.end.col.get())?;
-
     Ok((
-        lsp_types::Position {
-            line: start_line - 1,
-            character: start_col - 1,
-        },
-        lsp_types::Position {
-            line: end_line - 1,
-            character: end_col - 1,
-        },
+        offset_to_position(span.start, rope)?,
+        offset_to_position(span.end, rope)?,
     ))
 }
 
@@ -52,20 +98,11 @@ pub fn span_to_positions(
 /// Useful when [`tower_lsp_server::lsp_types::Position`] represents some singular point.
 pub fn position_to_span(
     position: lsp_types::Position,
+    rope: &Rope,
 ) -> Result<simplicityhl::error::Span, LspError> {
-    let start_line = NonZeroUsize::try_from((position.line + 1) as usize)?;
-    let start_col = NonZeroUsize::try_from((position.character + 1) as usize)?;
+    let start_line = position_to_offset(position, rope)?;
 
-    Ok(simplicityhl::error::Span {
-        start: simplicityhl::error::Position {
-            line: start_line,
-            col: start_col,
-        },
-        end: simplicityhl::error::Position {
-            line: start_line,
-            col: start_col,
-        },
-    })
+    Ok(simplicityhl::error::Span::new(start_line, start_line))
 }
 
 /// Get document comments, using lines above given line index. Only used to
@@ -144,7 +181,7 @@ pub fn find_related_call<'a>(
         .filter_map(|expr| {
             if let parse::ExprTree::Call(call) = expr {
                 // Only include if call span can be obtained
-                get_call_span(call).ok().map(|span| (call, span))
+                Some((call, get_call_span(call)))
             } else {
                 None
             }
@@ -160,11 +197,11 @@ pub fn find_function_name_range(
     function: &parse::Function,
     text: &Rope,
 ) -> Result<lsp_types::Range, LspError> {
-    let start_line = usize::from(function.span().start.line) - 1;
+    let start_line = offset_to_position(function.span().start, text)?.line;
     let Some((line, character)) =
         text.lines()
             .enumerate()
-            .skip(start_line)
+            .skip(start_line as usize)
             .find_map(|(i, line)| {
                 line.to_string()
                     .find(function.name().as_inner())
@@ -194,23 +231,17 @@ pub fn find_function_name_range(
     Ok(lsp_types::Range { start, end })
 }
 
-pub fn get_call_span(
-    call: &simplicityhl::parse::Call,
-) -> Result<simplicityhl::error::Span, LspError> {
+pub fn get_call_span(call: &simplicityhl::parse::Call) -> simplicityhl::error::Span {
     let length = call.name().to_string().len();
 
-    let end_column = usize::from(call.span().start.col) + length;
-
-    Ok(simplicityhl::error::Span {
+    simplicityhl::error::Span {
         start: call.span().start,
-        end: simplicityhl::error::Position {
-            line: call.span().start.line,
-            col: NonZeroUsize::try_from(end_column)?,
-        },
-    })
+        end: call.span().start + length,
+    }
 }
 
 pub fn find_all_references<'a>(
+    text: &Rope,
     functions: &'a [&'a parse::Function],
     call_name: &CallName,
 ) -> Result<Vec<lsp_types::Range>, LspError> {
@@ -221,7 +252,7 @@ pub fn find_all_references<'a>(
                 .pre_order_iter()
                 .filter_map(|expr| {
                     if let parse::ExprTree::Call(call) = expr {
-                        get_call_span(call).ok().map(|span| (call, span))
+                        Some((call, get_call_span(call)))
                     } else {
                         None
                     }
@@ -231,7 +262,7 @@ pub fn find_all_references<'a>(
                 .collect::<Vec<_>>()
         })
         .map(|span| {
-            let (start, end) = span_to_positions(&span)?;
+            let (start, end) = span_to_positions(&span, text)?;
             Ok(lsp_types::Range { start, end })
         })
         .collect::<Result<Vec<_>, LspError>>()
@@ -239,17 +270,20 @@ pub fn find_all_references<'a>(
 
 /// Find the position of a key in the JSON text
 pub fn find_key_position(text: &str, key: &str) -> Option<lsp_types::Position> {
-    let search = format!("\"{}\"", key);
+    let search = format!("\"{key}\"");
     for (line_num, line) in text.lines().enumerate() {
         if let Some(col) = line.find(&search) {
-            return Some(lsp_types::Position::new(line_num as u32, col as u32));
+            return Some(lsp_types::Position::new(
+                u32::try_from(line_num).ok()?,
+                u32::try_from(col).ok()?,
+            ));
         }
     }
     None
 }
 
 /// Find function call context from the current line.
-/// Returns (function_name, active_parameter_index) if inside a function call.
+/// Returns (`function_name`, `active_parameter_index`) if inside a function call.
 pub fn find_function_call_context(line: &str) -> Option<(String, u32)> {
     let mut paren_depth = 0;
     let mut bracket_depth = 0;
@@ -360,7 +394,7 @@ pub fn extract_function_name(text: &str) -> Option<String> {
     }
 }
 
-/// Create SignatureInformation from a FunctionTemplate.
+/// Create `SignatureInformation` from a `FunctionTemplate`.
 pub fn create_signature_info(
     template: &completion::types::FunctionTemplate,
 ) -> SignatureInformation {
@@ -510,5 +544,64 @@ mod tests {
 
         // No function call
         assert_eq!(find_function_call_context("let x = 5"), None);
+    }
+
+    /// Tests for UTF-16 encoding: <https://github.com/BlockstreamResearch/SimplicityHL/pull/223#discussion_r2989899313>
+    #[test]
+    fn test_span_to_positions_handles_multibyte_utf8_before_span() {
+        let text = Rope::from_str("/// π\nfn foo() {}");
+
+        // "/// " = 4 bytes, "π" = 2 bytes, "\n" = 1 byte, so `fn` starts at byte 7.
+        let span = simplicityhl::error::Span::new(7, 9);
+
+        let (start, end) = span_to_positions(&span, &text).expect("span conversion should succeed");
+
+        assert_eq!(start, lsp_types::Position::new(1, 0));
+        assert_eq!(end, lsp_types::Position::new(1, 2));
+    }
+
+    #[test]
+    fn test_position_to_offset_uses_utf16_columns() {
+        let text = Rope::from_str("😀x");
+
+        // In LSP, 😀 occupies two UTF-16 code units, so column 2 is just after the emoji.
+        let offset = position_to_offset(lsp_types::Position::new(0, 2), &text)
+            .expect("position conversion should succeed");
+
+        assert_eq!(offset, 4);
+    }
+
+    #[test]
+    fn test_position_to_offset_keeps_line_start_at_zero() {
+        let text = Rope::from_str("foo");
+
+        let offset = position_to_offset(lsp_types::Position::new(0, 0), &text)
+            .expect("line start should convert to byte offset 0");
+
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn test_position_to_offset_does_not_shift_ascii_columns_left() {
+        let text = Rope::from_str("    foo()");
+
+        let offset = position_to_offset(lsp_types::Position::new(0, 4), &text)
+            .expect("identifier start should map to its exact byte offset");
+        let span = position_to_span(lsp_types::Position::new(0, 4), &text)
+            .expect("identifier start should map to the same byte offset");
+
+        assert_eq!(offset, 4);
+        assert_eq!(span, simplicityhl::error::Span::new(4, 4));
+    }
+
+    #[test]
+    fn test_position_to_offset_handles_single_utf16_multibyte_prefix() {
+        let text = Rope::from_str("πx");
+
+        // `π` is one UTF-16 code unit but two UTF-8 bytes, so column 1 should land after it.
+        let offset = position_to_offset(lsp_types::Position::new(0, 1), &text)
+            .expect("UTF-16 column after a BMP multibyte char should convert correctly");
+
+        assert_eq!(offset, 2);
     }
 }
