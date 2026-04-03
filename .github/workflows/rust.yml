@@ -189,3 +189,14 @@ jobs:
         run: |
           cargo check --manifest-path=fuzz/Cargo.toml
 
+      - name: "Install cargo-fuzz"
+        run: |
+          cargo install cargo-fuzz --locked
+
+      - name: "Run cargo-fuzz"
+        run: |
+          set -euo pipefail
+          cargo fuzz list --fuzz-dir fuzz | while read -r target; do
+          echo "fuzzing $target"
+          cargo fuzz run --fuzz-dir fuzz "$target" -- -runs=1
+          done
