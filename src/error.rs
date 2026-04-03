@@ -192,11 +192,11 @@ impl RichError {
     /// Add the source file where the error occurred.
     ///
     /// Enable pretty errors.
-    pub fn with_source(self, source: SourceFile) -> Self {
+    pub fn with_source(self, source: impl Into<SourceFile>) -> Self {
         Self {
             error: self.error,
             span: self.span,
-            source: Some(source),
+            source: Some(source.into()),
         }
     }
 
@@ -421,7 +421,7 @@ impl ErrorCollector {
         Self { errors: Vec::new() }
     }
 
-    /// Exten existing errors with specific `RichError`.
+    /// Extend existing errors with specific `RichError`.
     /// We assume that `RichError` contains `SourceFile`.
     pub fn push(&mut self, error: RichError) {
         self.errors.push(error);
@@ -429,12 +429,25 @@ impl ErrorCollector {
 
     /// Appends new errors, tagging them with the provided source context.
     /// Automatically handles both single-file and multi-file environments.
-    pub fn extend(&mut self, source: SourceFile, errors: impl IntoIterator<Item = RichError>) {
+    pub fn extend(
+        &mut self,
+        source: impl Into<SourceFile> + Clone,
+        errors: impl IntoIterator<Item = RichError>,
+    ) {
         let new_errors = errors
             .into_iter()
             .map(|err| err.with_source(source.clone()));
 
         self.errors.extend(new_errors);
+    }
+
+    /// The same idea applies to the `extend()` function.
+    pub fn extend_with_handler(
+        &mut self,
+        source: impl Into<SourceFile> + Clone,
+        handler: &ErrorCollector,
+    ) {
+        self.extend(source, handler.errors.iter().cloned());
     }
 
     pub fn get(&self) -> &[RichError] {
