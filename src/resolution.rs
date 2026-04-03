@@ -2,13 +2,14 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::driver::CanonSourceFile;
 use crate::error::{Error, RichError, WithSpan as _};
 use crate::parse::UseDecl;
 
 /// Powers error reporting by mapping compiler diagnostics to the specific file.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct SourceFile {
-    /// The name or path of the source file (e.g., "./simf/main.simf").
+    /// The path of the source file (e.g., "./src/main.simf").
     name: Option<Arc<Path>>,
     /// The actual text content of the source file.
     content: Arc<str>,
@@ -16,10 +17,13 @@ pub struct SourceFile {
 
 impl From<(&Path, &str)> for SourceFile {
     fn from((name, content): (&Path, &str)) -> Self {
-        Self {
-            name: Some(Arc::from(name)),
-            content: Arc::from(content),
-        }
+        Self::new(name, Arc::from(content))
+    }
+}
+
+impl From<CanonSourceFile> for SourceFile {
+    fn from(canon_source: CanonSourceFile) -> Self {
+        Self::new(canon_source.name().as_path(), canon_source.content())
     }
 }
 
@@ -173,7 +177,7 @@ impl DependencyMap {
     /// most specific library context that owns the current file.
     pub fn resolve_path(
         &self,
-        current_file: CanonPath,
+        current_file: &CanonPath,
         use_decl: &UseDecl,
     ) -> Result<CanonPath, RichError> {
         let parts = use_decl.path();
@@ -202,11 +206,21 @@ impl DependencyMap {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::str::Identifier;
     use crate::test_utils::TempWorkspace;
 
     use super::*;
+
+    pub fn canon(p: &Path) -> CanonPath {
+        CanonPath::canonicalize(p).unwrap()
+    }
+
+    impl CanonPath {
+        pub fn dummy_for_test(path: &Path) -> Self {
+            Self(Arc::from(path))
+        }
+    }
 
     /// Helper to easily construct a `UseDecl` for path resolution tests.
     fn create_dummy_use_decl(path_segments: &[&str]) -> UseDecl {
@@ -216,10 +230,6 @@ mod tests {
             .collect();
 
         UseDecl::dummy_path(path)
-    }
-
-    fn canon(p: &Path) -> CanonPath {
-        CanonPath::canonicalize(p).unwrap()
     }
 
     /// When a user registers the same library dependency root path multiple times
@@ -265,7 +275,7 @@ mod tests {
             .unwrap();
 
         let use_decl = create_dummy_use_decl(&["utils"]);
-        let result = map.resolve_path(current_file, &use_decl);
+        let result = map.resolve_path(&current_file, &use_decl);
 
         assert!(result.is_err());
         assert!(matches!(
@@ -300,12 +310,12 @@ mod tests {
 
         // 3. Test Frontend Override
         let frontend_file = canon(&ws.create_file("workspace/frontend/src/main.simf", ""));
-        let resolved_frontend = map.resolve_path(frontend_file, &use_decl).unwrap();
+        let resolved_frontend = map.resolve_path(&frontend_file, &use_decl).unwrap();
         assert_eq!(resolved_frontend, frontend_expected);
 
         // 4. Test Global Fallback
         let backend_file = canon(&ws.create_file("workspace/backend/src/main.simf", ""));
-        let resolved_backend = map.resolve_path(backend_file, &use_decl).unwrap();
+        let resolved_backend = map.resolve_path(&backend_file, &use_decl).unwrap();
         assert_eq!(resolved_backend, global_expected);
     }
 
@@ -325,7 +335,7 @@ mod tests {
         map.insert(context, "math".to_string(), target).unwrap();
 
         let use_decl = create_dummy_use_decl(&["math", "vector"]);
-        let result = map.resolve_path(current_file, &use_decl).unwrap();
+        let result = map.resolve_path(&current_file, &use_decl).unwrap();
 
         assert_eq!(result, expected);
     }

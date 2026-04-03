@@ -6,6 +6,7 @@ pub mod compile;
 pub mod debug;
 #[cfg(feature = "docs")]
 pub mod docs;
+pub mod driver;
 pub mod dummy_env;
 pub mod error;
 pub mod jet;
@@ -37,6 +38,7 @@ pub use simplicity::elements;
 use crate::debug::DebugSymbols;
 use crate::error::{ErrorCollector, WithContent};
 use crate::parse::ParseFromStrWithErrors;
+use crate::resolution::SourceFile;
 pub use crate::types::ResolvedType;
 pub use crate::value::Value;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
@@ -58,8 +60,10 @@ impl TemplateProgram {
     /// The string is not a valid SimplicityHL program.
     pub fn new<Str: Into<Arc<str>>>(s: Str) -> Result<Self, String> {
         let file = s.into();
+        let source = SourceFile::anonymous(file.clone());
         let mut error_handler = ErrorCollector::new();
-        let parse_program = parse::Program::parse_from_str_with_errors(&file, &mut error_handler);
+        let parse_program = parse::Program::parse_from_str_with_errors(source, &mut error_handler);
+
         if let Some(program) = parse_program {
             let ast_program = ast::Program::analyze(&program).with_content(Arc::clone(&file))?;
             Ok(Self {
