@@ -8,7 +8,7 @@ use crate::parse::UseDecl;
 /// Powers error reporting by mapping compiler diagnostics to the specific file.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct SourceFile {
-    /// The name or path of the source file (e.g., "./simf/main.simf").
+    /// The path of the source file (e.g., "./src/main.simf").
     name: Option<Arc<Path>>,
     /// The actual text content of the source file.
     content: Arc<str>,
@@ -16,10 +16,7 @@ pub struct SourceFile {
 
 impl From<(&Path, &str)> for SourceFile {
     fn from((name, content): (&Path, &str)) -> Self {
-        Self {
-            name: Some(Arc::from(name)),
-            content: Arc::from(content),
-        }
+        Self::new(name, Arc::from(content))
     }
 }
 
@@ -202,11 +199,21 @@ impl DependencyMap {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::str::Identifier;
     use crate::test_utils::TempWorkspace;
 
     use super::*;
+
+    pub fn canon(p: &Path) -> CanonPath {
+        CanonPath::canonicalize(p).unwrap()
+    }
+
+    impl CanonPath {
+        pub fn dummy_for_test(path: &Path) -> Self {
+            Self(Arc::from(path))
+        }
+    }
 
     /// Helper to easily construct a `UseDecl` for path resolution tests.
     fn create_dummy_use_decl(path_segments: &[&str]) -> UseDecl {
@@ -216,10 +223,6 @@ mod tests {
             .collect();
 
         UseDecl::dummy_path(path)
-    }
-
-    fn canon(p: &Path) -> CanonPath {
-        CanonPath::canonicalize(p).unwrap()
     }
 
     /// When a user registers the same library dependency root path multiple times

@@ -1033,7 +1033,10 @@ pub trait ParseFromStr: Sized {
 /// Trait for parsing with collection of errors.
 pub trait ParseFromStrWithErrors: Sized {
     /// Parse a value from the string `s` with Errors.
-    fn parse_from_str_with_errors(s: &str, handler: &mut ErrorCollector) -> Option<Self>;
+    fn parse_from_str_with_errors(
+        source: &SourceFile,
+        handler: &mut ErrorCollector,
+    ) -> Option<Self>;
 }
 
 /// Trait for generating parsers of themselves.
@@ -1077,10 +1080,13 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
 }
 
 impl<A: ChumskyParse + std::fmt::Debug> ParseFromStrWithErrors for A {
-    fn parse_from_str_with_errors(s: &str, handler: &mut ErrorCollector) -> Option<Self> {
+    fn parse_from_str_with_errors(
+        source: &SourceFile,
+        handler: &mut ErrorCollector,
+    ) -> Option<Self> {
+        let s = &source.content().to_string();
         let (tokens, lex_errs) = crate::lexer::lex(s);
 
-        let source = SourceFile::anonymous(Arc::from(s));
         handler.extend(source.clone(), lex_errs);
         let tokens = tokens?;
 
@@ -1093,7 +1099,7 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStrWithErrors for A {
             )
             .into_output_errors();
 
-        handler.extend(source, parse_errs);
+        handler.extend(source.clone(), parse_errs);
 
         // TODO: We should return parsed result if we found errors, but because analyzing in `ast` module
         // is not handling poisoned tree right now, we don't return parsed result
@@ -2428,8 +2434,9 @@ mod test {
     #[test]
     fn test_double_colon() {
         let input = "fn main() { let ab: u8 = <(u4, u4)> : :into((0b1011, 0b1101)); }";
+        let source = SourceFile::anonymous(Arc::from(input));
         let mut error_handler = ErrorCollector::new();
-        let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
+        let parse_program = Program::parse_from_str_with_errors(&source, &mut error_handler);
 
         assert!(parse_program.is_none());
         assert!(ErrorCollector::to_string(&error_handler).contains("Expected '::', found ':'"));
@@ -2438,8 +2445,9 @@ mod test {
     #[test]
     fn test_double_double_colon() {
         let input = "fn main() { let pk: Pubkey = witnes::::PK; }";
+        let source = SourceFile::anonymous(Arc::from(input));
         let mut error_handler = ErrorCollector::new();
-        let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
+        let parse_program = Program::parse_from_str_with_errors(&source, &mut error_handler);
 
         assert!(parse_program.is_none());
         assert!(ErrorCollector::to_string(&error_handler).contains("Expected ';', found '::'"));

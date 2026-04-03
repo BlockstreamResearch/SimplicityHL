@@ -421,7 +421,7 @@ impl ErrorCollector {
         Self { errors: Vec::new() }
     }
 
-    /// Exten existing errors with specific `RichError`.
+    /// Extend existing errors with specific `RichError`.
     /// We assume that `RichError` contains `SourceFile`.
     pub fn push(&mut self, error: RichError) {
         self.errors.push(error);
@@ -435,6 +435,11 @@ impl ErrorCollector {
             .map(|err| err.with_source(source.clone()));
 
         self.errors.extend(new_errors);
+    }
+
+    /// The same idea applies to the `extend()` function.
+    pub fn extend_with_handler(&mut self, source: SourceFile, handler: &ErrorCollector) {
+        self.extend(source, handler.errors.iter().cloned());
     }
 
     pub fn get(&self) -> &[RichError] {
