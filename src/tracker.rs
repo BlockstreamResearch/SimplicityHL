@@ -1,8 +1,9 @@
 use simplicity::bit_machine::{ExecTracker, FrameIter, NodeOutput, PruneTracker, SetTracker};
 use simplicity::jet::{Elements, Jet};
 use simplicity::node::Inner;
-use simplicity::{Ihr, RedeemNode, Value as SimValue, ValueRef};
+use simplicity::{Ihr, RedeemNode, Value as SimValue};
 
+use crate::array::Unfolder;
 use crate::debug::{DebugSymbols, TrackedCallName};
 use crate::either::Either;
 use crate::jet::{source_type, target_type};
@@ -338,41 +339,18 @@ fn parse_jet_arguments(jet: Elements, input_frame: &mut FrameIter) -> Result<Vec
     let arguments_blob = SimValue::from_padded_bits(input_frame, &jet.source_ty().to_final())
         .expect("input from bit machine is always well-formed");
 
-    let mut args = Vec::with_capacity(source_types.len());
-    collect_product_elements(&arguments_blob.as_ref(), source_types.len(), &mut args)?;
+    let args = Unfolder::new(arguments_blob.as_ref(), source_types.len())
+        .unfold(|v| v.as_product())
+        .ok_or("expected product type while collecting arguments")?;
 
     Ok(args
         .into_iter()
         .zip(source_types.iter())
         .map(|(arg, aliased_type)| {
-            Value::reconstruct(&arg.into(), &resolve_jet_type(aliased_type))
+            Value::reconstruct(&arg.to_value().into(), &resolve_jet_type(aliased_type))
                 .expect("compiled program produces correctly structured values")
         })
         .collect())
-}
-
-/// Recursively collects elements from a nested product type.
-///
-/// Given a value of type `(A, (B, (C, ...)))`, extracts `[A, B, C, ...]`.
-fn collect_product_elements(
-    node: &ValueRef,
-    count: usize,
-    elements: &mut Vec<SimValue>,
-) -> Result<(), String> {
-    match count {
-        0 => Ok(()),
-        1 => {
-            elements.push(node.to_value());
-            Ok(())
-        }
-        _ => {
-            let (left, right) = node
-                .as_product()
-                .ok_or("expected product type while collecting arguments")?;
-            elements.push(left.to_value());
-            collect_product_elements(&right, count - 1, elements)
-        }
-    }
 }
 
 /// Resolves an aliased type to its concrete form.
@@ -571,5 +549,95 @@ mod tests {
             Some(vec!["20".to_string(), "20".to_string()])
         );
         assert_eq!(jets.get("eq_64").unwrap().1, Some("true".to_string()));
+    }
+
+    const TEST_FULL_MULTIPLY_JETS: &str = r#"
+    fn main() {
+        let r8: u16 = jet::full_multiply_8(200, 201, 202, 203);
+        let r16: u32 = jet::full_multiply_16(20000, 20001, 20002, 20003);
+        let r32: u64 = jet::full_multiply_32(2000000000, 2000000001, 2000000002, 2000000003);
+        let r64: u128 = jet::full_multiply_64(2000000000, 2000000001, 2000000002, 2000000003);
+
+        assert!(jet::eq_16(r8, 40605));
+        assert!(jet::eq_32(r16, 400060005));
+        assert!(jet::eq_64(r32, 4000000006000000005));
+
+        // TODO: Currently no eq_128 jet, this must be revised in future. Placeholder to match on 'unwrap().1`.
+        let _keep: u128 = r64;
+    }
+    "#;
+
+    #[test]
+    fn test_full_multiply_jet_trace_regression() {
+        // FullMultiply -> (a * b + c + d)
+
+        let env = create_test_env();
+
+        let program = TemplateProgram::new(TEST_FULL_MULTIPLY_JETS).unwrap();
+        let program = program.instantiate(Arguments::default(), true).unwrap();
+        let satisfied = program.satisfy(WitnessValues::default()).unwrap();
+
+        let (mut tracker, _, jet_store) = create_test_tracker(&satisfied.debug_symbols);
+
+        let _ = satisfied.redeem().prune_with_tracker(&env, &mut tracker);
+
+        let jets = jet_store.borrow();
+
+        assert_eq!(
+            jets.get("full_multiply_8").unwrap().0,
+            Some(vec![
+                "200".to_string(),
+                "201".to_string(),
+                "202".to_string(),
+                "203".to_string(),
+            ])
+        );
+        assert_eq!(
+            jets.get("full_multiply_8").unwrap().1,
+            Some("40605".to_string())
+        );
+
+        assert_eq!(
+            jets.get("full_multiply_16").unwrap().0,
+            Some(vec![
+                "20000".to_string(),
+                "20001".to_string(),
+                "20002".to_string(),
+                "20003".to_string(),
+            ])
+        );
+        assert_eq!(
+            jets.get("full_multiply_16").unwrap().1,
+            Some("400060005".to_string())
+        );
+
+        assert_eq!(
+            jets.get("full_multiply_32").unwrap().0,
+            Some(vec![
+                "2000000000".to_string(),
+                "2000000001".to_string(),
+                "2000000002".to_string(),
+                "2000000003".to_string(),
+            ])
+        );
+        assert_eq!(
+            jets.get("full_multiply_32").unwrap().1,
+            Some("4000000006000000005".to_string())
+        );
+
+        assert_eq!(
+            jets.get("full_multiply_64").unwrap().0,
+            Some(vec![
+                "2000000000".to_string(),
+                "2000000001".to_string(),
+                "2000000002".to_string(),
+                "2000000003".to_string(),
+            ])
+        );
+        assert_eq!(
+            jets.get("full_multiply_64").unwrap().1,
+            // Check: u128 defaults to hex in fmt::Display for UIntValue
+            Some("0x00000000000000003782dad00330bc05".to_string()) // u128 => 4000000006000000005
+        );
     }
 }
