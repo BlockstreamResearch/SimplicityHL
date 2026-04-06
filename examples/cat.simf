@@ -1,3 +1,5 @@
+#![compiler_version("0.5.0-rc.0")]
+
 fn main() {
     let ab: u16 = <(u8, u8)>::into((0x10, 0x01));
     let c: u16 = 0x1001;

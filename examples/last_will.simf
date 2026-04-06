@@ -5,6 +5,8 @@
  * days. The owner has to repeat the covenant when he moves the coins with his
  * hot key. The owner can break out of the covenant with his cold key.
  */
+#![compiler_version("0.5.0-rc.0")]
+
 fn checksig(pk: Pubkey, sig: Signature) {
     let msg: u256 = jet::sig_all_hash();
     jet::bip_0340_verify((pk, msg), sig);

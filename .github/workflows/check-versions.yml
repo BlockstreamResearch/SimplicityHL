@@ -1,0 +1,33 @@
+name: Check Example Versions
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  verify-pragmas:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract version from Cargo.toml
+        id: get_version
+        run: |
+          # Grabs the first 'version = "X.Y.Z"' it sees in Cargo.toml
+          VERSION=$(awk -F '\"' '/^version/ {print $2; exit}' Cargo.toml)
+          echo "COMPILER_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Detected Cargo version: $VERSION"
+
+      - name: Run the example updater script
+        run: python3 update_examples.py ${{ env.COMPILER_VERSION }}
+
+      - name: Fail if examples are out of date
+        run: |
+          # Only check the examples directory for changes!
+          if ! git diff --exit-code examples/; then
+            echo "::error::The pragma versions in the examples/ folder are incorrect or missing!"
+            exit 1
+          fi

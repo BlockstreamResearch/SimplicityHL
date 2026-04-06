@@ -719,6 +719,76 @@ trait AbstractSyntaxTree: Sized {
 
 impl Program {
     pub fn analyze(from: &parse::Program) -> Result<Self, RichError> {
+        let compiler_version = env!("CARGO_PKG_VERSION");
+
+        match (from.version(), from.version_span()) {
+            (Some(v), Some(span)) => {
+                // Parse the compiler's exact version
+                let compiler_semver = semver::Version::parse(compiler_version)
+                    .expect("CARGO_PKG_VERSION is always valid semver");
+
+                // Parse the version requirement (e.g., "^0.5.0" or ">=0.4.0")
+                match semver::VersionReq::parse(v) {
+                    Ok(req) if req.matches(&compiler_semver) => {}
+                    Ok(_) => {
+                        let req_str = v.to_string();
+                        let comp_str = compiler_version.to_string();
+
+                        if req_str.starts_with('>')
+                            || req_str.starts_with(">=")
+                            || req_str.starts_with('^')
+                        {
+                            return Err(Error::SimcVersionCompilerTooOld {
+                                required: req_str,
+                                current: comp_str,
+                            })
+                            .with_span(span);
+                        } else if req_str.starts_with('<') || req_str.starts_with("<=") {
+                            return Err(Error::SimcVersionContractTooOld {
+                                required: req_str,
+                                current: comp_str,
+                            })
+                            .with_span(span);
+                        } else if req_str.starts_with('=')
+                            || req_str.chars().next().is_some_and(|c| c.is_ascii_digit())
+                        {
+                            return Err(Error::SimcVersionExactMismatch {
+                                required: req_str,
+                                current: comp_str,
+                            })
+                            .with_span(span);
+                        }
+                        return Err(Error::SimcVersionIncompatible {
+                            required: req_str,
+                            current: comp_str,
+                        })
+                        .with_span(span);
+                    }
+                    Err(e) => {
+                        return Err(Error::InvalidSimcVersionSyntax(e.to_string())).with_span(span);
+                    }
+                }
+            }
+            (None, _) | (_, None) => {
+                // Find where the first actual code item starts (ignoring comments)
+                let first_item_span =
+                    from.items()
+                        .first()
+                        .map_or(Span::new(0, 0), |item| match item {
+                            parse::Item::TypeAlias(t) => *t.as_ref(),
+                            parse::Item::Function(f) => *f.as_ref(),
+                            parse::Item::Module => Span::new(0, 0),
+                        });
+
+                let insertion_point = Span::new(first_item_span.start, first_item_span.start);
+
+                return Err(Error::MissingSimcVersion {
+                    compiler: compiler_version.to_string(),
+                })
+                .with_span(insertion_point);
+            }
+        }
+
         let unit = ResolvedType::unit();
         let mut scope = Scope::default();
         let items = from

@@ -31,18 +31,27 @@ use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
 /// A program is a sequence of items.
 #[derive(Clone, Debug)]
 pub struct Program {
+    version: Option<(String, Span)>,
     items: Arc<[Item]>,
     span: Span,
 }
 
 impl Program {
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_ref().map(|(v, _)| v.as_str())
+    }
+
+    pub fn version_span(&self) -> Option<Span> {
+        self.version.as_ref().map(|(_, s)| *s)
+    }
+
     /// Access the items of the program.
     pub fn items(&self) -> &[Item] {
         &self.items
     }
 }
 
-impl_eq_hash!(Program; items);
+impl_eq_hash!(Program; version, items);
 
 /// An item is a component of a program.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -544,6 +553,9 @@ impl ModuleAssignment {
 
 impl fmt::Display for Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(version) = &self.version() {
+            writeln!(f, "#![compiler_version(\"{}\")]\n", version)?;
+        }
         for item in self.items() {
             writeln!(f, "{item}")?;
         }
@@ -1126,20 +1138,37 @@ impl ChumskyParse for Program {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
+        // Parses: # ! [ compiler_version ( "..." ) ]
+        let compiler_version_attr = just(Token::Hash)
+            .ignore_then(just(Token::Bang))
+            .ignore_then(just(Token::LBracket))
+            .ignore_then(just(Token::Ident("compiler_version")))
+            .ignore_then(just(Token::LParen))
+            .ignore_then(select! { Token::StringLiteral(s) => s.to_string() })
+            .then_ignore(just(Token::RParen))
+            .then_ignore(just(Token::RBracket))
+            .map_with(|version, e| (version, e.span()))
+            .or_not() // Making it optional, just like we agreed!
+            .labelled("compiler version attribute");
+
         let skip_until_next_item = any()
             .then(
                 any()
                     .filter(|t| !matches!(t, Token::Fn | Token::Type | Token::Mod))
                     .repeated(),
             )
-            // map to empty module
             .map_with(|_, _| Item::Module);
 
-        Item::parser()
-            .recover_with(via_parser(skip_until_next_item))
-            .repeated()
-            .collect::<Vec<Item>>()
-            .map_with(|items, e| Program {
+        // Combine the attribute and the items
+        compiler_version_attr
+            .then(
+                Item::parser()
+                    .recover_with(via_parser(skip_until_next_item))
+                    .repeated()
+                    .collect::<Vec<Item>>(),
+            )
+            .map_with(|(version, items), e| Program {
+                version,
                 items: Arc::from(items),
                 span: e.span(),
             })
@@ -1942,6 +1971,7 @@ impl<'a> arbitrary::Arbitrary<'a> for Program {
             .map(|_| Item::arbitrary(u))
             .collect::<arbitrary::Result<Arc<[Item]>>>()?;
         Ok(Self {
+            version: Some(("0.4.1".to_string(), Span::DUMMY)),
             items,
             span: Span::DUMMY,
         })

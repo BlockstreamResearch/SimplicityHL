@@ -11,6 +11,7 @@
  * This enables miners to maximize their fees from transactions without needing external fee bumping services like
  * sponsors, Child-Pays-For-Parent (CPFP), or anchor outputs, simplifying fee management for transaction inclusion.
  */
+#![compiler_version("0.5.0-rc.0")]
 
 // This function computes a signature hash for transactions that allows non-interactive fee bumping.
 // It omits certain fields from the transaction that can be modified by anyone,

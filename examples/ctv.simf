@@ -5,6 +5,8 @@
  * we require the user to specify all the components of the sighash
  * that they want to commit.
  */
+#![compiler_version("0.5.0-rc.0")]
+
 fn main() {
     let ctx: Ctx8 = jet::sha_256_ctx_8_init();
     let ctx: Ctx8 = jet::sha_256_ctx_8_add_4(ctx, jet::version());

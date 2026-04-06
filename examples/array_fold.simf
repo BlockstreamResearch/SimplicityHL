@@ -1,3 +1,5 @@
+#![compiler_version("0.5.0-rc.0")]
+
 fn sum(elt: u32, acc: u32) -> u32 {
     let (_, acc): (bool, u32) = jet::add_32(elt, acc);
     acc
