@@ -249,6 +249,28 @@ impl TypeAlias {
 
 impl_eq_hash!(TypeAlias; name, ty);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub enum UIntBound {
+    Min,
+    Max,
+}
+
+impl UIntBound {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Min => "MIN",
+            Self::Max => "MAX",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub enum TypeBound {
+    UInt(UIntType, UIntBound),
+}
+
 /// An expression is something that returns a value.
 #[derive(Clone, Debug)]
 pub struct Expression {
@@ -339,6 +361,8 @@ pub enum SingleExpressionInner {
     Binary(Binary),
     /// Hexadecimal string literal.
     Hexadecimal(Hexadecimal),
+    /// Constants of a type (e.g. MAX, MIN)
+    TypeBound(TypeBound),
     /// Witness value.
     Witness(WitnessName),
     /// Parameter value.
@@ -633,9 +657,8 @@ impl TreeLike for ExprTree<'_> {
                 | S::Decimal(_)
                 | S::Hexadecimal(_)
                 | S::Variable(_)
-                | S::Witness(_)
-                | S::Parameter(_)
-                | S::Option(None) => Tree::Nullary,
+                | S::TypeBound(_) => Tree::Nullary,
+                S::Witness(_) | S::Parameter(_) | S::Option(None) => Tree::Nullary,
                 S::Option(Some(l))
                 | S::Either(Either::Left(l))
                 | S::Either(Either::Right(l))
@@ -684,6 +707,9 @@ impl fmt::Display for ExprTree<'_> {
                     S::Decimal(decimal) => write!(f, "{decimal}")?,
                     S::Hexadecimal(hexadecimal) => write!(f, "0x{hexadecimal}")?,
                     S::Variable(name) => write!(f, "{name}")?,
+                    S::TypeBound(TypeBound::UInt(ty, bound)) => {
+                        write!(f, "{ty}::{}", bound.as_str())?
+                    }
                     S::Witness(name) => write!(f, "witness::{name}")?,
                     S::Parameter(name) => write!(f, "param::{name}")?,
                     S::Option(None) => write!(f, "None")?,
@@ -1606,6 +1632,34 @@ impl SingleExpression {
 
         let match_expr = Match::parser(expr.clone()).map(SingleExpressionInner::Match);
 
+        let type_bound = Identifier::parser()
+            .then_ignore(just(Token::DoubleColon))
+            .then(Identifier::parser())
+            .try_map(
+                |(lhs, rhs), span| match UIntType::from_str(lhs.as_inner()) {
+                    Ok(ty) => Ok((ty, rhs)),
+                    // this is a fall through, this error is not emitted
+                    Err(_) => Err(Error::Grammar("not a type bound".into()).with_span(span)),
+                },
+            )
+            .validate(|(ty, rhs), e, emit| {
+                let bound = match rhs.as_inner() {
+                    "MIN" => UIntBound::Min,
+                    "MAX" => UIntBound::Max,
+                    _ => {
+                        // Send the error through here
+                        emit.emit(
+                            Error::Grammar(
+                                "Expected `MIN` or `MAX` after unsigned integer type".into(),
+                            )
+                            .with_span(e.span()),
+                        );
+                        UIntBound::Min
+                    }
+                };
+                SingleExpressionInner::TypeBound(TypeBound::UInt(ty, bound))
+            });
+
         let variable = Identifier::parser().map(SingleExpressionInner::Variable);
 
         // Expression delimeted by parentheses
@@ -1616,7 +1670,7 @@ impl SingleExpression {
 
         choice((
             left, right, some, none, boolean, match_expr, expression, list, array, tuple, call,
-            literal, variable,
+            literal, type_bound, variable,
         ))
         .map_with(|inner, e| Self {
             inner,
@@ -2193,7 +2247,10 @@ mod test {
         let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
 
         assert!(parse_program.is_none());
-        assert!(ErrorCollector::to_string(&error_handler).contains("Expected '::', found ':'"));
+        let errors = ErrorCollector::to_string(&error_handler);
+
+        assert!(parse_program.is_none());
+        assert!(errors.contains("::"), "{errors}");
     }
 
     #[test]
@@ -2203,6 +2260,119 @@ mod test {
         let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
 
         assert!(parse_program.is_none());
-        assert!(ErrorCollector::to_string(&error_handler).contains("Expected ';', found '::'"));
+        let errors = ErrorCollector::to_string(&error_handler);
+
+        assert!(parse_program.is_none());
+        assert!(errors.contains("::"), "{errors}");
+    }
+
+    #[test]
+    fn invalid_input_falls_through_type_bound_on_try_match() {
+        let input = "fn main() { let pk: Pubkey = witnes::PK; }";
+        let mut error_handler = ErrorCollector::new(Arc::from(input));
+        let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
+
+        assert!(parse_program.is_none());
+
+        let error_str = ErrorCollector::to_string(&error_handler);
+
+        assert!(
+            error_str.contains("Expected ';', found '::'"),
+            "{}",
+            error_str
+        );
+
+        assert!(
+            !error_str.contains("Expected unsigned integer type before `::`"),
+            "{}",
+            error_str
+        );
+
+        assert!(
+            !error_str.contains("Expected `MIN` or `MAX` after unsigned integer type"),
+            "{}",
+            error_str
+        );
+    }
+
+    #[test]
+    fn valid_input_falls_through_type_bound_when_not_match() {
+        let input = "fn main() { let pk: Pubkey = Witness::PK; }";
+        let mut error_handler = ErrorCollector::new(Arc::from(input));
+        let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
+
+        assert!(parse_program.is_none());
+
+        let error_str = ErrorCollector::to_string(&error_handler);
+
+        assert!(
+            error_str.contains("Expected ';', found '::'"),
+            "{}",
+            error_str
+        );
+
+        assert!(
+            !error_str.contains("Expected unsigned integer type before `::`"),
+            "{}",
+            error_str
+        );
+
+        assert!(
+            !error_str.contains("Expected `MIN` or `MAX` after unsigned integer type"),
+            "{}",
+            error_str
+        );
+    }
+
+    #[test]
+    fn parses_u8_min_max_invalid_reports_error() {
+        let input = "fn main() { let a: u8 = u8::MI; let b: u8 = u8::MA; }";
+        let mut error_handler = ErrorCollector::new(Arc::from(input));
+        let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
+        let error_str = ErrorCollector::to_string(&error_handler);
+
+        assert!(parse_program.is_none());
+
+        assert!(
+            error_str.contains("Expected `MIN` or `MAX` after unsigned integer type"),
+            "{}",
+            error_str
+        );
+    }
+
+    #[test]
+    fn parses_u8_min_max() {
+        let src = "fn main() { let a: u8 = u8::MIN; let b: u8 = u8::MAX; }";
+        let program = Program::parse_from_str(src).expect("should parse");
+        let rendered = program.to_string();
+        assert!(rendered.contains("u8::MIN"));
+        assert!(rendered.contains("u8::MAX"));
+    }
+
+    #[test]
+    fn parses_all_uint_min_max() {
+        let types = ["u1", "u2", "u4", "u8", "u16", "u32", "u64", "u128", "u256"];
+
+        for ty in types {
+            let src = format!(
+                "fn main() {{ let a: {t} = {t}::MIN; let b: {t} = {t}::MAX; }}",
+                t = ty
+            );
+
+            let program = Program::parse_from_str(&src)
+                .unwrap_or_else(|e| panic!("failed to parse for {ty}: {e:?}"));
+
+            let rendered = program.to_string();
+
+            assert!(
+                rendered.contains(&format!("{ty}::MIN")),
+                "missing MIN for {ty}"
+            );
+
+            assert!(
+                rendered.contains(&format!("{ty}::MAX")),
+                "missing MAX for {ty}"
+            );
+        }
     }
 }
