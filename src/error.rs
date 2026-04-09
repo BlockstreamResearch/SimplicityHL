@@ -468,6 +468,7 @@ impl fmt::Display for ErrorCollector {
     }
 }
 
+// TODO: Add file context to `UnresolvedItem`, `PrivateItem`, and `DuplicateItem` errors.
 /// An individual error.
 ///
 /// Records _what_ happened but not where.
@@ -493,14 +494,8 @@ pub enum Error {
     JetDoesNotExist(JetName),
     InvalidCast(ResolvedType, ResolvedType),
     FileNotFound(PathBuf),
-    UnresolvedItem {
-        name: String,
-        target_file: PathBuf,
-    },
-    PrivateItem {
-        name: String,
-        target_file: PathBuf,
-    },
+    UnresolvedItem(String),
+    PrivateItem(String),
     MainNoInputs,
     MainNoOutput,
     MainRequired,
@@ -517,10 +512,7 @@ pub enum Error {
     RedefinedAlias(AliasName),
     RedefinedAliasAsBuiltin(AliasName),
     UndefinedAlias(AliasName),
-    DuplicateAlias {
-        name: String,
-        target_file: PathBuf,
-    },
+    DuplicateAlias(String),
     VariableReuseInPattern(Identifier),
     WitnessReused(WitnessName),
     WitnessTypeMismatch(WitnessName, ResolvedType, ResolvedType),
@@ -618,15 +610,15 @@ impl fmt::Display for Error {
                 f,
                 "Function `{name}` was called but not defined"
             ),
-            Error::UnresolvedItem { name, target_file } => write!(
+            Error::UnresolvedItem(name) => write!(
                 f,
-                "Item `{}` could not be fouhnd in the file `{}`",
-                name, target_file.to_string_lossy()
+                "Item `{}` could not be found",
+                name
             ),
-            Error::PrivateItem { name, target_file } => write!(
+            Error::PrivateItem(name) => write!(
                 f,
-                "Item `{}` is private in module `{}`",
-                name, target_file.to_string_lossy()
+                "Item `{}` is private",
+                name
             ),
             Error::InvalidNumberOfArguments(expected, found) => write!(
                 f,
@@ -672,10 +664,10 @@ impl fmt::Display for Error {
                 f,
                 "Type alias `{identifier}` is not defined"
             ),
-            Error::DuplicateAlias { name, target_file } => write!(
+            Error::DuplicateAlias(name) => write!(
                 f,
-                "The alias `{}` was defined multiple times for `{}`",
-                name, target_file.to_string_lossy()
+                "The alias `{}` was defined multiple times",
+                name,
             ),
             Error::VariableReuseInPattern(identifier) => write!(
                 f,
