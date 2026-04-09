@@ -6,8 +6,6 @@
 //! Because we do not need to enforce strict local precedence, a standard post-order
 //! DFS is a better option.
 
-// TODO: Remove this once the code is actively used.
-#![allow(dead_code)]
 use std::collections::HashSet;
 use std::fmt;
 
@@ -16,7 +14,7 @@ use crate::driver::DependencyGraph;
 /// This is a core component of the [`DependencyGraph`].
 impl DependencyGraph {
     /// Returns the deterministic, BOTTOM-UP load order of dependencies.
-    pub fn linearize(&self) -> Result<Vec<usize>, LinearizationError> {
+    pub(crate) fn linearize(&self) -> Result<Vec<usize>, LinearizationError> {
         let mut visited = HashSet::new();
         let mut visiting = Vec::new();
         let mut order = Vec::new();

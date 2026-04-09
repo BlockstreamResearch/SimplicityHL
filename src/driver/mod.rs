@@ -1,4 +1,34 @@
+//! The `driver` module is responsible for module resolution and dependency management.
+//!
+//! Our compiler operates in a strict pipeline: `Lexer -> Parser -> Driver -> AST`.
+//! While the Parser only understands a single file at a time, the Driver processes
+//! multiple files, resolves their dependencies, and converts them into a unified
+//! structure ready for final AST construction.
+//!
+//! # Architecture
+//!
+//! ## Dependency Graph & Linearization
+//!
+//! The driver parses the root file and recursively discovers all imported modules
+//! to build a Directed Acyclic Graph (DAG) of the project's dependencies. Because
+//! the final AST requires a flat array of items, the driver applies a deterministic
+//! linearization strategy to this DAG. This safely flattens the multi-file project
+//! into a single, logically ordered sequence, strictly enforcing visibility rules
+//! and preventing duplicate imports.
+//!
+//! ## Project Structure & Entry Point
+//!
+//! SimplicityHL does not define a "project root" directory. Instead, the compiler
+//! relies on a single entry point: the file passed as the first positional argument.
+//! This file must contain the `main` function, which serves as the program's
+//! starting point.
+//!
+//! External libraries are explicitly linked using the `--dep` flag. The driver
+//! resolves and parses these external files relative to the entry point during
+//! the dependency graph construction.
+
 mod linearization;
+mod resolve_order;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
