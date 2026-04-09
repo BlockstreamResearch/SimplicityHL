@@ -1,3 +1,5 @@
+use super::*;
+
 mod helpers {
     use crate::error::ErrorCollector;
     use crate::parse::{ParseFromStrWithErrors, Program};
@@ -36,6 +38,37 @@ mod helpers {
 
         out
     }
+}
+
+#[test]
+fn test_reject_redefined_builtin_type() {
+    let ty = TypeAlias::parse_from_str("type Ctx8 = u32")
+        .expect_err("Redifining built-in alias should be rejected");
+
+    assert_eq!(
+        ty.error(),
+        &Error::RedefinedAliasAsBuiltin(AliasName::from_str_unchecked("Ctx8"))
+    );
+}
+
+#[test]
+fn test_double_colon() {
+    let input = "fn main() { let ab: u8 = <(u4, u4)> : :into((0b1011, 0b1101)); }";
+    let mut error_handler = ErrorCollector::new(Arc::from(input));
+    let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
+
+    assert!(parse_program.is_none());
+    assert!(ErrorCollector::to_string(&error_handler).contains("Expected '::', found ':'"));
+}
+
+#[test]
+fn test_double_double_colon() {
+    let input = "fn main() { let pk: Pubkey = witnes::::PK; }";
+    let mut error_handler = ErrorCollector::new(Arc::from(input));
+    let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
+
+    assert!(parse_program.is_none());
+    assert!(ErrorCollector::to_string(&error_handler).contains("Expected ';', found '::'"));
 }
 
 mod parsing {
@@ -1091,5 +1124,58 @@ mod invalid_patterns {
                 || err.contains("Incompatible")
                 || err.contains("Unexpected terminal pattern under constructor")
         );
+    }
+}
+
+mod example_cases {
+    use crate::error::ErrorCollector;
+    use crate::parse::{ParseFromStrWithErrors, Program};
+    use std::sync::Arc;
+
+    #[test]
+    fn full_test_case() {
+        let input = r#"
+        fn main() {
+            match witness::PATH {
+                Left(left_or_right: Either<(u64, u256, u256, u256, u256, u256, u256, u256, u256), Either<(bool, u64, u64, u64), (bool, u64, u64)>>) => match left_or_right {
+                    Left(params: (u64, u256, u256, u256, u256, u256, u256, u256, u256)) => {
+                        let (expected_asset_amount, input_option_abf, input_option_vbf, input_grantor_abf, input_grantor_vbf, output_option_abf, output_option_vbf, output_grantor_abf, output_grantor_vbf): (u64, u256, u256, u256, u256, u256, u256, u256, u256) = params;
+                        funding_path(
+                            expected_asset_amount,
+                            input_option_abf, input_option_vbf,
+                            input_grantor_abf, input_grantor_vbf,
+                            output_option_abf, output_option_vbf,
+                            output_grantor_abf, output_grantor_vbf
+                        );
+                    },
+                    Right(exercise_or_settlement: Either<(bool, u64, u64, u64), (bool, u64, u64)>) => match exercise_or_settlement {
+                        Left(params: (bool, u64, u64, u64)) => {
+                            let (is_change_needed, amount_to_burn, collateral_amount, asset_amount): (bool, u64, u64, u64) = dbg!(params);
+                            exercise_path(amount_to_burn, collateral_amount, asset_amount, is_change_needed)
+                        },
+                        Right(params: (bool, u64, u64)) => {
+                            let (is_change_needed, amount_to_burn, asset_amount): (bool, u64, u64) = dbg!(params);
+                            settlement_path(amount_to_burn, asset_amount, is_change_needed)
+                        },
+                    },
+                },
+                Right(left_or_right: Either<(bool, u64, u64), (bool, u64, u64)>) => match left_or_right {
+                    Left(params: (bool, u64, u64)) => {
+                        let (is_change_needed, grantor_token_amount_to_burn, collateral_amount): (bool, u64, u64) = params;
+                        expiry_path(grantor_token_amount_to_burn, collateral_amount, is_change_needed)
+                    },
+                    Right(params: (bool, u64, u64)) => {
+                        let (is_change_needed, amount_to_burn, collateral_amount): (bool, u64, u64) = params;
+                        cancellation_path(amount_to_burn, collateral_amount, is_change_needed)
+                    },
+                },
+            }
+        }
+        "#;
+        let mut error_handler = ErrorCollector::new(Arc::from(input));
+        let parsed = Program::parse_from_str_with_errors(input, &mut error_handler);
+
+        assert!(parsed.is_some());
+        assert!(error_handler.is_empty());
     }
 }
