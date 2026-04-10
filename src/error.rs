@@ -494,6 +494,7 @@ pub enum Error {
     JetDoesNotExist(JetName),
     InvalidCast(ResolvedType, ResolvedType),
     FileNotFound(PathBuf),
+    RedefinedItem(String),
     UnresolvedItem(String),
     PrivateItem(String),
     MainNoInputs,
@@ -610,15 +611,17 @@ impl fmt::Display for Error {
                 f,
                 "Function `{name}` was called but not defined"
             ),
+            Error::RedefinedItem(name) => write!(
+                f,
+                "Item `{name}` was defined multiple times"
+            ),
             Error::UnresolvedItem(name) => write!(
                 f,
-                "Item `{}` could not be found",
-                name
+                "Item `{name}` could not be found"
             ),
             Error::PrivateItem(name) => write!(
                 f,
-                "Item `{}` is private",
-                name
+                "Item `{name}` is private"
             ),
             Error::InvalidNumberOfArguments(expected, found) => write!(
                 f,
@@ -666,8 +669,7 @@ impl fmt::Display for Error {
             ),
             Error::DuplicateAlias(name) => write!(
                 f,
-                "The alias `{}` was defined multiple times",
-                name,
+                "The alias `{name}` was defined multiple times"
             ),
             Error::VariableReuseInPattern(identifier) => write!(
                 f,
