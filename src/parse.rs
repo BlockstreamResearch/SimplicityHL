@@ -132,6 +132,9 @@ impl UseDecl {
 
 impl_eq_hash!(UseDecl; visibility, path, drp_name, items);
 
+/// Aliases the specific identifier of an imported type to a new, local identifier
+pub type AliasedIdentifier = (Identifier, Option<Identifier>);
+
 /// Specified the items being brought into scope at the end of a `use` declaration
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -142,7 +145,7 @@ pub enum UseItems {
     /// ```text
     /// use core::math::add;
     /// ```
-    Single(Identifier),
+    Single(AliasedIdentifier),
 
     /// A multiple item import grouped in a list.
     ///
@@ -150,7 +153,7 @@ pub enum UseItems {
     /// ```text
     /// use core::math::{add, subtract};
     /// ```
-    List(Vec<Identifier>),
+    List(Vec<AliasedIdentifier>),
 }
 
 #[derive(Clone, Debug)]
@@ -731,14 +734,26 @@ impl fmt::Display for UseDecl {
 impl fmt::Display for UseItems {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            UseItems::Single(ident) => write!(f, "{}", ident),
-            UseItems::List(idents) => {
+            UseItems::Single((ident, alias)) => {
+                write!(f, "{}", ident)?;
+
+                if let Some(alias) = alias {
+                    write!(f, " as {}", alias)?;
+                }
+
+                Ok(())
+            }
+            UseItems::List(aliased_idents) => {
                 let _ = write!(f, "{{");
-                for (i, ident) in idents.iter().enumerate() {
+                for (i, (ident, alias)) in aliased_idents.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
                     write!(f, "{}", ident)?;
+
+                    if let Some(alias) = alias {
+                        write!(f, " as {}", alias)?;
+                    }
                 }
                 write!(f, "}}")
             }
@@ -1410,13 +1425,17 @@ impl ChumskyParse for UseDecl {
             .at_least(2)
             .collect::<Vec<_>>();
 
-        let list = Identifier::parser()
+        let aliased_item =
+            Identifier::parser().then(just(Token::As).ignore_then(Identifier::parser()).or_not());
+
+        let list = aliased_item
+            .clone()
             .separated_by(just(Token::Comma))
             .allow_trailing()
             .collect()
             .delimited_by(just(Token::LBrace), just(Token::RBrace))
             .map(UseItems::List);
-        let single = Identifier::parser().map(UseItems::Single);
+        let single = aliased_item.map(UseItems::Single);
         let items = choice((list, single));
 
         visibility
@@ -2407,6 +2426,8 @@ impl crate::ArbitraryRec for Match {
 
 #[cfg(test)]
 mod test {
+    use crate::parse;
+
     use super::*;
 
     impl UseDecl {
@@ -2452,5 +2473,17 @@ mod test {
 
         assert!(parse_program.is_none());
         assert!(ErrorCollector::to_string(&error_handler).contains("Expected ';', found '::'"));
+    }
+
+    #[test]
+    fn test_use_decl_display_round_trips_with_aliases() {
+        for input in [
+            "use lib::A::foo;",
+            "use lib::A::foo as bar;",
+            "use lib::A::{foo, bar as baz};",
+        ] {
+            let program = parse::Program::parse_from_str(input).expect("parsing works");
+            assert_eq!(program.to_string(), format!("{input}\n"));
+        }
     }
 }

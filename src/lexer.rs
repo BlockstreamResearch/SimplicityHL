@@ -13,6 +13,7 @@ pub enum Token<'src> {
     // Keywords
     Pub,
     Use,
+    As,
     Fn,
     Let,
     Type,
@@ -70,6 +71,7 @@ impl<'src> fmt::Display for Token<'src> {
         match self {
             Token::Pub => write!(f, "pub"),
             Token::Use => write!(f, "use"),
+            Token::As => write!(f, "as"),
             Token::Fn => write!(f, "fn"),
             Token::Let => write!(f, "let"),
             Token::Type => write!(f, "type"),
@@ -144,6 +146,7 @@ pub fn lexer<'src>(
     let keyword = text::ident().map(|s| match s {
         "pub" => Token::Pub,
         "use" => Token::Use,
+        "as" => Token::As,
         "fn" => Token::Fn,
         "let" => Token::Let,
         "type" => Token::Type,
@@ -253,7 +256,7 @@ pub fn lex<'src>(input: &'src str) -> (Option<Tokens<'src>>, Vec<crate::error::R
 pub fn is_keyword(s: &str) -> bool {
     matches!(
         s,
-        "pub" | "use" | "fn" | "let" | "type" | "mod" | "const" | "match" | "true" | "false"
+        "pub" | "use" | "as" | "fn" | "let" | "type" | "mod" | "const" | "match" | "true" | "false"
     )
 }
 
