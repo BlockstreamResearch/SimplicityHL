@@ -426,8 +426,10 @@ pub enum Error {
     MainNoInputs,
     MainNoOutput,
     MainRequired,
+    MainNotCallable,
     FunctionRedefined(FunctionName),
     FunctionUndefined(FunctionName),
+    FunctionRecursive(FunctionName),
     InvalidNumberOfArguments(usize, usize),
     FunctionNotFoldable(FunctionName),
     FunctionNotLoopable(FunctionName),
@@ -516,6 +518,10 @@ impl fmt::Display for Error {
                 f,
                 "Main function is required"
             ),
+            Error::MainNotCallable => write!(
+                f,
+                "Function `main` cannot be called"
+            ),
             Error::FunctionRedefined(name) => write!(
                 f,
                 "Function `{name}` was defined multiple times"
@@ -523,6 +529,10 @@ impl fmt::Display for Error {
             Error::FunctionUndefined(name) => write!(
                 f,
                 "Function `{name}` was called but not defined"
+            ),
+            Error::FunctionRecursive(name) => write!(
+                f,
+                "Function `{name}` is part of a recursive call cycle, which is not allowed"
             ),
             Error::InvalidNumberOfArguments(expected, found) => write!(
                 f,
