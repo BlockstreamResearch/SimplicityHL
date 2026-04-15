@@ -28,7 +28,7 @@
 //! the dependency graph construction.
 
 mod linearization;
-mod resolve_order;
+pub(crate) mod resolve_order;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -39,6 +39,14 @@ use chumsky::container::Container;
 use crate::error::{Error, ErrorCollector, RichError, Span};
 use crate::parse::{self, ParseFromStrWithErrors};
 use crate::resolution::{CanonPath, DependencyMap, SourceFile};
+
+pub use crate::driver::resolve_order::{FileScoped, Program, SymbolTable};
+
+/// The reserved identifier for the program's entry point.
+pub const MAIN_STR: &str = "main";
+
+/// The root node index in the [`DependencyGraph`] representing the entry file.
+pub const MAIN_MODULE: usize = 0;
 
 /// Caches the canonicalized path of a source file to prevent redundant,
 /// expensive, and potentially failing filesystem operations.
@@ -189,14 +197,13 @@ impl DependencyGraph {
             dependencies: HashMap::new(),
         };
 
-        let root_id = 0;
         graph
             .lookup
-            .insert(root_canon_source.name().clone(), root_id);
-        graph.dependencies.insert(root_id, Vec::new());
+            .insert(root_canon_source.name().clone(), MAIN_MODULE);
+        graph.dependencies.insert(MAIN_MODULE, Vec::new());
 
         let mut queue = VecDeque::new();
-        queue.push_back(root_id);
+        queue.push_back(MAIN_MODULE);
 
         // Prevent errors in the checked files from being doubled in the `load_and_parse_dependencies` function.
         let mut inalid_imports = HashSet::new();
@@ -338,7 +345,7 @@ impl DependencyGraph {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::resolution::tests::canon;
     use crate::test_utils::TempWorkspace;
