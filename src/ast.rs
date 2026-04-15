@@ -741,6 +741,9 @@ impl Program {
             })
             .collect();
 
+        // Reject duplicate non-main function names before building the call graph.
+        check_no_duplicate_functions(&func_items)?;
+
         // Build a call graph, reject calls to main, and reject recursive cycles.
         let call_graph = build_call_graph(&func_items);
         check_no_calls_to_main(&func_items, &call_graph)?;
@@ -799,6 +802,17 @@ fn collect_custom_calls(expr: &parse::Expression) -> HashSet<FunctionName> {
         }
     }
     calls
+}
+
+/// Return an error if any two non-main functions share the same name.
+fn check_no_duplicate_functions(func_items: &[&parse::Function]) -> Result<(), RichError> {
+    let mut seen: HashSet<&FunctionName> = HashSet::new();
+    for func in func_items {
+        if !seen.insert(func.name()) {
+            return Err(Error::FunctionRedefined(func.name().clone())).with_span(*func);
+        }
+    }
+    Ok(())
 }
 
 /// Build a map from each function name to the set of custom functions it calls.
@@ -1896,6 +1910,24 @@ fn main() {
     assert!(foo());
 }"#,
             "Function `main` cannot be called",
+        );
+    }
+
+    #[test]
+    fn duplicate_helper_function_rejected() {
+        compile_err(
+            r#"fn foo() -> bool {
+    true
+}
+
+fn foo() -> bool {
+    false
+}
+
+fn main() {
+    assert!(foo());
+}"#,
+            "Function `foo` was defined multiple times",
         );
     }
 
