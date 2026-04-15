@@ -64,7 +64,13 @@ impl TemplateProgram {
         let mut error_handler = ErrorCollector::new();
         let parse_program = parse::Program::parse_from_str_with_errors(source, &mut error_handler);
 
-        if let Some(program) = parse_program {
+        let driver_program = if let Some(parse_program) = parse_program {
+            driver::Program::from_parse(&parse_program, file.clone(), &mut error_handler)
+        } else {
+            None
+        };
+
+        if let Some(program) = driver_program {
             let ast_program = ast::Program::analyze(&program).with_content(Arc::clone(&file))?;
             Ok(Self {
                 simfony: ast_program,

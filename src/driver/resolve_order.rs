@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use crate::driver::DependencyGraph;
+use crate::driver::{DependencyGraph, MAIN_MODULE, MAIN_STR};
 use crate::error::{Error, ErrorCollector, RichError, Span};
 use crate::impl_eq_hash;
-use crate::parse::{self, AliasedSymbolName, Visibility};
+use crate::parse::{self, AliasedSymbolName, Function, TypeAlias, Visibility};
 use crate::str::{AliasName, FunctionName, SymbolName};
 
 /// The final, flattened representation of a SimplicityHL program.
@@ -26,6 +26,58 @@ pub struct Program {
 }
 
 impl Program {
+    pub fn from_parse(
+        parsed: &parse::Program,
+        content: Arc<str>,
+        handler: &mut ErrorCollector,
+    ) -> Option<Self> {
+        let module_count = 1;
+
+        let mut items: Vec<parse::Item> = Vec::new();
+
+        let mut aliases = NamespaceTracker::<AliasName>::new(module_count);
+        let mut functions = NamespaceTracker::<FunctionName>::new(module_count);
+
+        for item in parsed.items() {
+            if let parse::Item::Use(use_decl) = item {
+                handler.push(
+                    RichError::new(Error::UnknownLibrary(use_decl.str_path()), *use_decl.span())
+                        .with_content(content.clone()),
+                );
+                continue;
+            }
+
+            let mut new_elem = item.clone();
+            match &mut new_elem {
+                parse::Item::TypeAlias(type_alias) => {
+                    if let Err(err) = register_type_alias(type_alias, &mut aliases, MAIN_MODULE) {
+                        handler.push(err.with_content(content.clone()));
+                        continue;
+                    }
+                }
+                parse::Item::Function(function) => {
+                    if let Err(err) = register_function(function, &mut functions, MAIN_MODULE) {
+                        handler.push(err.with_content(content.clone()));
+                        continue;
+                    }
+                }
+
+                // Safe to skip: `Use` items are handled earlier in the loop, and `Module` currently has no functionality.
+                parse::Item::Module | parse::Item::Use(_) => continue,
+            }
+            items.push(new_elem);
+        }
+
+        // TODO: Consider getting rid of the 'String' error here and changing it to a more appropriate error
+        // (e.g. 'Result<Self, ErrorCollector>') after resolving https://github.com/BlockstreamResearch/SimplicityHL/issues/270.
+        (!handler.has_errors()).then(|| Program {
+            items: items.into(),
+            aliases: aliases.into_symbol_table(),
+            functions: functions.into_symbol_table(),
+            span: *parsed.as_ref(),
+        })
+    }
+
     pub fn items(&self) -> &[parse::Item] {
         &self.items
     }
@@ -78,7 +130,7 @@ pub type FileScoped<T> = (T, usize);
 pub type ImportMap<T> = BTreeMap<FileScoped<T>, FileScoped<T>>;
 
 /// Manages the resolution of import aliases across the entire program.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ImportRegistry<T> {
     direct_targets: ImportMap<T>,
     resolved_roots: ImportMap<T>,
@@ -164,53 +216,26 @@ impl DependencyGraph {
                     continue;
                 }
 
-                items.push(elem.clone());
-
                 // Handle Types & Functions by inserting them into their STRICT namespaces
-                // Architectural Note:
-                // The code may seem duplicated. To prevent this, the best approach
-                // would be to add a `NamedItem` trait. However, doing so would require
-                // duplicating getter methods for both `Function` and `TypeAlias`.
-                // As a result, it is better to leave it as is.
-                match elem {
+                let mut new_elem = elem.clone();
+                match &mut new_elem {
                     parse::Item::TypeAlias(type_alias) => {
-                        let name = type_alias.name();
-                        let local_id = (name.clone(), source_id);
-
-                        if aliases.memo.contains(&local_id) {
-                            handler.push(
-                                RichError::new(
-                                    Error::RedefinedAlias(name.clone()),
-                                    *type_alias.span(),
-                                )
-                                .with_source(source.clone()),
-                            );
+                        if let Err(err) = register_type_alias(type_alias, &mut aliases, source_id) {
+                            handler.push(err.with_source(source.clone()));
+                            continue;
                         }
-                        aliases.memo.insert(local_id);
-                        aliases.resolutions[source_id]
-                            .insert(name.clone(), type_alias.visibility().clone());
                     }
                     parse::Item::Function(function) => {
-                        let name = function.name();
-                        let local_id = (name.clone(), source_id);
-
-                        if functions.memo.contains(&local_id) {
-                            handler.push(
-                                RichError::new(
-                                    Error::FunctionRedefined(name.clone()),
-                                    *function.span(),
-                                )
-                                .with_source(source.clone()),
-                            );
+                        if let Err(err) = register_function(function, &mut functions, source_id) {
+                            handler.push(err.with_source(source.clone()));
+                            continue;
                         }
-                        functions.memo.insert(local_id);
-                        functions.resolutions[source_id]
-                            .insert(name.clone(), function.visibility().clone());
                     }
 
                     // Safe to skip: `Use` items are handled earlier in the loop, and `Module` currently has no functionality.
                     parse::Item::Module | parse::Item::Use(_) => continue,
                 }
+                items.push(new_elem);
             }
         }
 
@@ -269,6 +294,7 @@ impl DependencyGraph {
     /// Returns `Ok(())` on success. Returns `Err(RichError)` if:
     /// * [`Error::UnresolvedItem`]: The target name does not exist in the source module (`ind`).
     /// * [`Error::PrivateItem`]: The target exists, but its visibility is explicitly `Private`.
+    /// * [`Error::MainCannotBeAlias`]: The `main` cannot be alias.
     /// * [`Error::DuplicateAlias`]: The local name (or alias) has already been used in another import statement.
     /// * [`Error::RedefinedItem`]: The local name conflicts with an existing item already defined in this module.
     fn process_use_item<T>(
@@ -289,7 +315,7 @@ impl DependencyGraph {
         let orig_id = (target_name.clone(), ind);
 
         // 2. Verify Existence using T
-        let visibility = namespace.resolutions[ind]
+        let visibility: &Visibility = namespace.resolutions[ind]
             .get(&target_name)
             .ok_or_else(|| RichError::new(Error::UnresolvedItem(name.to_string()), span))?;
 
@@ -303,7 +329,17 @@ impl DependencyGraph {
         let local_symbol = alias.as_ref().unwrap_or(name);
 
         // Then convert that raw symbol to T
-        let local_name: T = local_symbol.clone().into();
+        let local_name: T = if let Some(alias_sym) = alias {
+            let t_alias: T = alias_sym.clone().into();
+
+            if t_alias.to_string() == MAIN_STR {
+                return Err(RichError::new(Error::MainCannotBeAlias, span));
+            }
+            t_alias
+        } else {
+            name.clone().into()
+        };
+
         let local_id = (local_name.clone(), source_id);
 
         // 5. Check for collisions using `namespace` fields
@@ -347,6 +383,59 @@ impl DependencyGraph {
     }
 }
 
+// Architectural Note:
+// The two functions may seem duplicated. To prevent this, the best approach
+// would be to add a `NamedItem` trait. However, doing so would require
+// duplicating getter methods for both `Function` and `TypeAlias`.
+// As a result, it is better to leave it as is.
+fn register_type_alias(
+    item: &mut TypeAlias,
+    tracker: &mut NamespaceTracker<AliasName>,
+    source_id: usize,
+) -> Result<(), RichError> {
+    item.set_file_id(source_id);
+
+    let name = item.name();
+    let local_id = (name.clone(), source_id);
+
+    if tracker.memo.contains(&local_id) {
+        return Err(RichError::new(
+            Error::RedefinedAlias(name.clone()),
+            *item.span(),
+        ));
+    }
+
+    tracker.memo.insert(local_id);
+    tracker.resolutions[source_id].insert(name.clone(), item.visibility().clone());
+    Ok(())
+}
+
+fn register_function(
+    item: &mut Function,
+    tracker: &mut NamespaceTracker<FunctionName>,
+    source_id: usize,
+) -> Result<(), RichError> {
+    item.set_file_id(source_id);
+
+    let name = item.name();
+    let local_id = (name.clone(), source_id);
+
+    if name.as_inner() == MAIN_STR && matches!(item.visibility(), Visibility::Public) {
+        return Err(RichError::new(Error::MainCannotBePublic, *item.span()));
+    }
+
+    if tracker.memo.contains(&local_id) {
+        return Err(RichError::new(
+            Error::FunctionRedefined(name.clone()),
+            *item.span(),
+        ));
+    }
+
+    tracker.memo.insert(local_id);
+    tracker.resolutions[source_id].insert(name.clone(), item.visibility().clone());
+    Ok(())
+}
+
 /// Helper struct, that tracks the resolution state, imports, and memoization for a single namespace.
 #[derive(Clone, Debug)]
 struct NamespaceTracker<T> {
@@ -379,6 +468,30 @@ impl<T: Ord + Clone + Default + std::hash::Hash> NamespaceTracker<T> {
                 .into(),
             imports: self.registry,
         }
+    }
+}
+
+impl<T> Default for ImportRegistry<T> {
+    fn default() -> Self {
+        Self {
+            direct_targets: BTreeMap::new(),
+            resolved_roots: BTreeMap::new(),
+        }
+    }
+}
+
+impl<T> Default for SymbolTable<T> {
+    fn default() -> Self {
+        Self {
+            local_scopes: Arc::from([]),
+            imports: ImportRegistry::<T>::default(),
+        }
+    }
+}
+
+impl AsRef<Span> for Program {
+    fn as_ref(&self) -> &Span {
+        &self.span
     }
 }
 
@@ -525,6 +638,55 @@ mod resolve_order_tests {
         assert!(
             program_option.is_none(),
             "build should fail when a second import reuses the function name `foo`"
+        );
+    }
+
+    #[test]
+    fn test_public_main_is_forbidden() {
+        // Scenario: A user tries to declare the entry point as `pub fn main`.
+        // Expected: The compiler must reject this because `main` must be private.
+
+        let (graph, _ids, _dir) = setup_graph(vec![("main.simf", "pub fn main() {}")]);
+
+        let mut error_handler = ErrorCollector::new();
+        let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
+
+        assert!(
+            program_option.is_none(),
+            "Compiler should return None when `main` is declared public"
+        );
+
+        let error_msg = error_handler.to_string();
+        assert!(
+            error_msg.contains("main") && error_msg.contains("public"),
+            "Error message should mention that `main` cannot be public. Got: {}",
+            error_msg
+        );
+    }
+
+    #[test]
+    fn test_aliasing_to_main_is_forbidden() {
+        // Scenario: A user tries to bypass entry point rules by renaming an import to `main`.
+        // Expected: The compiler must reject this because `main` is a reserved identifier.
+
+        let (graph, _ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub type bar = u32;"),
+            ("main.simf", "use lib::A::bar as main;"),
+        ]);
+
+        let mut error_handler = ErrorCollector::new();
+        let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
+
+        assert!(
+            program_option.is_none(),
+            "Compiler should return None when a user tries to alias an import to `main`"
+        );
+
+        let error_msg = error_handler.to_string();
+        assert!(
+            error_msg.contains("main") && error_msg.contains("alias"),
+            "Error message should clearly state that `main` cannot be used as an alias. Got: {}",
+            error_msg
         );
     }
 }

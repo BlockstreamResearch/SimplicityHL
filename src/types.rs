@@ -578,15 +578,15 @@ impl AliasedType {
     }
 
     /// Resolve all aliases in the type based on the given map of `aliases` to types.
-    pub fn resolve<F>(&self, mut get_alias: F) -> Result<ResolvedType, AliasName>
+    pub fn resolve<F, E>(&self, mut get_alias: F) -> Result<ResolvedType, E>
     where
-        F: FnMut(&AliasName) -> Option<ResolvedType>,
+        F: FnMut(&AliasName) -> Result<ResolvedType, E>,
     {
         let mut output = vec![];
         for data in self.post_order_iter() {
             match &data.node.0 {
                 AliasedInner::Alias(name) => {
-                    let resolved = get_alias(name).ok_or(name.clone())?;
+                    let resolved = get_alias(name)?;
                     output.push(resolved);
                 }
                 AliasedInner::Builtin(builtin) => {
@@ -628,7 +628,7 @@ impl AliasedType {
 
     /// Resolve all aliases in the type based on the builtin type aliases only.
     pub fn resolve_builtin(&self) -> Result<ResolvedType, AliasName> {
-        self.resolve(|_| None)
+        self.resolve(|name: &AliasName| Err(name.clone()))
     }
 }
 

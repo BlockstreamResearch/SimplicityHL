@@ -3,6 +3,7 @@
 
 use std::fmt;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ use chumsky::{extra, select, IterParser, Parser};
 use either::Either;
 use miniscript::iter::{Tree, TreeLike};
 
+use crate::driver::MAIN_MODULE;
 use crate::error::ErrorCollector;
 use crate::error::{Error, RichError, Span};
 use crate::impl_eq_hash;
@@ -108,6 +110,11 @@ impl UseDecl {
         self.path.iter().map(|s| s.as_inner()).collect()
     }
 
+    pub fn str_path(&self) -> String {
+        let path: PathBuf = self.path.iter().map(|s| s.as_inner()).collect();
+        path.display().to_string()
+    }
+
     /// Extracts the Dependency Root Path Name (the very first segment) from this path.
     ///
     /// # Errors
@@ -158,6 +165,7 @@ pub enum UseItems {
 
 #[derive(Clone, Debug)]
 pub struct Function {
+    file_id: usize, // The field required for the driver
     visibility: Visibility,
     name: FunctionName,
     params: Arc<[FunctionParam]>,
@@ -167,6 +175,14 @@ pub struct Function {
 }
 
 impl Function {
+    pub fn file_id(&self) -> usize {
+        self.file_id
+    }
+
+    pub fn set_file_id(&mut self, file_id: usize) {
+        self.file_id = file_id;
+    }
+
     pub fn visibility(&self) -> &Visibility {
         &self.visibility
     }
@@ -326,6 +342,7 @@ pub enum CallName {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TypeAlias {
+    file_id: usize, // The field required for the driver
     visibility: Visibility,
     name: AliasName,
     ty: AliasedType,
@@ -333,6 +350,14 @@ pub struct TypeAlias {
 }
 
 impl TypeAlias {
+    pub fn file_id(&self) -> usize {
+        self.file_id
+    }
+
+    pub fn set_file_id(&mut self, file_id: usize) {
+        self.file_id = file_id;
+    }
+
     pub fn visibility(&self) -> &Visibility {
         &self.visibility
     }
@@ -1396,7 +1421,8 @@ impl ChumskyParse for Function {
             .then(params)
             .then(ret)
             .then(body)
-            .map_with(|((((visibility, name), params), ret), body), e| Self {
+            .map_with(move |((((visibility, name), params), ret), body), e| Self {
+                file_id: MAIN_MODULE,
                 visibility,
                 name,
                 params,
@@ -1726,7 +1752,8 @@ impl ChumskyParse for TypeAlias {
                     .then(AliasedType::parser())
                     .then_ignore(just(Token::Semi)),
             )
-            .map_with(|(visibility, (name, ty)), e| Self {
+            .map_with(move |(visibility, (name, ty)), e| Self {
+                file_id: MAIN_MODULE,
                 visibility,
                 name: name.0,
                 ty,
@@ -2212,6 +2239,7 @@ impl crate::ArbitraryRec for Function {
     fn arbitrary_rec(u: &mut arbitrary::Unstructured, budget: usize) -> arbitrary::Result<Self> {
         use arbitrary::Arbitrary;
 
+        let file_id = u.int_in_range(0..=3)?;
         let visibility = Visibility::arbitrary(u)?;
         let name = FunctionName::arbitrary(u)?;
         let len = u.int_in_range(0..=3)?;
@@ -2221,6 +2249,7 @@ impl crate::ArbitraryRec for Function {
         let ret = Option::<AliasedType>::arbitrary(u)?;
         let body = Expression::arbitrary_rec(u, budget).map(Expression::into_block)?;
         Ok(Self {
+            file_id,
             visibility,
             name,
             params,

@@ -378,7 +378,7 @@ fn collect_product_elements(
 /// Resolves an aliased type to its concrete form.
 fn resolve_jet_type(aliased_type: &AliasedType) -> ResolvedType {
     aliased_type
-        .resolve(|_: &AliasName| None)
+        .resolve(|name: &AliasName| Err(name.clone()))
         .expect("jet types always resolve without aliases")
 }
 

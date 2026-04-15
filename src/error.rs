@@ -500,6 +500,9 @@ pub enum Error {
     MainNoInputs,
     MainNoOutput,
     MainRequired,
+    MainOutOfEntryFile,
+    MainCannotBePublic,
+    MainCannotBeAlias,
     FunctionRedefined(FunctionName),
     FunctionUndefined(FunctionName),
     InvalidNumberOfArguments(usize, usize),
@@ -602,6 +605,18 @@ impl fmt::Display for Error {
             Error::MainRequired => write!(
                 f,
                 "Main function is required"
+            ),
+            Error::MainOutOfEntryFile => write!(
+                f,
+                "The 'main' function must be defined in the entry point file"
+            ),
+            Error::MainCannotBePublic => write!(
+                f,
+                "Main function cannot be public"
+            ),
+            Error::MainCannotBeAlias => write!(
+                f,
+                "Main function cannot be alias",
             ),
             Error::FunctionRedefined(name) => write!(
                 f,
