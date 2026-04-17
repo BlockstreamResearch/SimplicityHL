@@ -25,7 +25,7 @@ use crate::pattern::Pattern;
 use crate::resolution::SourceFile;
 use crate::str::{
     AliasName, Binary, Decimal, FunctionName, Hexadecimal, Identifier, JetName, ModuleName,
-    WitnessName,
+    SymbolName, WitnessName,
 };
 use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
 
@@ -133,7 +133,7 @@ impl UseDecl {
 impl_eq_hash!(UseDecl; visibility, path, drp_name, items);
 
 /// Aliases the specific identifier of an imported type to a new, local identifier
-pub type AliasedIdentifier = (Identifier, Option<Identifier>);
+pub type AliasedSymbolName = (SymbolName, Option<SymbolName>);
 
 /// Specified the items being brought into scope at the end of a `use` declaration
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -145,7 +145,7 @@ pub enum UseItems {
     /// ```text
     /// use core::math::add;
     /// ```
-    Single(AliasedIdentifier),
+    Single(AliasedSymbolName),
 
     /// A multiple item import grouped in a list.
     ///
@@ -153,7 +153,7 @@ pub enum UseItems {
     /// ```text
     /// use core::math::{add, subtract};
     /// ```
-    List(Vec<AliasedIdentifier>),
+    List(Vec<AliasedSymbolName>),
 }
 
 #[derive(Clone, Debug)]
@@ -1033,6 +1033,7 @@ macro_rules! impl_parse_wrapped_string {
     };
 }
 
+impl_parse_wrapped_string!(SymbolName, "unresolved symbol name");
 impl_parse_wrapped_string!(FunctionName, "function name");
 impl_parse_wrapped_string!(Identifier, "identifier");
 impl_parse_wrapped_string!(WitnessName, "witness name");
@@ -1426,7 +1427,7 @@ impl ChumskyParse for UseDecl {
             .collect::<Vec<_>>();
 
         let aliased_item =
-            Identifier::parser().then(just(Token::As).ignore_then(Identifier::parser()).or_not());
+            SymbolName::parser().then(just(Token::As).ignore_then(SymbolName::parser()).or_not());
 
         let list = aliased_item
             .clone()

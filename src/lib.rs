@@ -262,6 +262,31 @@ macro_rules! impl_eq_hash {
             }
         }
     };
+
+    ($ty:ident < $($gen:ident),+ > ; $($member:ident),*) => {
+        impl<$($gen),+> PartialEq for $ty<$($gen),+>
+        where
+            $($gen: PartialEq,)+
+        {
+            fn eq(&self, other: &Self) -> bool {
+                true $(&& self.$member() == other.$member())*
+            }
+        }
+
+        impl<$($gen),+> Eq for $ty<$($gen),+>
+        where
+            $($gen: Eq,)+
+        {}
+
+        impl<$($gen),+> std::hash::Hash for $ty<$($gen),+>
+        where
+            $($gen: std::hash::Hash,)+
+        {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                $(self.$member().hash(state);)*
+            }
+        }
+    };
 }
 
 /// Helper trait for implementing [`arbitrary::Arbitrary`] for recursive structures.
