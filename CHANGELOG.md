@@ -1,10 +1,14 @@
-# 0.5.0-rc.0 - 2026-03-14
+# 0.5.0 - 2026-04-17
 
 * Migrate from the `pest` parser to a new `chumsky`-based parser, improving parser recovery and enabling multiple parse errors to be reported in one pass [#185](https://github.com/BlockstreamResearch/SimplicityHL/pull/185)
-* `simc` now accepts `--args <file>` for parameterized contracts, and witness input is supplied explicitly via `--wit <file>` [#200](https://github.com/BlockstreamResearch/SimplicityHL/pull/200)
+* `simc` now accepts `--args <file>` for parameterized contracts, witness input is supplied explicitly via `--wit <file>`, and JSON output now includes the program Commitment Merkle Root (CMR) [#200](https://github.com/BlockstreamResearch/SimplicityHL/pull/200), [#231](https://github.com/BlockstreamResearch/SimplicityHL/pull/231)
 * Expose contract ABI metadata for tooling via `simc --abi`, and add library accessors for parameter and witness types [#201](https://github.com/BlockstreamResearch/SimplicityHL/pull/201), [#219](https://github.com/BlockstreamResearch/SimplicityHL/pull/219)
-* Improve compiler diagnostics further by rejecting duplicate type-alias definitions and fixing parser recovery around angle-bracket-delimited syntax [#221](https://github.com/BlockstreamResearch/SimplicityHL/pull/221), [#222](https://github.com/BlockstreamResearch/SimplicityHL/pull/222)
-* Correct LSP hover/completion documentation for `build_tapleaf_simplicity`, `unwrap_left`, and `unwrap_right` [#229](https://github.com/BlockstreamResearch/SimplicityHL/pull/229), [#230](https://github.com/BlockstreamResearch/SimplicityHL/pull/230)
+* Improve pattern matching in `match` statements, including more complex destructuring forms [#242](https://github.com/BlockstreamResearch/SimplicityHL/pull/242)
+* Improve parser and type diagnostics by rejecting duplicate type-alias definitions and built-in alias redefinitions, and by fixing lexer/parser handling around `::` and angle-bracket-delimited syntax [#221](https://github.com/BlockstreamResearch/SimplicityHL/pull/221), [#222](https://github.com/BlockstreamResearch/SimplicityHL/pull/222), [#243](https://github.com/BlockstreamResearch/SimplicityHL/pull/243), [#247](https://github.com/BlockstreamResearch/SimplicityHL/pull/247)
+* Improve compiler diagnostics rendering for UTF-16 text in both single-line and multiline spans [#255](https://github.com/BlockstreamResearch/SimplicityHL/pull/255), [#257](https://github.com/BlockstreamResearch/SimplicityHL/pull/257)
+* Move jet documentation into the compiler, add the `simplicityhl-codegen` binary behind the `docs` feature, and correct docs for `build_tapleaf_simplicity`, `unwrap_left`, and `unwrap_right` [#229](https://github.com/BlockstreamResearch/SimplicityHL/pull/229), [#230](https://github.com/BlockstreamResearch/SimplicityHL/pull/230), [#251](https://github.com/BlockstreamResearch/SimplicityHL/pull/251)
+* Update the LSP to use the new `chumsky` parser [#223](https://github.com/BlockstreamResearch/SimplicityHL/pull/223)
+* Correct `FullMultiply` signatures and tracker argument decoding [#274](https://github.com/BlockstreamResearch/SimplicityHL/pull/274)
 
 # 0.4.1 - 2026-01-22
 
