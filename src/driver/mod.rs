@@ -136,6 +136,7 @@ pub struct DependencyGraph {
     /// This serves as the exact inverse of the `lookup` map.
     paths: Vec<CanonPath>,
 
+    // TODO: Consider to optimising this with `Vec` instead of `HashMap`
     /// The Adjacency List: Defines the Directed acyclic Graph (DAG) of imports.
     ///
     /// The Key (`usize`) is the ID of a "Parent" module (the file doing the importing).

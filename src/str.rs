@@ -83,6 +83,19 @@ impl FunctionName {
 
 wrapped_string!(FunctionName, "function name");
 
+impl Default for FunctionName {
+    fn default() -> Self {
+        Self(Arc::from(""))
+    }
+}
+
+impl From<SymbolName> for FunctionName {
+    fn from(sym: SymbolName) -> Self {
+        // Just move the inner Arc! Zero cost.
+        Self(sym.0)
+    }
+}
+
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for FunctionName {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
@@ -155,6 +168,18 @@ impl<'a> arbitrary::Arbitrary<'a> for JetName {
 pub struct AliasName(Arc<str>);
 
 wrapped_string!(AliasName, "name of a type alias");
+
+impl Default for AliasName {
+    fn default() -> Self {
+        Self(Arc::from(""))
+    }
+}
+
+impl From<SymbolName> for AliasName {
+    fn from(sym: SymbolName) -> Self {
+        Self(sym.0)
+    }
+}
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for AliasName {
@@ -292,7 +317,24 @@ impl ModuleName {
     }
 }
 
+impl From<SymbolName> for ModuleName {
+    fn from(sym: SymbolName) -> Self {
+        Self(sym.0)
+    }
+}
+
 wrapped_string!(ModuleName, "module name");
+
+/// An unresolved identifier parsed from the source code.
+///
+/// During the parsing of `use` statements, the exact kind of the imported
+/// item (Function, Alias, or Module) is unknown. This type acts as a
+/// temporary placeholder until the name can be fully resolved in later stages.
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub struct SymbolName(Arc<str>);
+
+wrapped_string!(SymbolName, "unresolved symbol name");
+impl_arbitrary_lowercase_alpha!(SymbolName);
 
 #[cfg(test)]
 mod tests {

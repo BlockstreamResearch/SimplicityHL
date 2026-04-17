@@ -4,8 +4,8 @@ use std::sync::Arc;
 use crate::driver::DependencyGraph;
 use crate::error::{Error, ErrorCollector, RichError, Span};
 use crate::impl_eq_hash;
-use crate::parse::{self, AliasedIdentifier, Visibility};
-use crate::resolution::CanonPath;
+use crate::parse::{self, AliasedSymbolName, Visibility};
+use crate::str::{AliasName, FunctionName, SymbolName};
 
 /// The final, flattened representation of a SimplicityHL program.
 ///
@@ -16,10 +16,11 @@ pub struct Program {
     /// The linear sequence of compiled items (`Functions`, `TypeAliases`, etc.).
     items: Arc<[parse::Item]>,
 
-    /// The files that make up this program, along with their scoping rules.
-    files: Arc<[ResolvedFile]>,
+    /// Contains all resolved aliases for the local scopes and the global import registry.
+    aliases: SymbolTable<AliasName>,
 
-    import_aliases: AliasRegistry,
+    /// Contains all resolved functions for the local scopes and the global import registry.
+    functions: SymbolTable<FunctionName>,
 
     span: Span,
 }
@@ -29,12 +30,12 @@ impl Program {
         &self.items
     }
 
-    pub fn files(&self) -> &[ResolvedFile] {
-        &self.files
+    pub fn aliases(&self) -> &SymbolTable<AliasName> {
+        &self.aliases
     }
 
-    pub fn import_aliases(&self) -> &AliasRegistry {
-        &self.import_aliases
+    pub fn functions(&self) -> &SymbolTable<FunctionName> {
+        &self.functions
     }
 
     pub fn span(&self) -> &Span {
@@ -42,60 +43,58 @@ impl Program {
     }
 }
 
-impl_eq_hash!(Program; items, files, import_aliases);
+impl_eq_hash!(Program; items, aliases, functions);
 
-/// Represents a single source file alongside its resolved scoping and visibility rules.
+/// Holds all scoping and import data for a specific namespace (e.g., Functions or Aliases).
 #[derive(Clone, Debug)]
-pub struct ResolvedFile {
-    path: CanonPath,
+pub struct SymbolTable<T> {
+    /// The items available in each file's local scope.
+    /// The index of the array corresponds to the file ID.
+    local_scopes: Arc<[BTreeSet<T>]>,
 
-    /// The set of resolved item names available within this file's scope.
-    // Use BTreeSet instead of HashMap for the impl_eq_hash! macro.
-    resolutions: BTreeSet<Arc<str>>,
+    /// The cross-file import mappings and cached roots.
+    imports: ImportRegistry<T>,
 }
 
-impl ResolvedFile {
-    pub fn path(&self) -> &CanonPath {
-        &self.path
+impl<T> SymbolTable<T> {
+    pub fn local_scopes(&self) -> &[BTreeSet<T>] {
+        &self.local_scopes
     }
 
-    pub fn resolutions(&self) -> &BTreeSet<Arc<str>> {
-        &self.resolutions
+    pub fn imports(&self) -> &ImportRegistry<T> {
+        &self.imports
     }
 }
 
-impl_eq_hash!(ResolvedFile; path, resolutions);
+impl_eq_hash!(SymbolTable<T>; local_scopes, imports);
 
-/// A registry mapping an alias [`ItemNameWithFileId`] to its target item across different files.
+/// Represents an item name alongside its originating file ID.
+pub type FileScoped<T> = (T, usize);
+
+/// A registry mapping an alias [`FileScoped<T>`] to its target item across different files.
 ///
 /// We use a type alias here to provide a convenient abstraction for the `AST::analyze`
 /// phase, making it easier to modify the underlying structure in the future if needed.
-pub type AliasMap = BTreeMap<ItemNameWithFileId, ItemNameWithFileId>;
-pub type ItemNameWithFileId = (Arc<str>, usize);
+pub type ImportMap<T> = BTreeMap<FileScoped<T>, FileScoped<T>>;
 
 /// Manages the resolution of import aliases across the entire program.
 #[derive(Clone, Debug, Default)]
-pub struct AliasRegistry {
-    /// Maps an alias to its immediate target.
-    /// (e.g., `use B as C;` stores C -> B)
-    direct_targets: AliasMap,
-
-    /// Caches the final, original definition of an alias to avoid walking the chain.
-    /// (e.g., If C -> B and B -> A, this stores C -> A)
-    resolved_roots: AliasMap,
+pub struct ImportRegistry<T> {
+    direct_targets: ImportMap<T>,
+    resolved_roots: ImportMap<T>,
 }
 
-impl AliasRegistry {
-    pub fn direct_targets(&self) -> &AliasMap {
+impl<T> ImportRegistry<T> {
+    pub fn direct_targets(&self) -> &ImportMap<T> {
         &self.direct_targets
     }
 
-    pub fn resolved_roots(&self) -> &AliasMap {
+    pub fn resolved_roots(&self) -> &ImportMap<T> {
         &self.resolved_roots
     }
 }
 
-impl_eq_hash!(AliasRegistry; direct_targets, resolved_roots);
+impl_eq_hash!(ImportRegistry<T>; direct_targets, resolved_roots);
 
 /// This is a core component of the [`DependencyGraph`].
 impl DependencyGraph {
@@ -113,10 +112,9 @@ impl DependencyGraph {
     /// Constructs the unified AST for the entire program.
     fn build_program(&self, order: &[usize], handler: &mut ErrorCollector) -> Option<Program> {
         let mut items: Vec<parse::Item> = Vec::new();
-        let mut resolutions: Vec<HashMap<Arc<str>, Visibility>> =
-            vec![HashMap::new(); self.modules.len()];
-        let mut import_aliases = AliasRegistry::default();
-        let mut items_registry = BTreeSet::<ItemNameWithFileId>::new();
+
+        let mut aliases = NamespaceTracker::<AliasName>::new(self.modules.len());
+        let mut functions = NamespaceTracker::<FunctionName>::new(self.modules.len());
 
         for &source_id in order {
             let module = &self.modules[source_id];
@@ -141,162 +139,247 @@ impl DependencyGraph {
                     };
 
                     for aliased_item in use_decl_items {
-                        if let Err(err) = Self::process_use_item(
-                            &mut items_registry,
-                            &mut import_aliases,
-                            &mut resolutions,
+                        let alias_err = Self::process_use_item(
+                            &mut aliases,
                             source_id,
                             ind,
                             aliased_item,
                             use_decl,
-                        ) {
+                        );
+
+                        let function_err = Self::process_use_item(
+                            &mut functions,
+                            source_id,
+                            ind,
+                            aliased_item,
+                            use_decl,
+                        );
+
+                        if let Err(err) =
+                            Self::resolve_processing_use_items_error(alias_err, function_err)
+                        {
                             handler.push(err.with_source(source.clone()));
                         }
                     }
                     continue;
                 }
 
-                // Handle Types & Functions
-                let (name, vis, span) = match elem {
-                    parse::Item::TypeAlias(a) => (a.name().as_inner(), a.visibility(), *a.span()),
-                    parse::Item::Function(f) => (f.name().as_inner(), f.visibility(), *f.span()),
+                items.push(elem.clone());
+
+                // Handle Types & Functions by inserting them into their STRICT namespaces
+                // Architectural Note:
+                // The code may seem duplicated. To prevent this, the best approach
+                // would be to add a `NamedItem` trait. However, doing so would require
+                // duplicating getter methods for both `Function` and `TypeAlias`.
+                // As a result, it is better to leave it as is.
+                match elem {
+                    parse::Item::TypeAlias(type_alias) => {
+                        let name = type_alias.name();
+                        let local_id = (name.clone(), source_id);
+
+                        if aliases.memo.contains(&local_id) {
+                            handler.push(
+                                RichError::new(
+                                    Error::RedefinedAlias(name.clone()),
+                                    *type_alias.span(),
+                                )
+                                .with_source(source.clone()),
+                            );
+                        }
+                        aliases.memo.insert(local_id);
+                        aliases.resolutions[source_id]
+                            .insert(name.clone(), type_alias.visibility().clone());
+                    }
+                    parse::Item::Function(function) => {
+                        let name = function.name();
+                        let local_id = (name.clone(), source_id);
+
+                        if functions.memo.contains(&local_id) {
+                            handler.push(
+                                RichError::new(
+                                    Error::FunctionRedefined(name.clone()),
+                                    *function.span(),
+                                )
+                                .with_source(source.clone()),
+                            );
+                        }
+                        functions.memo.insert(local_id);
+                        functions.resolutions[source_id]
+                            .insert(name.clone(), function.visibility().clone());
+                    }
 
                     // Safe to skip: `Use` items are handled earlier in the loop, and `Module` currently has no functionality.
                     parse::Item::Module | parse::Item::Use(_) => continue,
-                };
-
-                let item_name = (Arc::from(name), source_id);
-                if items_registry.contains(&item_name) {
-                    handler.push(
-                        RichError::new(Error::RedefinedItem(name.to_string()), span)
-                            .with_source(source.clone()),
-                    );
                 }
-                items_registry.insert(item_name);
-
-                items.push(elem.clone());
-                resolutions[source_id].insert(Arc::from(name), vis.clone());
             }
         }
 
         (!handler.has_errors()).then(|| Program {
             items: items.into(),
-            files: construct_resolved_file_array(&self.paths, &resolutions),
-            import_aliases,
+            aliases: aliases.into_symbol_table(),
+            functions: functions.into_symbol_table(),
             span: *self.modules[0].parsed_program.as_ref(),
         })
     }
 
-    /// Processes a single imported item (or alias) during the module resolution phase.
+    /// Attempts to pick the most helpful error when an import fails in both namespaces.
     ///
-    /// This function verifies that the requested item exists in the source module and
-    /// that it has the appropriate public visibility to be imported. If validation passes,
-    /// the item is registered in the importing module's resolution table and global alias registry.
+    /// Since SimplicityHL supports separated namespaces, a single `use` statement
+    /// may successfully load a `Function`, a `TypeAlias`, or both simultaneously.
+    fn resolve_processing_use_items_error(
+        alias: Result<(), RichError>,
+        function: Result<(), RichError>,
+    ) -> Result<(), RichError> {
+        match (alias, function) {
+            (Ok(()), _) | (_, Ok(())) => Ok(()),
+
+            (Err(err_alias), Err(err_func)) => {
+                let alias_is_missing = matches!(err_alias.error(), Error::UnresolvedItem(_));
+                let func_is_missing = matches!(err_func.error(), Error::UnresolvedItem(_));
+
+                if !alias_is_missing || func_is_missing {
+                    // If it's missing everywhere, OR if the function is missing
+                    // but the alias has a specific error (like PrivateItem).
+                    Err(err_alias)
+                } else {
+                    Err(err_func)
+                }
+            }
+        }
+    }
+
+    /// Processes a single imported item (or alias) and registers it within a specific namespace.
+    ///
+    /// This function verifies that the requested item exists in the source module and has the appropriate public
+    /// visibility. If validation passes and no local naming collisions are found, the item is registered
+    /// in the destination module's local scope and the global import registry.
     ///
     /// # Arguments
     ///
-    /// * `import_aliases` - The global registry tracking alias chains and their canonical roots.
-    /// * `resolutions` - The global, mutable array mapping each `file_id` to its localized `FileResolutions` table.
-    /// * `source_id` - The `usize` identifier of the destination source.
+    /// * `namespace` - The generic tracker (e.g., for Functions or Aliases) that holds
+    ///   the local file scopes, the global import registry, and the memoization set to prevent collisions.
+    /// * `source_id` - The `usize` identifier of the destination module where the item is being imported *to*.
     /// * `ind` - The unique identifier of the source module being imported *from*.
-    /// * `aliased_identifier` - The specific identifier (and potential alias) being imported from the source.
+    /// * `aliased_symbol_name` - The specific identifier (and potential alias) being imported from the source.
     /// * `use_decl` - The node of the `use` statement. This dictates the visibility of the new import
     ///   (e.g., `pub use` re-exports the item publicly).
     ///
     /// # Returns
     ///
-    /// Returns `None` on success. Returns `Some(RichError)` if:
-    /// * [`Error::UnresolvedItem`]: The target `elem` does not exist in the source module (`ind`).
-    /// * [`Error::PrivateItem`]: The target exists, but its visibility is explicitly `Private`,
-    /// * [`Error::DuplicateAlias`]: The target `alias` (or imported name) has already been used in the current module.
-    fn process_use_item(
-        items_registry: &mut BTreeSet<ItemNameWithFileId>,
-        import_aliases: &mut AliasRegistry,
-        resolutions: &mut [HashMap<Arc<str>, Visibility>],
+    /// Returns `Ok(())` on success. Returns `Err(RichError)` if:
+    /// * [`Error::UnresolvedItem`]: The target name does not exist in the source module (`ind`).
+    /// * [`Error::PrivateItem`]: The target exists, but its visibility is explicitly `Private`.
+    /// * [`Error::DuplicateAlias`]: The local name (or alias) has already been used in another import statement.
+    /// * [`Error::RedefinedItem`]: The local name conflicts with an existing item already defined in this module.
+    fn process_use_item<T>(
+        namespace: &mut NamespaceTracker<T>,
         source_id: usize,
         ind: usize,
-        (name, alias): &AliasedIdentifier,
+        (name, alias): &AliasedSymbolName,
         use_decl: &parse::UseDecl,
-    ) -> Result<(), RichError> {
+    ) -> Result<(), RichError>
+    where
+        T: From<SymbolName> + std::fmt::Display + Clone + Eq + std::hash::Hash + std::cmp::Ord,
+    {
         // NOTE: The order of errors is important!
         let span = *use_decl.span();
 
-        let name: Arc<str> = Arc::from(name.as_inner());
-        let orig_id = (name.clone(), ind);
+        // 1. Convert the unresolved SymbolName into our strict type T
+        let target_name: T = name.clone().into();
+        let orig_id = (target_name.clone(), ind);
 
-        // 1. Verify Existence: Does the item exist in the source file?
-        let visibility = resolutions[ind]
-            .get(&name)
+        // 2. Verify Existence using T
+        let visibility = namespace.resolutions[ind]
+            .get(&target_name)
             .ok_or_else(|| RichError::new(Error::UnresolvedItem(name.to_string()), span))?;
 
-        // 2. Verify Visibility: Are we allowed to see it?
+        // 3. Verify Visibility
         if matches!(visibility, parse::Visibility::Private) {
             return Err(RichError::new(Error::PrivateItem(name.to_string()), span));
         }
 
-        // 3. Determine the local name and ID up front
-        let local_name = if let Some(alias) = alias {
-            Arc::from(alias.as_inner())
-        } else {
-            name.clone()
-        };
+        // 4. Determine the local name and ID up front
+        // We figure out the raw symbol first, so we can use it for error messages
+        let local_symbol = alias.as_ref().unwrap_or(name);
+
+        // Then convert that raw symbol to T
+        let local_name: T = local_symbol.clone().into();
         let local_id = (local_name.clone(), source_id);
 
-        // 4. Check for collisions
-        if import_aliases.direct_targets.contains_key(&local_id) {
+        // 5. Check for collisions using `namespace` fields
+        if namespace.registry.direct_targets.contains_key(&local_id) {
             return Err(RichError::new(
-                Error::DuplicateAlias(local_name.to_string()),
+                Error::DuplicateAlias(local_symbol.to_string()),
                 span,
             ));
         }
 
-        if items_registry.contains(&local_id) {
+        if namespace.memo.contains(&local_id) {
             return Err(RichError::new(
-                Error::RedefinedItem(local_name.to_string()),
+                Error::RedefinedItem(local_symbol.to_string()),
                 span,
             ));
         }
-        items_registry.insert(local_id.clone());
+        namespace.memo.insert(local_id.clone());
 
-        // 5. Update the registers
-        import_aliases
+        // 6. Update the registers
+        namespace
+            .registry
             .direct_targets
             .insert(local_id.clone(), orig_id.clone());
 
-        // 6. Find the true root using a single lookup!
-        // If `orig_id` exists in resolved_roots, it means it's an alias and we get its true root.
-        // If it returns None, it means `orig_id` is the original item, so it IS the root.
-        let true_root = import_aliases
+        // 7. Find the true root
+        let true_root = namespace
+            .registry
             .resolved_roots
             .get(&orig_id)
             .cloned()
             .unwrap_or_else(|| orig_id.clone());
 
-        // Always cache the final root for instant O(1) lookups later
-        import_aliases.resolved_roots.insert(local_id, true_root);
+        namespace
+            .registry
+            .resolved_roots
+            .insert(local_id, true_root);
 
-        // 7. Register the item in the local  module's namespace
-        resolutions[source_id].insert(local_name, use_decl.visibility().clone());
+        // 8. Register the item in the local module's namespace
+        namespace.resolutions[source_id].insert(local_name, use_decl.visibility().clone());
         Ok(())
     }
 }
 
-fn construct_resolved_file_array(
-    paths: &[CanonPath],
-    resolutions: &[HashMap<Arc<str>, Visibility>],
-) -> Arc<[ResolvedFile]> {
-    let mut result = Vec::with_capacity(paths.len());
+/// Helper struct, that tracks the resolution state, imports, and memoization for a single namespace.
+#[derive(Clone, Debug)]
+struct NamespaceTracker<T> {
+    /// Local resolutions per file.
+    resolutions: Vec<HashMap<T, Visibility>>,
 
-    for i in 0..paths.len() {
-        let file_resolutions: BTreeSet<Arc<str>> = resolutions[i].keys().cloned().collect();
+    /// Global registry for `use` imports and aliasing.
+    registry: ImportRegistry<T>,
 
-        result.push(ResolvedFile {
-            path: paths[i].clone(),
-            resolutions: file_resolutions,
-        });
+    /// Tracks processed items to prevent infinite loops or redefinitions.
+    memo: BTreeSet<FileScoped<T>>,
+}
+
+impl<T: Ord + Clone + Default + std::hash::Hash> NamespaceTracker<T> {
+    pub fn new(module_count: usize) -> Self {
+        Self {
+            resolutions: vec![HashMap::new(); module_count],
+            registry: ImportRegistry::<T>::default(),
+            memo: BTreeSet::new(),
+        }
     }
 
-    result.into()
+    pub fn into_symbol_table(self) -> SymbolTable<T> {
+        SymbolTable {
+            local_scopes: self
+                .resolutions
+                .into_iter()
+                .map(|map| map.into_keys().collect::<BTreeSet<_>>())
+                .collect::<Vec<_>>()
+                .into(),
+            imports: self.registry,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -323,14 +406,14 @@ mod resolve_order_tests {
         };
 
         let root_id = ids["main"];
-        let resolutions = &program.files[root_id].resolutions;
+        let resolutions = &program.functions.local_scopes[root_id];
 
         resolutions
-            .get(&Arc::from("private_fn"))
+            .get(&FunctionName::from_str_unchecked("private_fn"))
             .expect("private_fn missing");
 
         resolutions
-            .get(&Arc::from("public_fn"))
+            .get(&FunctionName::from_str_unchecked("public_fn"))
             .expect("public_fn missing");
     }
 
@@ -359,15 +442,13 @@ mod resolve_order_tests {
         let id_root = ids["main"];
 
         // Check B's scope
-        program.files[id_b]
-            .resolutions
-            .get(&Arc::from("foo"))
+        program.functions.local_scopes[id_b]
+            .get(&FunctionName::from_str_unchecked("foo"))
             .expect("foo missing in B");
 
         // Check Root's scope
-        program.files[id_root]
-            .resolutions
-            .get(&Arc::from("foo"))
+        program.functions.local_scopes[id_root]
+            .get(&FunctionName::from_str_unchecked("foo"))
             .expect("foo missing in Root");
     }
 
@@ -392,9 +473,59 @@ mod resolve_order_tests {
             program_option.is_none(),
             "Build should fail and return None when importing a private binding"
         );
+
         assert!(error_handler
             .to_string()
             .contains(&"Item `foo` is private".to_string()));
+    }
+
+    #[test]
+    fn test_separated_type_aliases_and_functions() {
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub type bar = u32; pub fn bar() {}"),
+            ("main.simf", "use lib::A::bar;"),
+        ]);
+
+        let mut error_handler = ErrorCollector::new();
+        let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
+
+        let Some(program) = program_option else {
+            panic!("{}", error_handler);
+        };
+
+        let root_id = ids["main"];
+
+        // Check B's scope
+        program.functions.local_scopes[root_id]
+            .get(&FunctionName::from_str_unchecked("bar"))
+            .expect("Function bar missing in main");
+
+        // Check Root's scope
+        program.aliases.local_scopes[root_id]
+            .get(&AliasName::from_str_unchecked("bar"))
+            .expect("Type alias missing in main");
+    }
+
+    #[test]
+    fn test_private_alias_error_does_not_mask_duplicate_function_import() {
+        // Scenario:
+        // main.simf: load function `foo` from A.simf.
+        // Then try to load both `fn foo` and `type foo`.
+        // However, we have already loade `fn foo` and `type foo` is private, so an error occurs.
+        let (graph, _ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn foo() {}"),
+            ("libs/lib/B.simf", "pub fn foo() {} type foo = u32;"),
+            ("main.simf", "use lib::A::foo; use lib::B::foo;"),
+        ]);
+
+        let mut error_handler = ErrorCollector::new();
+        let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
+        let _errors = error_handler.to_string();
+
+        assert!(
+            program_option.is_none(),
+            "build should fail when a second import reuses the function name `foo`"
+        );
     }
 }
 
@@ -402,7 +533,6 @@ mod resolve_order_tests {
 mod alias_tests {
     use super::*;
     use crate::driver::tests::setup_graph;
-    use std::sync::Arc;
 
     #[test]
     fn test_renaming_with_use() {
@@ -423,14 +553,18 @@ mod alias_tests {
         };
 
         let id_root = ids["main"];
-        let scope = &program.files[id_root].resolutions;
+        let scope = &program.functions.local_scopes[id_root];
 
         assert!(
-            scope.get(&Arc::from("foo")).is_none(),
+            scope
+                .get(&FunctionName::from_str_unchecked("foo"))
+                .is_none(),
             "Original name 'foo' should not be in scope"
         );
         assert!(
-            scope.get(&Arc::from("bar")).is_some(),
+            scope
+                .get(&FunctionName::from_str_unchecked("bar"))
+                .is_some(),
             "Alias 'bar' should be in scope"
         );
     }
@@ -451,15 +585,23 @@ mod alias_tests {
         };
 
         let id_root = ids["main"];
-        let scope = &program.files[id_root].resolutions;
+        let scope = &program.functions.local_scopes[id_root];
 
         // The original names should NOT be in scope
-        assert!(scope.get(&Arc::from("foo")).is_none());
-        assert!(scope.get(&Arc::from("baz")).is_none());
+        assert!(scope
+            .get(&FunctionName::from_str_unchecked("foo"))
+            .is_none());
+        assert!(scope
+            .get(&FunctionName::from_str_unchecked("baz"))
+            .is_none());
 
         // The aliases MUST be in scope
-        assert!(scope.get(&Arc::from("bar")).is_some());
-        assert!(scope.get(&Arc::from("qux")).is_some());
+        assert!(scope
+            .get(&FunctionName::from_str_unchecked("bar"))
+            .is_some());
+        assert!(scope
+            .get(&FunctionName::from_str_unchecked("qux"))
+            .is_some());
     }
 
     #[test]
@@ -506,18 +648,26 @@ mod alias_tests {
         let id_root = ids["main"];
 
         // Assert Main Scope
-        let main_scope = &program.files[id_root].resolutions;
-        assert!(main_scope.get(&Arc::from("original")).is_none());
-        assert!(main_scope.get(&Arc::from("middle")).is_none());
+        let main_scope = &program.functions.local_scopes[id_root];
+        assert!(main_scope
+            .get(&FunctionName::from_str_unchecked("original"))
+            .is_none());
+        assert!(main_scope
+            .get(&FunctionName::from_str_unchecked("middle"))
+            .is_none());
         assert!(
-            main_scope.get(&Arc::from("final_name")).is_some(),
+            main_scope
+                .get(&FunctionName::from_str_unchecked("final_name"))
+                .is_some(),
             "Main must see the final alias"
         );
 
         // Assert B Scope (It should have the intermediate alias!)
-        let b_scope = &program.files[id_b].resolutions;
+        let b_scope = &program.functions.local_scopes[id_b];
         assert!(
-            b_scope.get(&Arc::from("middle")).is_some(),
+            b_scope
+                .get(&FunctionName::from_str_unchecked("middle"))
+                .is_some(),
             "File B must contain its own public alias"
         );
     }
@@ -658,7 +808,7 @@ mod alias_tests {
     }
 
     #[test]
-    fn test_local_definition_cannot_reuse_alias_name() {
+    fn test_local_function_cannot_reuse_alias_name() {
         let (graph, _ids, _dir) = setup_graph(vec![
             ("libs/lib/A.simf", "pub fn bar() {}"),
             ("main.simf", "use lib::A::bar as foo; pub fn foo() {}"),
@@ -671,10 +821,34 @@ mod alias_tests {
             program_option.is_none(),
             "build should fail when a local definition reuses an alias name"
         );
+
         assert!(
             error_handler
                 .to_string()
-                .contains("Item `foo` was defined multiple times"),
+                .contains("Function `foo` was defined multiple times"),
+            "expected a redefined-item diagnostic"
+        );
+    }
+
+    #[test]
+    fn test_local_type_alias_cannot_reuse_alias_name() {
+        let (graph, _ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub type bar = u32;"),
+            ("main.simf", "use lib::A::bar as foo; type foo = u64;"),
+        ]);
+
+        let mut error_handler = ErrorCollector::new();
+        let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
+
+        assert!(
+            program_option.is_none(),
+            "build should fail when a local definition reuses an alias name"
+        );
+
+        assert!(
+            error_handler
+                .to_string()
+                .contains("Type alias `foo` was defined multiple times"),
             "expected a redefined-item diagnostic"
         );
     }
