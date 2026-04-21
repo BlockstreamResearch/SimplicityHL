@@ -14,7 +14,7 @@ use crate::driver::DependencyGraph;
 /// This is a core component of the [`DependencyGraph`].
 impl DependencyGraph {
     /// Returns the deterministic, BOTTOM-UP load order of dependencies.
-    pub(crate) fn linearize(&self) -> Result<Vec<usize>, LinearizationError> {
+    pub(super) fn linearize(&self) -> Result<Vec<usize>, LinearizationError> {
         let mut visited = HashSet::new();
         let mut visiting = Vec::new();
         let mut order = Vec::new();

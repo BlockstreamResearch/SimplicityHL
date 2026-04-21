@@ -36,9 +36,10 @@ pub extern crate simplicity;
 pub use simplicity::elements;
 
 use crate::debug::DebugSymbols;
-use crate::error::{ErrorCollector, WithContent};
+use crate::driver::DependencyGraph;
+use crate::error::{ErrorCollector, WithContent, WithSource as _};
 use crate::parse::ParseFromStrWithErrors;
-use crate::resolution::SourceFile;
+use crate::resolution::{DependencyMap, SourceFile};
 pub use crate::types::ResolvedType;
 pub use crate::value::Value;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
@@ -53,6 +54,49 @@ pub struct TemplateProgram {
 }
 
 impl TemplateProgram {
+    // TODO: Consider passing `CanonSourceFile`` deeper into the driver to avoid paying the path canonicalization cost multiple times.
+    /// Parse the template of a SimplicityHL program.
+    ///
+    /// ## Errors
+    ///
+    /// The string is not a valid SimplicityHL program.
+    pub fn new_with_dep(
+        source: SourceFile,
+        dependency_map: &DependencyMap,
+    ) -> Result<Self, String> {
+        let mut error_handler = ErrorCollector::new();
+
+        // 1. Parse root file
+        let parsed_program =
+            parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler)
+                .ok_or_else(|| error_handler.to_string())?;
+
+        // 2. Create the driver program
+        let driver_program: driver::Program = if dependency_map.is_empty() {
+            driver::Program::from_parse(&parsed_program, source.content(), &mut error_handler)
+                .ok_or_else(|| error_handler.to_string())?
+        } else {
+            let graph = DependencyGraph::new(
+                source.clone(),
+                Arc::from(dependency_map.clone()),
+                &parsed_program,
+                &mut error_handler,
+            )?
+            .ok_or_else(|| error_handler.to_string())?;
+
+            graph
+                .linearize_and_build(&mut error_handler)?
+                .ok_or_else(|| error_handler.to_string())?
+        };
+
+        // 3. AST Analysis
+        let ast_program = ast::Program::analyze(&driver_program).with_source(source.clone())?;
+        Ok(Self {
+            simfony: ast_program,
+            file: source.content(),
+        })
+    }
+
     /// Parse the template of a SimplicityHL program.
     ///
     /// ## Errors
@@ -137,6 +181,22 @@ pub struct CompiledProgram {
 }
 
 impl CompiledProgram {
+    /// Parse and compile a SimplicityHL program from the given
+    ///
+    /// ## See
+    ///
+    /// - [`TemplateProgram::new_with_dep`]
+    /// - [`TemplateProgram::instantiate`]
+    pub fn new_with_dep(
+        source: SourceFile,
+        dependency_map: &DependencyMap,
+        arguments: Arguments,
+        include_debug_symbols: bool,
+    ) -> Result<Self, String> {
+        TemplateProgram::new_with_dep(source, dependency_map)
+            .and_then(|template| template.instantiate(arguments, include_debug_symbols))
+    }
+
     /// Parse and compile a SimplicityHL program from the given string.
     ///
     /// ## See
@@ -339,11 +399,12 @@ pub trait ArbitraryOfType: Sized {
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::parse::ParseFromStr;
+    use crate::resolution::CanonPath;
     use base64::display::Base64Display;
     use base64::engine::general_purpose::STANDARD;
     use simplicity::BitMachine;
     use std::borrow::Cow;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use crate::*;
 
@@ -358,6 +419,23 @@ pub(crate) mod tests {
         pub fn template_file<P: AsRef<Path>>(program_file_path: P) -> Self {
             let program_text = std::fs::read_to_string(program_file_path).unwrap();
             Self::template_text(Cow::Owned(program_text))
+        }
+
+        pub fn template_deps(prog_path: &Path, dependency_map: &DependencyMap) -> Self {
+            let program_text = std::fs::read_to_string(prog_path).unwrap();
+            let source = SourceFile::new(prog_path, Arc::from(program_text));
+
+            let program = match TemplateProgram::new_with_dep(source, dependency_map) {
+                Ok(x) => x,
+                Err(error) => panic!("{error}"),
+            };
+
+            Self {
+                program,
+                lock_time: elements::LockTime::ZERO,
+                sequence: elements::Sequence::MAX,
+                include_fee_output: false,
+            }
         }
 
         pub fn template_text(program_text: Cow<str>) -> Self {
@@ -408,6 +486,26 @@ pub(crate) mod tests {
 
         pub fn program_text(program_text: Cow<str>) -> Self {
             TestCase::<TemplateProgram>::template_text(program_text)
+                .with_arguments(Arguments::default())
+        }
+
+        pub fn program_file_with_deps<P, I, K>(prog_path: P, dependencies: I) -> Self
+        where
+            P: AsRef<Path>,
+            I: IntoIterator<Item = (P, K, P)>,
+            K: Into<String>,
+        {
+            let mut dependency_map = DependencyMap::new();
+            for (context, alias, target) in dependencies {
+                let context = CanonPath::canonicalize(context.as_ref()).unwrap();
+                let target = CanonPath::canonicalize(target.as_ref()).unwrap();
+
+                dependency_map
+                    .insert(context, alias.into(), target)
+                    .unwrap();
+            }
+
+            TestCase::<TemplateProgram>::template_deps(prog_path.as_ref(), &dependency_map)
                 .with_arguments(Arguments::default())
         }
 
@@ -508,6 +606,101 @@ pub(crate) mod tests {
                 Base64Display::new(&witness_bytes, &STANDARD).to_string(),
             )
         }
+    }
+
+    /// THE DEFAULT HELPER
+    /// Automatically sets up the standard `lib` self-referencing dependency.
+    fn run_dependency_test(root_path: &str, lib_alias: &str) {
+        let root_path = PathBuf::from(root_path);
+        let lib_path = root_path.join(lib_alias);
+        let main_path = root_path.join("main.simf");
+
+        TestCase::program_file_with_deps(
+            &main_path,
+            [
+                (&root_path, lib_alias, &lib_path),
+                (&lib_path, lib_alias, &lib_path),
+            ],
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
+    }
+
+    /// THE ADVANCED HELPER
+    /// A helper function to run standard library dependency tests.
+    /// `deps` expects an array of tuples: `(context_folder, alias, target_folder)`.
+    /// Use `"."` for the `context_folder` if the context is the root test directory.
+    fn run_multidep_test(root_path: &str, deps: &[(&str, &str, &str)]) {
+        let root_path = PathBuf::from(root_path);
+        let main_path = root_path.join("main.simf");
+
+        // Convert the string slices into proper PathBufs dynamically
+        let mapped_deps: Vec<(PathBuf, &str, PathBuf)> = deps
+            .iter()
+            .map(|(ctx, alias, target)| {
+                let ctx_path = if *ctx == "." {
+                    root_path.clone()
+                } else {
+                    root_path.join(ctx)
+                };
+
+                let target_path = root_path.join(target);
+
+                (ctx_path, *alias, target_path)
+            })
+            .collect();
+
+        let ref_deps = mapped_deps.iter().map(|(c, a, t)| (c, *a, t));
+
+        TestCase::program_file_with_deps(&main_path, ref_deps)
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    /// Run with `simc` command:
+    ///
+    /// ```
+    /// simc examples/single_dep/main.simf \
+    ///   --dep examples/single_dep/:temp=examples/single_dep/temp/
+    /// ```
+    #[test]
+    fn single_dep() {
+        run_dependency_test("./examples/single_dep", "temp");
+    }
+
+    /// Run with `simc` command:
+    ///
+    /// ```
+    /// simc examples/simple_multidep/main.simf \
+    ///   --dep examples/simple_multidep/:math=examples/simple_multidep/math/ \
+    ///   --dep examples/simple_multidep/:crypto=examples/simple_multidep/crypto/
+    /// ```
+    #[test]
+    fn simple_multidep() {
+        run_multidep_test(
+            "./examples/simple_multidep",
+            &[(".", "math", "math"), (".", "crypto", "crypto")],
+        );
+    }
+
+    /// Run with `simc` command:
+    ///
+    /// ```
+    /// simc examples/multiple_deps/main.simf \
+    ///   --dep examples/multiple_deps/:merkle=examples/multiple_deps/merkle/ \
+    ///   --dep examples/multiple_deps/:base_math=examples/multiple_deps/math/ \
+    ///   --dep examples/multiple_deps/merkle/:math=examples/multiple_deps/math/
+    /// ```
+    #[test]
+    fn multiple_deps() {
+        run_multidep_test(
+            "./examples/multiple_deps",
+            &[
+                (".", "merkle", "merkle"),
+                (".", "base_math", "math"),
+                ("merkle", "math", "math"),
+            ],
+        );
     }
 
     #[test]

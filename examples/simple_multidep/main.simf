@@ -1,0 +1,7 @@
+use math::arithmetic::add;
+use crypto::hashes::sha256;
+
+fn main() {
+    let sum: u32 = add(2, 3);
+    let hash: u256 = sha256(sum);
+}

@@ -121,7 +121,7 @@ pub struct Remapping {
 /// Mappings are strictly sorted by the longest `context_prefix` match.
 /// This mathematical guarantee ensures that if multiple nested directories
 /// define the same dependency root path, the most specific (deepest) context wins.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct DependencyMap {
     inner: Vec<Remapping>,
 }

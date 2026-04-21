@@ -2,7 +2,11 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
-use simplicityhl::{AbiMeta, CompiledProgram};
+use simplicityhl::{
+    resolution::{CanonPath, DependencyMap, SourceFile},
+    AbiMeta, CompiledProgram,
+};
+use std::path::Path;
 use std::{env, fmt};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -50,6 +54,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .help("SimplicityHL program file to build"),
             )
             .arg(
+                Arg::new("dependencies")
+                    .long("dep")
+                    .value_name("[CONTEXT:]ALIAS=PATH")
+                    .action(ArgAction::Append)
+                    .help("Link a dependency, optionally scoped to a specific module (e.g., --dep ./libs/merkle:math=./libs/math)"),
+            )
+            .arg(
                 Arg::new("wit_file")
                     .long("wit")
                     .short('w')
@@ -88,8 +99,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = command.get_matches();
 
     let prog_file = matches.get_one::<String>("prog_file").unwrap();
-    let prog_path = std::path::Path::new(prog_file);
-    let prog_text = std::fs::read_to_string(prog_path).map_err(|e| e.to_string())?;
+    let main_path = CanonPath::canonicalize(Path::new(prog_file))?;
+    let main_text = std::fs::read_to_string(main_path.as_path()).map_err(|e| e.to_string())?;
     let include_debug_symbols = matches.get_flag("debug");
     let output_json = matches.get_flag("json");
     let abi_param = matches.get_flag("abi");
@@ -98,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args_opt: simplicityhl::Arguments = match matches.get_one::<String>("args_file") {
         None => simplicityhl::Arguments::default(),
         Some(args_file) => {
-            let args_path = std::path::Path::new(&args_file);
+            let args_path = Path::new(&args_file);
             let args_text = std::fs::read_to_string(args_path).map_err(|e| e.to_string())?;
             serde_json::from_str::<simplicityhl::Arguments>(&args_text)?
         }
@@ -113,19 +124,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         simplicityhl::Arguments::default()
     };
 
-    let compiled = match CompiledProgram::new(prog_text, args_opt, include_debug_symbols) {
-        Ok(program) => program,
-        Err(e) => {
-            eprintln!("{}", e);
+    let dep_args = matches
+        .get_many::<String>("dependencies")
+        .unwrap_or_default();
+
+    let mut dependencies = DependencyMap::new();
+
+    for arg in dep_args {
+        let (left_side, path_str) = arg.split_once('=').unwrap_or_else(|| {
+            eprintln!(
+                "Error: Library argument must be in format [CONTEXT:]ALIAS=PATH, got '{arg}'"
+            );
+            std::process::exit(1);
+        });
+
+        let (context_path, alias) = if let Some((ctx_str, alias_str)) = left_side.split_once(':') {
+            // Specific context provided (e.g., merkle:base_math=...)
+            // We convert it to PathBuf so it shares the same type as main_path
+            let canon_path = CanonPath::canonicalize(Path::new(ctx_str))?;
+            (canon_path, alias_str)
+        } else {
+            // No context provided (e.g., math=...). Bind it to the main file!
+            (main_path.clone(), left_side)
+        };
+
+        let target_path = CanonPath::canonicalize(Path::new(path_str))?;
+
+        // Insert and handle the potential io::Error!
+        // We convert path_str to PathBuf so it maches the tyep of context_path
+        if let Err(e) = dependencies.insert(context_path, alias.to_string(), target_path) {
+            eprintln!("Error: {e}");
             std::process::exit(1);
         }
-    };
+    }
+
+    let source = SourceFile::new(main_path.as_path(), std::sync::Arc::from(main_text));
+    let compiled =
+        match CompiledProgram::new_with_dep(source, &dependencies, args_opt, include_debug_symbols)
+        {
+            Ok(program) => program,
+            Err(e) => {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        };
 
     #[cfg(feature = "serde")]
     let witness_opt = matches
         .get_one::<String>("wit_file")
         .map(|wit_file| -> Result<simplicityhl::WitnessValues, String> {
-            let wit_path = std::path::Path::new(wit_file);
+            let wit_path = Path::new(wit_file);
             let wit_text = std::fs::read_to_string(wit_path).map_err(|e| e.to_string())?;
             let witness = serde_json::from_str::<simplicityhl::WitnessValues>(&wit_text).unwrap();
             Ok(witness)

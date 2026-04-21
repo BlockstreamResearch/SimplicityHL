@@ -43,10 +43,10 @@ use crate::resolution::{CanonPath, DependencyMap, SourceFile};
 pub use crate::driver::resolve_order::{FileScoped, Program, SymbolTable};
 
 /// The reserved identifier for the program's entry point.
-pub const MAIN_STR: &str = "main";
+pub(crate) const MAIN_STR: &str = "main";
 
 /// The root node index in the [`DependencyGraph`] representing the entry file.
-pub const MAIN_MODULE: usize = 0;
+pub(crate) const MAIN_MODULE: usize = 0;
 
 /// Caches the canonicalized path of a source file to prevent redundant,
 /// expensive, and potentially failing filesystem operations.
@@ -120,7 +120,7 @@ struct Module {
 ///   `A` if `A` depends on `B`).
 /// * **Cycle Detection:** Preventing infinite compiler loops by ensuring no circular
 ///   imports exist before heavy semantic processing begins.
-pub struct DependencyGraph {
+pub(crate) struct DependencyGraph {
     /// Implements the Arena Pattern to act as the sole, centralized owner of all parsed modules.
     ///
     /// In C++ or Java, a graph would typically link dependencies using direct memory
