@@ -406,6 +406,142 @@ impl Match {
 
 impl_eq_hash!(Match; scrutinee, left, right);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+enum ParsedMatchCtor {
+    Left,
+    Right,
+    Some,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+enum ParsedMatchPattern {
+    False,
+    True,
+    None,
+    Ctor(ParsedMatchCtor, Box<ParsedMatchPattern>),
+    Bind(Pattern, AliasedType),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct ParsedMatchArm {
+    pattern: ParsedMatchPattern,
+    expression: Arc<Expression>,
+    span: Span,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+enum MatchFamily {
+    Either,
+    Option,
+    Bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+enum PatternCtorTag {
+    Left,
+    Right,
+    Some,
+    None,
+    False,
+    True,
+}
+
+impl PatternCtorTag {
+    fn family(self) -> MatchFamily {
+        match self {
+            PatternCtorTag::Left | PatternCtorTag::Right => MatchFamily::Either,
+            PatternCtorTag::Some | PatternCtorTag::None => MatchFamily::Option,
+            PatternCtorTag::False | PatternCtorTag::True => MatchFamily::Bool,
+        }
+    }
+
+    fn is_payload(self) -> bool {
+        matches!(
+            self,
+            PatternCtorTag::Left | PatternCtorTag::Right | PatternCtorTag::Some
+        )
+    }
+
+    fn as_payload_tag(self) -> &'static str {
+        match self {
+            PatternCtorTag::Left => "left",
+            PatternCtorTag::Right => "right",
+            PatternCtorTag::Some => "some",
+            PatternCtorTag::None | PatternCtorTag::False | PatternCtorTag::True => {
+                unreachable!("Nullary constructors do not carry payloads")
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+enum PatternIr {
+    Wildcard(AliasedType),
+    Bind(Pattern, AliasedType),
+    Constructor(PatternCtorTag, Option<Box<PatternIr>>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+enum TypedPatternIr {
+    Wildcard(AliasedType),
+    Bind(Pattern, AliasedType),
+    Constructor {
+        family: MatchFamily,
+        tag: PatternCtorTag,
+        inner: Option<Box<TypedPatternIr>>,
+    },
+}
+
+impl TypedPatternIr {
+    fn family(&self) -> Option<MatchFamily> {
+        match self {
+            TypedPatternIr::Constructor { family, .. } => Some(*family),
+            TypedPatternIr::Wildcard(_) | TypedPatternIr::Bind(_, _) => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TypedMatchArm {
+    pattern: TypedPatternIr,
+    expression: Arc<Expression>,
+    span: Span,
+}
+
+#[derive(Clone, Debug)]
+enum DecisionTree {
+    Switch {
+        family: MatchFamily,
+        scrutinee: Arc<Expression>,
+        branches: Vec<(PatternCtorTag, DecisionBranchKind)>,
+        span: Span,
+    },
+}
+
+#[derive(Clone, Debug)]
+enum DecisionBranchKind {
+    Nullary {
+        expression: Arc<Expression>,
+    },
+    UnaryBind {
+        pattern: Pattern,
+        ty: AliasedType,
+        expression: Arc<Expression>,
+    },
+    UnarySwitch {
+        payload_pattern: Pattern,
+        payload_expr: Arc<Expression>,
+        payload_ty: AliasedType,
+        tree: Box<DecisionTree>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ConstructorSpec {
+    tag: PatternCtorTag,
+    has_payload: bool,
+}
+
 /// Arm of a match expression.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct MatchArm {
@@ -454,7 +590,7 @@ impl MatchPattern {
         }
     }
 
-    /// Access the pattern and the type of a match pattern that binds a variables.
+    /// Access the pattern and the type of match pattern that binds a variables.
     pub fn as_typed_pattern(&self) -> Option<(&Pattern, &AliasedType)> {
         match self {
             MatchPattern::Left(i, ty) | MatchPattern::Right(i, ty) | MatchPattern::Some(i, ty) => {
@@ -889,7 +1025,7 @@ pub trait ChumskyParse: Sized {
 type ParseError<'src> = extra::Err<RichError>;
 
 /// This implementation only returns first encountered error.
-impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
+impl<A: ChumskyParse + fmt::Debug> ParseFromStr for A {
     fn parse_from_str(s: &str) -> Result<Self, RichError> {
         let (tokens, mut lex_errs) = crate::lexer::lex(s);
 
@@ -917,7 +1053,7 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
     }
 }
 
-impl<A: ChumskyParse + std::fmt::Debug> ParseFromStrWithErrors for A {
+impl<A: ChumskyParse + fmt::Debug> ParseFromStrWithErrors for A {
     fn parse_from_str_with_errors(s: &str, handler: &mut ErrorCollector) -> Option<Self> {
         let (tokens, lex_errs) = crate::lexer::lex(s);
 
@@ -1625,41 +1761,42 @@ impl SingleExpression {
     }
 }
 
-impl ChumskyParse for MatchPattern {
+impl ChumskyParse for ParsedMatchPattern {
     fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
-        let wrapper = |name: &'static str, ctor: fn(Pattern, AliasedType) -> Self| {
-            select! { Token::Ident(i) if i == name => i }
-                .ignore_then(delimited_with_recovery(
-                    Pattern::parser()
-                        .then_ignore(just(Token::Colon))
-                        .then(AliasedType::parser()),
-                    Token::LParen,
-                    Token::RParen,
-                    |_| {
-                        (
-                            Pattern::Ignore,
-                            AliasedType::alias(AliasName::from_str_unchecked("error")),
-                        )
-                    },
-                ))
-                .map(move |(id, ty)| ctor(id, ty))
-        };
+        recursive(|pat| {
+            let bind = Pattern::parser()
+                .then_ignore(just(Token::Colon))
+                .then(AliasedType::parser())
+                .map(|(pattern, ty)| ParsedMatchPattern::Bind(pattern, ty));
 
-        choice((
-            wrapper("Left", MatchPattern::Left),
-            wrapper("Right", MatchPattern::Right),
-            wrapper("Some", MatchPattern::Some),
-            select! { Token::Ident("None") => MatchPattern::None },
-            select! { Token::Bool(true) => MatchPattern::True },
-            select! { Token::Bool(false) => MatchPattern::False },
-        ))
+            let ctor = move |name: &'static str, ctor: ParsedMatchCtor| {
+                select! { Token::Ident(i) if i == name => i }
+                    .ignore_then(delimited_with_recovery(
+                        pat.clone(),
+                        Token::LParen,
+                        Token::RParen,
+                        |_| ParsedMatchPattern::Bind(Pattern::Ignore, error_aliased_type()),
+                    ))
+                    .map(move |inner| ParsedMatchPattern::Ctor(ctor, Box::new(inner)))
+            };
+
+            choice((
+                ctor("Left", ParsedMatchCtor::Left),
+                ctor("Right", ParsedMatchCtor::Right),
+                ctor("Some", ParsedMatchCtor::Some),
+                select! { Token::Ident("None") => ParsedMatchPattern::None },
+                select! { Token::Bool(true) => ParsedMatchPattern::True },
+                select! { Token::Bool(false) => ParsedMatchPattern::False },
+                bind,
+            ))
+        })
     }
 }
 
-impl MatchArm {
+impl ParsedMatchArm {
     fn parser<'tokens, 'src: 'tokens, I, E>(
         expr: E,
     ) -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
@@ -1667,7 +1804,7 @@ impl MatchArm {
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
         E: Parser<'tokens, I, Expression, ParseError<'src>> + Clone + 'tokens,
     {
-        MatchPattern::parser()
+        ParsedMatchPattern::parser()
             .then_ignore(just(Token::FatArrow))
             .then(expr.map(Arc::new))
             .then(just(Token::Comma).or_not())
@@ -1686,9 +1823,757 @@ impl MatchArm {
                 Self {
                     pattern,
                     expression,
+                    span: e.span(),
                 }
             })
     }
+}
+
+fn lower_pattern_for_error(pattern: &ParsedMatchPattern) -> MatchPattern {
+    match pattern {
+        ParsedMatchPattern::Ctor(ParsedMatchCtor::Left, _) => {
+            MatchPattern::Left(Pattern::Ignore, error_aliased_type())
+        }
+        ParsedMatchPattern::Ctor(ParsedMatchCtor::Right, _) => {
+            MatchPattern::Right(Pattern::Ignore, error_aliased_type())
+        }
+        ParsedMatchPattern::Ctor(ParsedMatchCtor::Some, _) => {
+            MatchPattern::Some(Pattern::Ignore, error_aliased_type())
+        }
+        ParsedMatchPattern::None => MatchPattern::None,
+        ParsedMatchPattern::False => MatchPattern::False,
+        ParsedMatchPattern::True => MatchPattern::True,
+        ParsedMatchPattern::Bind(_, ty) => MatchPattern::Left(Pattern::Ignore, ty.clone()),
+    }
+}
+
+fn payload_identifier(span: Span, branch: &str) -> Identifier {
+    Identifier::from_str_unchecked(&format!(
+        "__match_payload_{}_{}_{}",
+        branch, span.start, span.end
+    ))
+}
+
+fn payload_expression(identifier: &Identifier, span: Span) -> Arc<Expression> {
+    Arc::new(Expression {
+        inner: ExpressionInner::Single(SingleExpression {
+            inner: SingleExpressionInner::Variable(identifier.clone()),
+            span,
+        }),
+        span,
+    })
+}
+
+fn match_arm(pattern: MatchPattern, expression: Arc<Expression>) -> MatchArm {
+    MatchArm {
+        pattern,
+        expression,
+    }
+}
+
+fn match_node(scrutinee: Arc<Expression>, left: MatchArm, right: MatchArm, span: Span) -> Match {
+    Match {
+        scrutinee,
+        left,
+        right,
+        span,
+    }
+}
+
+fn error_aliased_type() -> AliasedType {
+    AliasedType::alias(AliasName::from_str_unchecked("error"))
+}
+
+fn wrap_nested_match(
+    scrutinee: Arc<Expression>,
+    left: MatchArm,
+    right: MatchArm,
+    span: Span,
+) -> Arc<Expression> {
+    Arc::new(Expression {
+        inner: ExpressionInner::Single(SingleExpression {
+            inner: SingleExpressionInner::Match(match_node(scrutinee, left, right, span)),
+            span,
+        }),
+        span,
+    })
+}
+
+fn pattern_ctor_tag_from_parsed_ctor(ctor: ParsedMatchCtor) -> PatternCtorTag {
+    match ctor {
+        ParsedMatchCtor::Left => PatternCtorTag::Left,
+        ParsedMatchCtor::Right => PatternCtorTag::Right,
+        ParsedMatchCtor::Some => PatternCtorTag::Some,
+    }
+}
+
+fn constructor_specs(family: MatchFamily) -> &'static [ConstructorSpec] {
+    match family {
+        MatchFamily::Either => &[
+            ConstructorSpec {
+                tag: PatternCtorTag::Left,
+                has_payload: true,
+            },
+            ConstructorSpec {
+                tag: PatternCtorTag::Right,
+                has_payload: true,
+            },
+        ],
+        MatchFamily::Option => &[
+            ConstructorSpec {
+                tag: PatternCtorTag::None,
+                has_payload: false,
+            },
+            ConstructorSpec {
+                tag: PatternCtorTag::Some,
+                has_payload: true,
+            },
+        ],
+        MatchFamily::Bool => &[
+            ConstructorSpec {
+                tag: PatternCtorTag::False,
+                has_payload: false,
+            },
+            ConstructorSpec {
+                tag: PatternCtorTag::True,
+                has_payload: false,
+            },
+        ],
+    }
+}
+
+fn pattern_ir_from_parsed(pattern: ParsedMatchPattern) -> PatternIr {
+    match pattern {
+        ParsedMatchPattern::False => PatternIr::Constructor(PatternCtorTag::False, None),
+        ParsedMatchPattern::True => PatternIr::Constructor(PatternCtorTag::True, None),
+        ParsedMatchPattern::None => PatternIr::Constructor(PatternCtorTag::None, None),
+        ParsedMatchPattern::Ctor(ctor, inner) => PatternIr::Constructor(
+            pattern_ctor_tag_from_parsed_ctor(ctor),
+            Some(Box::new(pattern_ir_from_parsed(*inner))),
+        ),
+        ParsedMatchPattern::Bind(Pattern::Ignore, ty) => PatternIr::Wildcard(ty),
+        ParsedMatchPattern::Bind(pattern, ty) => PatternIr::Bind(pattern, ty),
+    }
+}
+
+fn root_family_from_arm(arm: &ParsedMatchArm) -> Result<MatchFamily, Error> {
+    match &arm.pattern {
+        ParsedMatchPattern::Ctor(ctor, _) => Ok(pattern_ctor_tag_from_parsed_ctor(*ctor).family()),
+        ParsedMatchPattern::None => Ok(MatchFamily::Option),
+        ParsedMatchPattern::False | ParsedMatchPattern::True => Ok(MatchFamily::Bool),
+        ParsedMatchPattern::Bind(_, _) => Err(Error::Grammar(
+            "Top-level match arms must start with Left(..), Right(..), Some(..), None, false, or true"
+                .to_string(),
+        )),
+    }
+}
+
+fn type_pattern_ir(
+    pattern: PatternIr,
+    top_level_family: MatchFamily,
+    nested: bool,
+) -> Result<TypedPatternIr, Error> {
+    match pattern {
+        PatternIr::Wildcard(ty) => {
+            if nested {
+                Ok(TypedPatternIr::Wildcard(ty))
+            } else {
+                Err(Error::Grammar(
+                    "Top-level match arms must start with Left(..), Right(..), Some(..), None, false, or true"
+                        .to_string(),
+                ))
+            }
+        }
+        PatternIr::Bind(pattern, ty) => {
+            if nested {
+                Ok(TypedPatternIr::Bind(pattern, ty))
+            } else {
+                Err(Error::Grammar(
+                    "Top-level match arms must start with Left(..), Right(..), Some(..), None, false, or true"
+                        .to_string(),
+                ))
+            }
+        }
+        PatternIr::Constructor(tag, inner) => {
+            let family = tag.family();
+            if !nested && family != top_level_family {
+                return Err(Error::Grammar("Mixed match families".to_string()));
+            }
+
+            if nested && !tag.is_payload() {
+                return Err(Error::Grammar(
+                    "Unexpected terminal pattern under constructor".to_string(),
+                ));
+            }
+
+            let typed_inner = if tag.is_payload() {
+                let inner = inner.ok_or_else(|| {
+                    Error::Grammar("Payload constructor missing inner pattern".to_string())
+                })?;
+                Some(Box::new(type_pattern_ir(*inner, top_level_family, true)?))
+            } else {
+                None
+            };
+
+            Ok(TypedPatternIr::Constructor {
+                family,
+                tag,
+                inner: typed_inner,
+            })
+        }
+    }
+}
+
+fn typed_arms_from_parsed(
+    arms: &[ParsedMatchArm],
+) -> Result<(MatchFamily, Vec<TypedMatchArm>), Error> {
+    let first = arms
+        .first()
+        .ok_or_else(|| Error::Grammar("Match requires at least two arms".to_string()))?;
+    let top_level_family = root_family_from_arm(first)?;
+
+    let mut typed = Vec::with_capacity(arms.len());
+    for arm in arms {
+        let family = root_family_from_arm(arm)?;
+        if family != top_level_family {
+            return Err(Error::IncompatibleMatchArms(
+                lower_pattern_for_error(&first.pattern),
+                lower_pattern_for_error(&arm.pattern),
+            ));
+        }
+
+        typed.push(TypedMatchArm {
+            pattern: type_pattern_ir(
+                pattern_ir_from_parsed(arm.pattern.clone()),
+                top_level_family,
+                false,
+            )?,
+            expression: arm.expression.clone(),
+            span: arm.span,
+        });
+    }
+
+    Ok((top_level_family, typed))
+}
+
+fn is_typed_wildcard(pattern: &TypedPatternIr) -> bool {
+    matches!(
+        pattern,
+        TypedPatternIr::Wildcard(_) | TypedPatternIr::Bind(_, _)
+    )
+}
+
+fn infer_family_from_patterns(patterns: &[TypedPatternIr]) -> Result<Option<MatchFamily>, Error> {
+    let mut family: Option<MatchFamily> = None;
+
+    for pattern in patterns {
+        if let Some(current) = pattern.family() {
+            if let Some(existing) = family {
+                if existing != current {
+                    return Err(Error::Grammar("Mixed match families".to_string()));
+                }
+            } else {
+                family = Some(current);
+            }
+        }
+    }
+
+    Ok(family)
+}
+
+fn specialize_pattern_for_tag(
+    pattern: &TypedPatternIr,
+    tag: PatternCtorTag,
+) -> Option<TypedPatternIr> {
+    match pattern {
+        TypedPatternIr::Wildcard(ty) => Some(TypedPatternIr::Wildcard(ty.clone())),
+        TypedPatternIr::Bind(pattern, ty) => {
+            Some(TypedPatternIr::Bind(pattern.clone(), ty.clone()))
+        }
+        TypedPatternIr::Constructor {
+            tag: pattern_tag,
+            inner,
+            ..
+        } if *pattern_tag == tag => {
+            if tag.is_payload() {
+                inner.as_ref().map(|inner| (**inner).clone())
+            } else {
+                Some(pattern.clone())
+            }
+        }
+        TypedPatternIr::Constructor { .. } => None,
+    }
+}
+
+fn branch_patterns_for_tag(
+    patterns: &[TypedPatternIr],
+    tag: PatternCtorTag,
+) -> Vec<TypedPatternIr> {
+    patterns
+        .iter()
+        .filter_map(|pattern| specialize_pattern_for_tag(pattern, tag))
+        .collect()
+}
+
+fn typed_pattern_same_shape(a: &TypedPatternIr, b: &TypedPatternIr) -> bool {
+    match (a, b) {
+        (TypedPatternIr::Wildcard(ty_a), TypedPatternIr::Wildcard(ty_b)) => ty_a == ty_b,
+        (TypedPatternIr::Bind(_, ty_a), TypedPatternIr::Bind(_, ty_b)) => ty_a == ty_b,
+        (TypedPatternIr::Wildcard(ty_a), TypedPatternIr::Bind(_, ty_b))
+        | (TypedPatternIr::Bind(_, ty_a), TypedPatternIr::Wildcard(ty_b)) => ty_a == ty_b,
+        (
+            TypedPatternIr::Constructor {
+                family: family_a,
+                tag: tag_a,
+                inner: inner_a,
+            },
+            TypedPatternIr::Constructor {
+                family: family_b,
+                tag: tag_b,
+                inner: inner_b,
+            },
+        ) if family_a == family_b && tag_a == tag_b => match (inner_a, inner_b) {
+            (Some(inner_a), Some(inner_b)) => typed_pattern_same_shape(inner_a, inner_b),
+            (None, None) => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn typed_pattern_covers(cover: &TypedPatternIr, candidate: &TypedPatternIr) -> bool {
+    match (cover, candidate) {
+        (TypedPatternIr::Wildcard(_), _) | (TypedPatternIr::Bind(_, _), _) => true,
+        (
+            TypedPatternIr::Constructor {
+                family: family_a,
+                tag: tag_a,
+                inner: inner_a,
+            },
+            TypedPatternIr::Constructor {
+                family: family_b,
+                tag: tag_b,
+                inner: inner_b,
+            },
+        ) if family_a == family_b && tag_a == tag_b => match (inner_a, inner_b) {
+            (Some(inner_a), Some(inner_b)) => typed_pattern_covers(inner_a, inner_b),
+            (None, None) => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn validate_duplicate_patterns(arms: &[TypedMatchArm]) -> Result<(), Error> {
+    for i in 0..arms.len() {
+        for j in (i + 1)..arms.len() {
+            if typed_pattern_same_shape(&arms[i].pattern, &arms[j].pattern) {
+                return Err(Error::Grammar("Duplicate match arm".to_string())
+                    .with_span(arms[j].span)
+                    .into());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_constructor_overlap_patterns(
+    family: MatchFamily,
+    patterns: &[TypedPatternIr],
+    spans: &[Span],
+) -> Result<(), Error> {
+    for spec in constructor_specs(family) {
+        if !spec.has_payload {
+            continue;
+        }
+
+        let mut child_patterns = Vec::new();
+        let mut child_spans = Vec::new();
+        let mut saw_nested = false;
+
+        for (pattern, span) in patterns.iter().zip(spans.iter().copied()) {
+            if let Some(child) = specialize_pattern_for_tag(pattern, spec.tag) {
+                if is_typed_wildcard(&child) {
+                    if saw_nested {
+                        return Err(Error::Grammar(
+                            "Overlapping match arms in constructor branch".to_string(),
+                        )
+                        .with_span(span)
+                        .into());
+                    }
+                } else if matches!(child, TypedPatternIr::Constructor { .. }) {
+                    saw_nested = true;
+                }
+
+                child_patterns.push(child);
+                child_spans.push(span);
+            }
+        }
+
+        if child_patterns.is_empty() {
+            continue;
+        }
+
+        let nested_children: Vec<_> = child_patterns
+            .iter()
+            .filter(|pattern| matches!(pattern, TypedPatternIr::Constructor { .. }))
+            .cloned()
+            .collect();
+        let nested_spans: Vec<_> = child_patterns
+            .iter()
+            .zip(child_spans.iter().copied())
+            .filter_map(|(pattern, span)| {
+                matches!(pattern, TypedPatternIr::Constructor { .. }).then_some(span)
+            })
+            .collect();
+
+        if !nested_children.is_empty() {
+            let nested_family = infer_family_from_patterns(&nested_children)?
+                .ok_or_else(|| Error::Grammar("Mixed match families".to_string()))?;
+            validate_constructor_overlap_patterns(nested_family, &nested_children, &nested_spans)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn is_pattern_useful(previous: &[TypedPatternIr], new_pattern: &TypedPatternIr) -> bool {
+    !previous
+        .iter()
+        .any(|previous_pattern| typed_pattern_covers(previous_pattern, new_pattern))
+}
+
+fn validate_pattern_usefulness(arms: &[TypedMatchArm]) -> Result<(), Error> {
+    let mut previous = Vec::new();
+
+    for arm in arms {
+        if !is_pattern_useful(&previous, &arm.pattern) {
+            return Err(Error::Grammar(
+                "This match arm is unreachable because it is covered by a previous arm".to_string(),
+            )
+            .with_span(arm.span)
+            .into());
+        }
+
+        previous.push(arm.pattern.clone());
+    }
+
+    Ok(())
+}
+
+fn missing_branch_message(tag: PatternCtorTag) -> &'static str {
+    match tag {
+        PatternCtorTag::Left => "Non-exhaustive Either match: missing Left branch",
+        PatternCtorTag::Right => "Non-exhaustive Either match: missing Right branch",
+        PatternCtorTag::Some => "Non-exhaustive Option match: missing Some",
+        PatternCtorTag::None => "Non-exhaustive Option match: missing None",
+        PatternCtorTag::False => "Non-exhaustive bool match: missing false",
+        PatternCtorTag::True => "Non-exhaustive bool match: missing true",
+    }
+}
+
+fn first_missing_pattern_message(
+    family: MatchFamily,
+    patterns: &[TypedPatternIr],
+) -> Result<Option<String>, Error> {
+    if patterns.iter().any(is_typed_wildcard) {
+        return Ok(None);
+    }
+
+    for spec in constructor_specs(family) {
+        let branch_patterns = branch_patterns_for_tag(patterns, spec.tag);
+        if branch_patterns.is_empty() {
+            return Ok(Some(missing_branch_message(spec.tag).to_string()));
+        }
+
+        if spec.has_payload {
+            if branch_patterns.iter().any(is_typed_wildcard) {
+                continue;
+            }
+
+            let nested_family = infer_family_from_patterns(&branch_patterns)?
+                .ok_or_else(|| Error::Grammar("Mixed match families".to_string()))?;
+
+            if let Some(message) = first_missing_pattern_message(nested_family, &branch_patterns)? {
+                return Ok(Some(message));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn validate_pattern_exhaustiveness(
+    family: MatchFamily,
+    arms: &[TypedMatchArm],
+) -> Result<(), Error> {
+    let patterns: Vec<_> = arms.iter().map(|arm| arm.pattern.clone()).collect();
+
+    if let Some(message) = first_missing_pattern_message(family, &patterns)? {
+        return Err(Error::Grammar(message));
+    }
+
+    Ok(())
+}
+
+fn make_branch_typed_arm(pattern: TypedPatternIr, arm: &TypedMatchArm) -> TypedMatchArm {
+    TypedMatchArm {
+        pattern,
+        expression: arm.expression.clone(),
+        span: arm.span,
+    }
+}
+
+fn compile_decision_branch(
+    spec: ConstructorSpec,
+    arms: &[TypedMatchArm],
+    span: Span,
+) -> Result<DecisionBranchKind, Error> {
+    let mut applicable = Vec::new();
+    for arm in arms {
+        if let Some(pattern) = specialize_pattern_for_tag(&arm.pattern, spec.tag) {
+            applicable.push(make_branch_typed_arm(pattern, arm));
+        }
+    }
+
+    debug_assert!(!applicable.is_empty());
+
+    if !spec.has_payload {
+        return Ok(DecisionBranchKind::Nullary {
+            expression: applicable[0].expression.clone(),
+        });
+    }
+
+    let first = &applicable[0];
+    match &first.pattern {
+        TypedPatternIr::Wildcard(ty) => Ok(DecisionBranchKind::UnaryBind {
+            pattern: Pattern::Ignore,
+            ty: ty.clone(),
+            expression: first.expression.clone(),
+        }),
+        TypedPatternIr::Bind(pattern, ty) => Ok(DecisionBranchKind::UnaryBind {
+            pattern: pattern.clone(),
+            ty: ty.clone(),
+            expression: first.expression.clone(),
+        }),
+        TypedPatternIr::Constructor { .. } => {
+            let payload_id = payload_identifier(span, spec.tag.as_payload_tag());
+            let payload_pattern = Pattern::Identifier(payload_id.clone());
+            let payload_expr = payload_expression(&payload_id, span);
+            let nested_family = infer_family_from_patterns(
+                &applicable
+                    .iter()
+                    .map(|arm| arm.pattern.clone())
+                    .collect::<Vec<_>>(),
+            )?
+            .ok_or_else(|| Error::Grammar("Mixed match families".to_string()))?;
+            let nested_tree =
+                compile_decision_tree(payload_expr.clone(), nested_family, &applicable, span)?;
+            let payload_ty = decision_tree_scrutinee_type(&nested_tree);
+
+            Ok(DecisionBranchKind::UnarySwitch {
+                payload_pattern,
+                payload_expr,
+                payload_ty,
+                tree: Box::new(nested_tree),
+            })
+        }
+    }
+}
+
+fn compile_decision_tree(
+    scrutinee: Arc<Expression>,
+    family: MatchFamily,
+    arms: &[TypedMatchArm],
+    span: Span,
+) -> Result<DecisionTree, Error> {
+    let mut branches = Vec::new();
+
+    for spec in constructor_specs(family) {
+        branches.push((spec.tag, compile_decision_branch(*spec, arms, span)?));
+    }
+
+    Ok(DecisionTree::Switch {
+        family,
+        scrutinee,
+        branches,
+        span,
+    })
+}
+
+fn branch_payload_ty(branch: &DecisionBranchKind) -> Option<AliasedType> {
+    match branch {
+        DecisionBranchKind::Nullary { .. } => None,
+        DecisionBranchKind::UnaryBind { ty, .. } => Some(ty.clone()),
+        DecisionBranchKind::UnarySwitch { payload_ty, .. } => Some(payload_ty.clone()),
+    }
+}
+
+fn decision_tree_scrutinee_type(tree: &DecisionTree) -> AliasedType {
+    match tree {
+        DecisionTree::Switch {
+            family, branches, ..
+        } => match family {
+            MatchFamily::Bool => AliasedType::boolean(),
+            MatchFamily::Option => {
+                let some_ty = branches
+                    .iter()
+                    .find(|(tag, _)| *tag == PatternCtorTag::Some)
+                    .and_then(|(_, branch)| branch_payload_ty(branch))
+                    .unwrap_or_else(error_aliased_type);
+                AliasedType::option(some_ty)
+            }
+            MatchFamily::Either => {
+                let left_ty = branches
+                    .iter()
+                    .find(|(tag, _)| *tag == PatternCtorTag::Left)
+                    .and_then(|(_, branch)| branch_payload_ty(branch))
+                    .unwrap_or_else(error_aliased_type);
+                let right_ty = branches
+                    .iter()
+                    .find(|(tag, _)| *tag == PatternCtorTag::Right)
+                    .and_then(|(_, branch)| branch_payload_ty(branch))
+                    .unwrap_or_else(error_aliased_type);
+                AliasedType::either(left_ty, right_ty)
+            }
+        },
+    }
+}
+
+fn lower_branch_kind_to_match_arm(
+    tag: PatternCtorTag,
+    branch: DecisionBranchKind,
+    span: Span,
+) -> Result<MatchArm, Error> {
+    match branch {
+        DecisionBranchKind::Nullary { expression } => {
+            let pattern = match tag {
+                PatternCtorTag::None => MatchPattern::None,
+                PatternCtorTag::False => MatchPattern::False,
+                PatternCtorTag::True => MatchPattern::True,
+                PatternCtorTag::Left | PatternCtorTag::Right | PatternCtorTag::Some => {
+                    return Err(Error::Grammar("Invalid nullary branch".to_string()))
+                }
+            };
+            Ok(match_arm(pattern, expression))
+        }
+        DecisionBranchKind::UnaryBind {
+            pattern,
+            ty,
+            expression,
+        } => {
+            let match_pattern = match tag {
+                PatternCtorTag::Left => MatchPattern::Left(pattern, ty),
+                PatternCtorTag::Right => MatchPattern::Right(pattern, ty),
+                PatternCtorTag::Some => MatchPattern::Some(pattern, ty),
+                PatternCtorTag::None | PatternCtorTag::False | PatternCtorTag::True => {
+                    return Err(Error::Grammar("Invalid payload branch".to_string()))
+                }
+            };
+            Ok(match_arm(match_pattern, expression))
+        }
+        DecisionBranchKind::UnarySwitch {
+            payload_pattern,
+            payload_expr,
+            payload_ty,
+            tree,
+        } => {
+            let nested = lower_decision_tree_to_match(*tree)?;
+            let match_pattern = match tag {
+                PatternCtorTag::Left => MatchPattern::Left(payload_pattern, payload_ty),
+                PatternCtorTag::Right => MatchPattern::Right(payload_pattern, payload_ty),
+                PatternCtorTag::Some => MatchPattern::Some(payload_pattern, payload_ty),
+                PatternCtorTag::None | PatternCtorTag::False | PatternCtorTag::True => {
+                    return Err(Error::Grammar("Invalid payload branch".to_string()))
+                }
+            };
+
+            Ok(match_arm(
+                match_pattern,
+                wrap_nested_match(payload_expr, nested.left, nested.right, span),
+            ))
+        }
+    }
+}
+
+fn lower_decision_tree_to_match(tree: DecisionTree) -> Result<Match, Error> {
+    match tree {
+        DecisionTree::Switch {
+            family,
+            scrutinee,
+            branches,
+            span,
+        } => {
+            let mut branch_map = std::collections::BTreeMap::new();
+            for (tag, branch) in branches {
+                branch_map.insert(tag, branch);
+            }
+
+            match family {
+                MatchFamily::Either => Ok(match_node(
+                    scrutinee,
+                    lower_branch_kind_to_match_arm(
+                        PatternCtorTag::Left,
+                        branch_map.remove(&PatternCtorTag::Left).unwrap(),
+                        span,
+                    )?,
+                    lower_branch_kind_to_match_arm(
+                        PatternCtorTag::Right,
+                        branch_map.remove(&PatternCtorTag::Right).unwrap(),
+                        span,
+                    )?,
+                    span,
+                )),
+                MatchFamily::Option => Ok(match_node(
+                    scrutinee,
+                    lower_branch_kind_to_match_arm(
+                        PatternCtorTag::None,
+                        branch_map.remove(&PatternCtorTag::None).unwrap(),
+                        span,
+                    )?,
+                    lower_branch_kind_to_match_arm(
+                        PatternCtorTag::Some,
+                        branch_map.remove(&PatternCtorTag::Some).unwrap(),
+                        span,
+                    )?,
+                    span,
+                )),
+                MatchFamily::Bool => Ok(match_node(
+                    scrutinee,
+                    lower_branch_kind_to_match_arm(
+                        PatternCtorTag::False,
+                        branch_map.remove(&PatternCtorTag::False).unwrap(),
+                        span,
+                    )?,
+                    lower_branch_kind_to_match_arm(
+                        PatternCtorTag::True,
+                        branch_map.remove(&PatternCtorTag::True).unwrap(),
+                        span,
+                    )?,
+                    span,
+                )),
+            }
+        }
+    }
+}
+
+fn lower_match_arms(
+    scrutinee: Arc<Expression>,
+    arms: Vec<ParsedMatchArm>,
+    span: Span,
+) -> Result<Match, Error> {
+    let (family, typed_arms) = typed_arms_from_parsed(&arms)?;
+    let patterns: Vec<_> = typed_arms.iter().map(|arm| arm.pattern.clone()).collect();
+    let spans: Vec<_> = typed_arms.iter().map(|arm| arm.span).collect();
+
+    validate_duplicate_patterns(&typed_arms)?;
+    validate_constructor_overlap_patterns(family, &patterns, &spans)?;
+    validate_pattern_usefulness(&typed_arms)?;
+    validate_pattern_exhaustiveness(family, &typed_arms)?;
+
+    let tree = compile_decision_tree(scrutinee, family, &typed_arms, span)?;
+    lower_decision_tree_to_match(tree)
 }
 
 impl Match {
@@ -1701,79 +2586,29 @@ impl Match {
     {
         let scrutinee = expr.clone().map(Arc::new);
 
-        let arm_recovery = any()
-            .filter(|t| !matches!(t, Token::Comma | Token::RBrace))
-            .ignored()
-            .or(nested_delimiters(
-                Token::LBrace,
-                Token::RBrace,
-                [
-                    (Token::LParen, Token::RParen),
-                    (Token::LBracket, Token::RBracket),
-                ],
-                |_| (),
-            )
-            .ignored())
-            .repeated()
-            .map_with(|(), _| None);
-
-        let arm_parser = MatchArm::parser(expr.clone())
-            .map(Some)
-            .recover_with(via_parser(arm_recovery.clone()));
-
         let arms = delimited_with_recovery(
-            arm_parser.clone().then(arm_parser.clone()),
+            ParsedMatchArm::parser(expr.clone())
+                .repeated()
+                .collect::<Vec<_>>(),
             Token::LBrace,
             Token::RBrace,
-            |_| (None, None),
+            |_| Vec::new(),
         );
 
         just(Token::Match)
             .ignore_then(scrutinee)
             .then(arms)
-            .validate(|(scrutinee, arms), e, emit| match arms {
-                (Some(first), Some(second)) => {
-                    let (left, right) = match (&first.pattern, &second.pattern) {
-                        (MatchPattern::Left(..), MatchPattern::Right(..)) => (first, second),
-                        (MatchPattern::Right(..), MatchPattern::Left(..)) => (second, first),
-
-                        (MatchPattern::None, MatchPattern::Some(..)) => (first, second),
-                        (MatchPattern::Some(..), MatchPattern::None) => (second, first),
-
-                        (MatchPattern::False, MatchPattern::True) => (first, second),
-                        (MatchPattern::True, MatchPattern::False) => (second, first),
-
-                        (p1, p2) => {
-                            emit.emit(
-                                Error::IncompatibleMatchArms(p1.clone(), p2.clone())
-                                    .with_span(e.span()),
-                            );
-                            (first, second)
-                        }
-                    };
-
-                    Self {
-                        scrutinee,
-                        left,
-                        right,
-                        span: e.span(),
-                    }
-                }
-                _ => {
-                    let match_arm_fallback = MatchArm {
-                        expression: Arc::new(Expression::empty(Span::new(0, 0))),
-                        pattern: MatchPattern::False,
-                    };
-
-                    let (left, right) = (
-                        arms.0.unwrap_or(match_arm_fallback.clone()),
-                        arms.1.unwrap_or(match_arm_fallback.clone()),
-                    );
-                    Self {
-                        scrutinee,
-                        left,
-                        right,
-                        span: e.span(),
+            .validate(|(scrutinee, arms), e, emit| {
+                match lower_match_arms(scrutinee.clone(), arms, e.span()) {
+                    Ok(match_) => match_,
+                    Err(err) => {
+                        emit.emit(err.with_span(e.span()));
+                        match_node(
+                            scrutinee,
+                            match_arm(MatchPattern::False, Arc::new(Expression::empty(e.span()))),
+                            match_arm(MatchPattern::True, Arc::new(Expression::empty(e.span()))),
+                            e.span(),
+                        )
                     }
                 }
             })
@@ -2172,37 +3007,4 @@ impl crate::ArbitraryRec for Match {
 }
 
 #[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_reject_redefined_builtin_type() {
-        let ty = TypeAlias::parse_from_str("type Ctx8 = u32")
-            .expect_err("Redifining built-in alias should be rejected");
-
-        assert_eq!(
-            ty.error(),
-            &Error::RedefinedAliasAsBuiltin(AliasName::from_str_unchecked("Ctx8"))
-        );
-    }
-
-    #[test]
-    fn test_double_colon() {
-        let input = "fn main() { let ab: u8 = <(u4, u4)> : :into((0b1011, 0b1101)); }";
-        let mut error_handler = ErrorCollector::new(Arc::from(input));
-        let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
-
-        assert!(parse_program.is_none());
-        assert!(ErrorCollector::to_string(&error_handler).contains("Expected '::', found ':'"));
-    }
-
-    #[test]
-    fn test_double_double_colon() {
-        let input = "fn main() { let pk: Pubkey = witnes::::PK; }";
-        let mut error_handler = ErrorCollector::new(Arc::from(input));
-        let parse_program = Program::parse_from_str_with_errors(input, &mut error_handler);
-
-        assert!(parse_program.is_none());
-        assert!(ErrorCollector::to_string(&error_handler).contains("Expected ';', found '::'"));
-    }
-}
+mod test;
