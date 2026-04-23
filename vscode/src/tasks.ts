@@ -78,6 +78,7 @@ export class SimplicityHLTaskProvider implements vscode.TaskProvider {
       case "compile-with-witness":
         taskName = "Compile with Witness";
         args = [definition.file || "${file}"];
+        args.push("-w");
         if (definition.witnessFile) {
           args.push(definition.witnessFile);
         } else {
