@@ -1,0 +1,7 @@
+use lib::duplication::A;
+
+fn main() {
+    let smth: u64 = 55;
+    let another: A = 55;
+    assert!(jet::eq_64(smth, another));
+}

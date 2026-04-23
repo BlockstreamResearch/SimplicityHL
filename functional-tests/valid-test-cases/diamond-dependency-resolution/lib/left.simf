@@ -1,0 +1,2 @@
+pub use lib::base::BaseType;
+pub fn get_left() -> BaseType { 1 }

@@ -1,0 +1,5 @@
+use orch::handler::run_system;
+
+fn main() {
+    assert!(jet::eq_32(run_system(5), 5));
+}

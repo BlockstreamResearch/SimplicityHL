@@ -11,6 +11,9 @@ pub type Tokens<'src> = Vec<(Token<'src>, crate::error::Span)>;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Token<'src> {
     // Keywords
+    Pub,
+    Use,
+    As,
     Fn,
     Let,
     Type,
@@ -66,6 +69,9 @@ pub enum Token<'src> {
 impl<'src> fmt::Display for Token<'src> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Token::Pub => write!(f, "pub"),
+            Token::Use => write!(f, "use"),
+            Token::As => write!(f, "as"),
             Token::Fn => write!(f, "fn"),
             Token::Let => write!(f, "let"),
             Token::Type => write!(f, "type"),
@@ -138,6 +144,9 @@ pub fn lexer<'src>(
         choice((just("assert!"), just("panic!"), just("dbg!"), just("list!"))).map(Token::Macro);
 
     let keyword = text::ident().map(|s| match s {
+        "pub" => Token::Pub,
+        "use" => Token::Use,
+        "as" => Token::As,
         "fn" => Token::Fn,
         "let" => Token::Let,
         "type" => Token::Type,
@@ -247,7 +256,7 @@ pub fn lex<'src>(input: &'src str) -> (Option<Tokens<'src>>, Vec<crate::error::R
 pub fn is_keyword(s: &str) -> bool {
     matches!(
         s,
-        "fn" | "let" | "type" | "mod" | "const" | "match" | "true" | "false"
+        "pub" | "use" | "as" | "fn" | "let" | "type" | "mod" | "const" | "match" | "true" | "false"
     )
 }
 

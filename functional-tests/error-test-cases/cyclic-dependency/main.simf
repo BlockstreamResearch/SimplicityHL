@@ -1,0 +1,3 @@
+use lib::module_a::TypeA; 
+
+fn main() {}

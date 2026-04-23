@@ -1,0 +1,1 @@
+pub type UserId = u32;

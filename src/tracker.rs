@@ -356,7 +356,7 @@ fn parse_jet_arguments(jet: Elements, input_frame: &mut FrameIter) -> Result<Vec
 /// Resolves an aliased type to its concrete form.
 fn resolve_jet_type(aliased_type: &AliasedType) -> ResolvedType {
     aliased_type
-        .resolve(|_: &AliasName| None)
+        .resolve(|name: &AliasName| Err(name.clone()))
         .expect("jet types always resolve without aliases")
 }
 
