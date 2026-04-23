@@ -55,21 +55,20 @@ cargo install --path .
 
 ## Usage
 
-The SimplicityHL compiler takes two arguments:
+The SimplicityHL compiler takes one argument, a path to a SimplicityHL program file (`.simf`).
 
-1. A path to a SimplicityHL program file (`.simf`)
-1. A path to a SimplicityHL witness file (`.wit`, optional)
+You can also optionally specify a path to a SimplicityHL witness file (`.wit`) with the `-w` option.
 
 The compiler produces a base64-encoded Simplicity program. Witness data will be included if a witness file is provided.
 
 ```bash
-./target/debug/simc examples/p2pkh.simf examples/p2pkh.wit
+./target/debug/simc examples/p2pkh.simf -w examples/p2pkh.wit
 ```
 
 Produce JSON output with the `--json` flag.
 
 ```bash
-./target/debug/simc examples/p2pkh.simf examples/p2pkh.wit --json
+./target/debug/simc examples/p2pkh.simf -w examples/p2pkh.wit --json
 ```
 
 ### VSCode extension
