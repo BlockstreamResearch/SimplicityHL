@@ -40,6 +40,7 @@ export class SimplicityHLCompiler {
 
     // Add optional witness file
     if (options.witnessFile) {
+      args.push("-w");
       args.push(options.witnessFile);
     }
     // Add optional flags
