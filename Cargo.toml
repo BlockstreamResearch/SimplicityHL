@@ -1,6 +1,6 @@
 [package]
 name = "simplicityhl"
-version = "0.5.0"
+version = "0.6.0-rc.0"
 authors = ["sanket1729 <sanket1729@gmail.com>"]
 license = "CC0-1.0"
 homepage = "https://github.com/BlockstreamResearch/SimplicityHL"
