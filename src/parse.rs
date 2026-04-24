@@ -2216,10 +2216,32 @@ impl AsRef<Span> for ModuleAssignment {
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for Program {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let len = u.int_in_range(0..=3)?;
-        let items = (0..len)
-            .map(|_| Item::arbitrary(u))
-            .collect::<arbitrary::Result<Arc<[Item]>>>()?;
+        let mut items_vec: Vec<Item> = Vec::new();
+        let len = u.int_in_range(0..=2)?;
+        for _ in 0..len {
+            items_vec.push(Item::arbitrary(u)?);
+        }
+        // Three equally-likely modes for how `fn main()` is injected:
+        //   0 — no explicit main (arbitrary items only)
+        //   1 — main with arbitrary params and return type
+        //   2 — main with no params and no return type (closest to valid)
+        match u.int_in_range(0..=2u8)? {
+            0 => {}
+            1 => {
+                let mut main_fn = <Function as crate::ArbitraryRec>::arbitrary_rec(u, 3)?;
+                main_fn.name = FunctionName::main();
+                items_vec.push(Item::Function(main_fn));
+            }
+            _ => {
+                let mut main_fn = <Function as crate::ArbitraryRec>::arbitrary_rec(u, 3)?;
+                main_fn.name = FunctionName::main();
+                main_fn.params = Arc::from([]);
+                main_fn.ret = None;
+                items_vec.push(Item::Function(main_fn));
+            }
+        }
+
+        let items: Arc<[Item]> = items_vec.into();
         Ok(Self {
             items,
             span: Span::DUMMY,
@@ -2242,7 +2264,7 @@ impl crate::ArbitraryRec for Function {
         let file_id = u.int_in_range(0..=3)?;
         let visibility = Visibility::arbitrary(u)?;
         let name = FunctionName::arbitrary(u)?;
-        let len = u.int_in_range(0..=3)?;
+        let len = u.int_in_range(0..=6)?;
         let params = (0..len)
             .map(|_| FunctionParam::arbitrary(u))
             .collect::<arbitrary::Result<Arc<[FunctionParam]>>>()?;
