@@ -81,7 +81,6 @@ pub enum Visibility {
 /// pub use std::collections::{HashMap, HashSet};
 /// ```
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct UseDecl {
     /// The visibility of the import (e.g., `pub use` vs `use`).
     visibility: Visibility,
@@ -138,6 +137,25 @@ impl UseDecl {
 }
 
 impl_eq_hash!(UseDecl; visibility, path, drp_name, items);
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for UseDecl {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let visibility = Visibility::arbitrary(u)?;
+        let path_len = u.int_in_range(2..=4)?;
+        let path = (0..path_len)
+            .map(|_| Identifier::arbitrary(u))
+            .collect::<arbitrary::Result<_>>()?;
+        let items = UseItems::arbitrary(u)?;
+
+        Ok(Self {
+            visibility,
+            path,
+            items,
+            span: Span::DUMMY,
+        })
+    }
+}
 
 /// Aliases the specific identifier of an imported type to a new, local identifier
 pub type AliasedSymbolName = (SymbolName, Option<SymbolName>);

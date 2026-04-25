@@ -487,7 +487,8 @@ impl crate::ArbitraryRec for ResolvedType {
                 }
                 6 => {
                     let element = Self::arbitrary_rec(u, new_budget)?;
-                    let bound = NonZeroPow2Usize::arbitrary(u)?;
+                    let exp = u.int_in_range(1u32..=4)?;
+                    let bound = NonZeroPow2Usize::new_unchecked(2usize.saturating_pow(exp));
                     Ok(Self::list(element, bound))
                 }
                 _ => unreachable!(),
