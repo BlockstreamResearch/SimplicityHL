@@ -1,6 +1,8 @@
-# Unreleased
+# 0.6.0-rc.0 - 2026-04-24
 
+* Add imports and dependency resolution, including `pub`/`use` syntax, re-exports, aliases, transitive dependencies, collision diagnostics, functional tests, examples, and `simc --dep` for compiling multi-file programs. [#264](https://github.com/BlockstreamResearch/SimplicityHL/pull/264)
 * Replaced the deprecated `WithFile` trait with `WithContent` and `WithSource` to cleanly separate single-file execution from multi-file environments. Additionally, replaced the `file()` method on `RichError` with `source()`. [#266](https://github.com/BlockstreamResearch/SimplicityHL/pull/266)
+* Clean up whitespace in the generated jet documentation. [#276](https://github.com/BlockstreamResearch/SimplicityHL/pull/276)
 
 # 0.5.0 - 2026-04-17
 
