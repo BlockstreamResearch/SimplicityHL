@@ -1,0 +1,5 @@
+use ext_lib::math::add_one;
+
+fn main() {
+    assert!(jet::eq_32(add_one(5), 6));
+}

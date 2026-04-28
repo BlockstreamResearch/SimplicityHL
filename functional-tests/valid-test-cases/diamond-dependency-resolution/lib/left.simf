@@ -1,2 +1,2 @@
-pub use lib::base::BaseType;
+pub use crate::base::BaseType;
 pub fn get_left() -> BaseType { 1 }

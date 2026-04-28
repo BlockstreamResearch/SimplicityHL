@@ -399,7 +399,6 @@ pub trait ArbitraryOfType: Sized {
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::parse::ParseFromStr;
-    use crate::resolution::CanonPath;
     use base64::display::Base64Display;
     use base64::engine::general_purpose::STANDARD;
     use simplicity::BitMachine;
@@ -496,13 +495,30 @@ pub(crate) mod tests {
             K: Into<String>,
         {
             let mut dependency_map = DependencyMap::new();
+
+            if let Some(parent) = prog_path.as_ref().parent() {
+                let canon_root = crate::resolution::tests::canon(parent);
+                let _ = dependency_map.insert(
+                    canon_root.clone(),
+                    crate::driver::CRATE_STR.to_string(),
+                    canon_root,
+                );
+            }
+
             for (context, alias, target) in dependencies {
-                let context = CanonPath::canonicalize(context.as_ref()).unwrap();
-                let target = CanonPath::canonicalize(target.as_ref()).unwrap();
+                let context = crate::resolution::tests::canon(context.as_ref());
+                let target = crate::resolution::tests::canon(target.as_ref());
 
                 dependency_map
-                    .insert(context, alias.into(), target)
+                    .insert(context.clone(), alias.into(), target.clone())
                     .unwrap();
+
+                // Treat each mapped dependency as an isolated external package to satisfy strict local-file checks
+                let _ = dependency_map.insert(
+                    target.clone(),
+                    crate::driver::CRATE_STR.to_string(),
+                    target,
+                );
             }
 
             TestCase::<TemplateProgram>::template_deps(prog_path.as_ref(), &dependency_map)
@@ -615,15 +631,9 @@ pub(crate) mod tests {
         let lib_path = root_path.join(lib_alias);
         let main_path = root_path.join("main.simf");
 
-        TestCase::program_file_with_deps(
-            &main_path,
-            [
-                (&root_path, lib_alias, &lib_path),
-                (&lib_path, lib_alias, &lib_path),
-            ],
-        )
-        .with_witness_values(WitnessValues::default())
-        .assert_run_success();
+        TestCase::program_file_with_deps(&main_path, [(&root_path, lib_alias, &lib_path)])
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
     }
 
     /// THE ADVANCED HELPER
@@ -701,6 +711,49 @@ pub(crate) mod tests {
                 ("merkle", "math", "math"),
             ],
         );
+    }
+
+    /// Run with `simc` command:
+    ///
+    /// ```
+    /// simc examples/local_crate/main.simf
+    /// ```
+    #[test]
+    fn local_crate() {
+        run_multidep_test("./examples/local_crate", &[]);
+    }
+
+    #[test]
+    fn test_crate_keyword_compilation_success() {
+        use crate::resolution::{CanonPath, DependencyMap};
+        use crate::test_utils::TempWorkspace;
+
+        let ws = TempWorkspace::new("crate_success");
+        let root = ws.create_dir("workspace");
+        ws.create_file(
+            "workspace/main.simf",
+            "use crate::utils::add;\nfn main() { assert!(jet::eq_32(add(2, 2), 4)); }",
+        );
+        ws.create_file(
+            "workspace/utils.simf",
+            "pub fn add(a: u32, b: u32) -> u32 { let (_, sum): (bool, u32) = jet::add_32(a, b); sum }",
+        );
+
+        let main_path = root.join("main.simf");
+        let mut dependency_map = DependencyMap::new();
+        let canon_root = CanonPath::canonicalize(&root).unwrap();
+        dependency_map
+            .insert(
+                canon_root.clone(),
+                crate::driver::CRATE_STR.to_string(),
+                canon_root,
+            )
+            .unwrap();
+
+        TestCase::<TemplateProgram>::template_deps(&main_path, &dependency_map)
+            .with_arguments(Arguments::default())
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
     }
 
     #[test]
@@ -1280,7 +1333,7 @@ mod functional_tests {
     }
 
     #[test]
-    #[should_panic(expected = "No such file or directory")]
+    #[should_panic(expected = "not found")]
     fn file_not_found_error() {
         run_dependency_test(
             format!("{}/file-not-found", ERROR_TESTS_DIR).as_str(),
@@ -1289,7 +1342,7 @@ mod functional_tests {
     }
 
     #[test]
-    #[should_panic(expected = "No such file or directory")]
+    #[should_panic(expected = "not found")]
     fn lib_not_found_error() {
         run_dependency_test(format!("{}/lib-not-found", ERROR_TESTS_DIR).as_str(), "lib");
     }
@@ -1319,6 +1372,47 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/type-alias-duplication", ERROR_TESTS_DIR).as_str(),
             "lib",
+        );
+    }
+
+    #[test]
+    fn local_crate_resolution() {
+        run_multidep_test(format!("{}/local-crate", VALID_TESTS_DIR).as_str(), &[]);
+    }
+
+    #[test]
+    fn local_crate_nested_resolution() {
+        run_multidep_test(
+            format!("{}/local-crate-nested", VALID_TESTS_DIR).as_str(),
+            &[],
+        );
+    }
+
+    #[test]
+    fn external_library_uses_crate() {
+        run_multidep_test(
+            format!("{}/external-library-uses-crate", VALID_TESTS_DIR).as_str(),
+            &[(".", "ext_lib", "ext_lib")],
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "not found")]
+    fn crate_file_not_found_error() {
+        run_multidep_test(
+            format!("{}/crate-file-not-found", ERROR_TESTS_DIR).as_str(),
+            &[],
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "is part of the local project and must be imported using the `crate::` prefix"
+    )]
+    fn local_file_as_external_error() {
+        run_multidep_test(
+            format!("{}/local-file-as-external", ERROR_TESTS_DIR).as_str(),
+            &[(".", "ext", ".")],
         );
     }
 }

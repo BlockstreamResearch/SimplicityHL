@@ -1,2 +1,2 @@
-pub use lib::core::Coin;
-pub use lib::core::mint;
+pub use crate::core::Coin;
+pub use crate::core::mint;

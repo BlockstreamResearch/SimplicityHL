@@ -1,2 +1,2 @@
-pub use lib::module_b::TypeB;
+pub use crate::module_b::TypeB;
 pub type TypeA = u32;
