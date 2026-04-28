@@ -11,7 +11,7 @@ use simplicity::jet::Elements;
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
 use crate::driver::{FileScoped, SymbolTable, MAIN_MODULE, MAIN_STR};
 use crate::error::{Error, RichError, Span, WithSpan};
-use crate::num::{NonZeroPow2Usize, Pow2Usize};
+use crate::num::{NonZeroPow2Usize, Pow2Usize, U256};
 use crate::parse::MatchPattern;
 use crate::pattern::Pattern;
 use crate::str::{AliasName, FunctionName, Identifier, ModuleName, WitnessName};
@@ -1103,6 +1103,77 @@ impl AbstractSyntaxTree for SingleExpression {
                 let value = Value::parse_hexadecimal(bytes, ty).with_span(from)?;
                 SingleExpressionInner::Constant(value)
             }
+            parse::SingleExpressionInner::TypeBound(type_bound) => match type_bound {
+                parse::TypeBound::UInt(uint_ty, bound) => {
+                    let int_ty = ty
+                        .as_integer()
+                        .ok_or(Error::ExpressionUnexpectedType(ty.clone()))
+                        .with_span(from)?;
+
+                    if int_ty != *uint_ty {
+                        return Err(Error::ExpressionTypeMismatch(
+                            ty.clone(),
+                            ResolvedType::from(*uint_ty),
+                        ))
+                        .with_span(from);
+                    }
+
+                    let value = match (uint_ty, bound) {
+                        (UIntType::U1, parse::UIntBound::Min) => Value::from(UIntValue::U1(0)),
+                        (UIntType::U1, parse::UIntBound::Max) => Value::from(UIntValue::U1(1)),
+
+                        (UIntType::U2, parse::UIntBound::Min) => Value::from(UIntValue::U2(0)),
+                        (UIntType::U2, parse::UIntBound::Max) => Value::from(UIntValue::U2(3)),
+
+                        (UIntType::U4, parse::UIntBound::Min) => Value::from(UIntValue::U4(0)),
+                        (UIntType::U4, parse::UIntBound::Max) => Value::from(UIntValue::U4(15)),
+
+                        (UIntType::U8, parse::UIntBound::Min) => {
+                            Value::from(UIntValue::U8(u8::MIN))
+                        }
+                        (UIntType::U8, parse::UIntBound::Max) => {
+                            Value::from(UIntValue::U8(u8::MAX))
+                        }
+
+                        (UIntType::U16, parse::UIntBound::Min) => {
+                            Value::from(UIntValue::U16(u16::MIN))
+                        }
+                        (UIntType::U16, parse::UIntBound::Max) => {
+                            Value::from(UIntValue::U16(u16::MAX))
+                        }
+
+                        (UIntType::U32, parse::UIntBound::Min) => {
+                            Value::from(UIntValue::U32(u32::MIN))
+                        }
+                        (UIntType::U32, parse::UIntBound::Max) => {
+                            Value::from(UIntValue::U32(u32::MAX))
+                        }
+
+                        (UIntType::U64, parse::UIntBound::Min) => {
+                            Value::from(UIntValue::U64(u64::MIN))
+                        }
+                        (UIntType::U64, parse::UIntBound::Max) => {
+                            Value::from(UIntValue::U64(u64::MAX))
+                        }
+
+                        (UIntType::U128, parse::UIntBound::Min) => {
+                            Value::from(UIntValue::U128(u128::MIN))
+                        }
+                        (UIntType::U128, parse::UIntBound::Max) => {
+                            Value::from(UIntValue::U128(u128::MAX))
+                        }
+
+                        (UIntType::U256, parse::UIntBound::Min) => {
+                            Value::from(UIntValue::U256(U256::MIN))
+                        }
+                        (UIntType::U256, parse::UIntBound::Max) => {
+                            Value::from(UIntValue::U256(U256::MAX))
+                        }
+                    };
+
+                    SingleExpressionInner::Constant(value)
+                }
+            },
             parse::SingleExpressionInner::Witness(name) => {
                 scope
                     .insert_witness(name.clone(), ty.clone())
