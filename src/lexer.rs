@@ -3,6 +3,7 @@ use std::fmt;
 use chumsky::prelude::{any, choice, end, just, recursive, skip_then_retry_until};
 use chumsky::{error::Rich, extra, span::SimpleSpan, text, IterParser, Parser};
 
+use crate::driver::CRATE_STR;
 use crate::str::{Binary, Decimal, Hexadecimal};
 
 pub type Spanned<T> = (T, SimpleSpan);
@@ -20,6 +21,7 @@ pub enum Token<'src> {
     Mod,
     Const,
     Match,
+    Crate,
 
     // Control symbols
     Arrow,
@@ -78,6 +80,7 @@ impl<'src> fmt::Display for Token<'src> {
             Token::Mod => write!(f, "mod"),
             Token::Const => write!(f, "const"),
             Token::Match => write!(f, "match"),
+            Token::Crate => write!(f, "{}", CRATE_STR),
 
             Token::Arrow => write!(f, "->"),
             Token::DoubleColon => write!(f, "::"),
@@ -153,6 +156,7 @@ pub fn lexer<'src>(
         "mod" => Token::Mod,
         "const" => Token::Const,
         "match" => Token::Match,
+        CRATE_STR => Token::Crate,
         "true" => Token::Bool(true),
         "false" => Token::Bool(false),
         _ => Token::Ident(s),
@@ -256,7 +260,18 @@ pub fn lex<'src>(input: &'src str) -> (Option<Tokens<'src>>, Vec<crate::error::R
 pub fn is_keyword(s: &str) -> bool {
     matches!(
         s,
-        "pub" | "use" | "as" | "fn" | "let" | "type" | "mod" | "const" | "match" | "true" | "false"
+        "pub"
+            | "use"
+            | "as"
+            | "fn"
+            | "let"
+            | "type"
+            | "mod"
+            | "const"
+            | "match"
+            | CRATE_STR
+            | "true"
+            | "false"
     )
 }
 

@@ -45,6 +45,9 @@ pub use crate::driver::resolve_order::{FileScoped, Program, SymbolTable};
 /// The reserved identifier for the program's entry point.
 pub(crate) const MAIN_STR: &str = "main";
 
+/// The reserved identifier for the local workspace root.
+pub const CRATE_STR: &str = "crate";
+
 /// The root node index in the [`DependencyGraph`] representing the entry file.
 pub(crate) const MAIN_MODULE: usize = 0;
 
@@ -387,8 +390,14 @@ pub(crate) mod tests {
 
         // Set up the dependency map for imports (e.g. `use lib::...`)
         let mut map = DependencyMap::new();
-        map.insert(workspace_dir.clone(), "lib".to_string(), lib_dir)
+        map.insert(workspace_dir.clone(), "lib".to_string(), lib_dir.clone())
             .expect("Failed to insert dependency map");
+
+        // Register the strict crate boundaries so local files are forced to use `crate::`
+        map.insert(workspace_dir.clone(), CRATE_STR.to_string(), workspace_dir)
+            .expect("Failed to insert workspace crate boundary");
+        map.insert(lib_dir.clone(), CRATE_STR.to_string(), lib_dir)
+            .expect("Failed to insert library crate boundary");
         let map = Arc::new(map);
 
         let mut root_file_path = None;
@@ -508,8 +517,8 @@ pub(crate) mod tests {
 
         let (graph, ids, _ws) = setup_graph(vec![
             ("main.simf", "use lib::A::foo; use lib::B::bar;"),
-            ("libs/lib/A.simf", "use lib::Common::dummy1;"),
-            ("libs/lib/B.simf", "use lib::Common::dummy2;"),
+            ("libs/lib/A.simf", "use crate::Common::dummy1;"),
+            ("libs/lib/B.simf", "use crate::Common::dummy2;"),
             ("libs/lib/Common.simf", ""),
         ]);
 
@@ -553,8 +562,8 @@ pub(crate) mod tests {
 
         let (graph, ids, _ws) = setup_graph(vec![
             ("main.simf", "use lib::A::entry;"),
-            ("libs/lib/A.simf", "use lib::B::func;"),
-            ("libs/lib/B.simf", "use lib::A::func;"),
+            ("libs/lib/A.simf", "use crate::B::func;"),
+            ("libs/lib/B.simf", "use crate::A::func;"),
         ]);
 
         let a_id = ids["A"];
@@ -603,7 +612,7 @@ pub(crate) mod tests {
 
         let (graph, ids, _ws) = setup_graph(vec![
             ("main.simf", "use lib::A::mock_item;"),
-            ("libs/lib/A.simf", "use lib::B::mock_item;"),
+            ("libs/lib/A.simf", "use crate::B::mock_item;"),
             ("libs/lib/B.simf", ""),
         ]);
 

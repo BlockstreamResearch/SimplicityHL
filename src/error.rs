@@ -494,6 +494,8 @@ pub enum Error {
     JetDoesNotExist(JetName),
     InvalidCast(ResolvedType, ResolvedType),
     FileNotFound(PathBuf),
+    ExternalFileNotFound(String, PathBuf),
+    LocalFileImportedAsExternal(PathBuf),
     RedefinedItem(String),
     UnresolvedItem(String),
     PrivateItem(String),
@@ -561,7 +563,15 @@ impl fmt::Display for Error {
             ),
             Error::FileNotFound(path) => write!(
                 f,
-                "File `{}` not found", path.to_string_lossy()
+                "Local file `{}` not found", path.to_string_lossy()
+            ),
+            Error::ExternalFileNotFound(lib, path) => write!(
+                f,
+                "File `{}` not found in external library `{}`", path.to_string_lossy(), lib
+            ),
+            Error::LocalFileImportedAsExternal(path) => write!(
+                f,
+                "File `{}` is part of the local project and must be imported using the `crate::` prefix", path.to_string_lossy()
             ),
             Error::Syntax { expected, label, found } => {
                 let found_text = found.clone().unwrap_or("end of input".to_string());

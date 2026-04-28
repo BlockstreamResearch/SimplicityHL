@@ -17,7 +17,7 @@ use chumsky::{extra, select, IterParser, Parser};
 use either::Either;
 use miniscript::iter::{Tree, TreeLike};
 
-use crate::driver::MAIN_MODULE;
+use crate::driver::{CRATE_STR, MAIN_MODULE};
 use crate::error::ErrorCollector;
 use crate::error::{Error, RichError, Span};
 use crate::impl_eq_hash;
@@ -1464,11 +1464,25 @@ impl ChumskyParse for UseDecl {
         // Parse the base path prefix (e.g., `dependency_root_path::file::` or `dependency_root_path::dir::file::`).
         // We require at least 2 segments here because a valid import needs a minimum
         // of 3 items total: the dependency_root_path, the file, and the specific item/function.
-        let path = Identifier::parser()
+        let first_segment = select! {
+            Token::Ident(ident) => Identifier::from_str_unchecked(ident),
+            Token::Crate => Identifier::from_str_unchecked(CRATE_STR),
+        };
+
+        let path = first_segment
             .then_ignore(just(Token::DoubleColon))
-            .repeated()
-            .at_least(2)
-            .collect::<Vec<_>>();
+            .then(
+                Identifier::parser()
+                    .then_ignore(just(Token::DoubleColon))
+                    .repeated()
+                    .at_least(1)
+                    .collect::<Vec<_>>(),
+            )
+            .map(|(first, mut rest)| {
+                let mut path = vec![first];
+                path.append(&mut rest);
+                path
+            });
 
         let aliased_item =
             SymbolName::parser().then(just(Token::As).ignore_then(SymbolName::parser()).or_not());

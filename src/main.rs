@@ -3,6 +3,7 @@ use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
 use simplicityhl::{
+    driver::CRATE_STR,
     resolution::{CanonPath, DependencyMap, SourceFile},
     AbiMeta, CompiledProgram,
 };
@@ -129,6 +130,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_default();
 
     let mut dependencies = DependencyMap::new();
+
+    // Automatically assign the `crate` root to the project directory
+    if let Some(parent) = main_path.as_path().parent() {
+        if let Ok(canon_root) = CanonPath::canonicalize(parent) {
+            let _ = dependencies.insert(canon_root.clone(), CRATE_STR.to_string(), canon_root);
+        }
+    }
 
     for arg in dep_args {
         let (left_side, path_str) = arg.split_once('=').unwrap_or_else(|| {

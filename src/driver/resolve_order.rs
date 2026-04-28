@@ -540,7 +540,7 @@ mod resolve_order_tests {
 
         let (graph, ids, _dir) = setup_graph(vec![
             ("libs/lib/A.simf", "pub fn foo() {}"),
-            ("libs/lib/B.simf", "pub use lib::A::foo;"),
+            ("libs/lib/B.simf", "pub use crate::A::foo;"),
             ("main.simf", "use lib::B::foo;"),
         ]);
 
@@ -575,8 +575,8 @@ mod resolve_order_tests {
 
         let (graph, _ids, _dir) = setup_graph(vec![
             ("libs/lib/A.simf", "pub fn foo() {}"),
-            ("libs/lib/B.simf", "use lib::A::foo;"), // <--- Private binding!
-            ("main.simf", "use lib::B::foo;"),       // <--- Should fail
+            ("libs/lib/B.simf", "use crate::A::foo;"), // <--- Private binding!
+            ("main.simf", "use lib::B::foo;"),         // <--- Should fail
         ]);
 
         let mut error_handler = ErrorCollector::new();
@@ -795,7 +795,7 @@ mod alias_tests {
         // Scenario: Chaining aliases across multiple files.
         let (graph, ids, _dir) = setup_graph(vec![
             ("libs/lib/A.simf", "pub fn original() {}"),
-            ("libs/lib/B.simf", "pub use lib::A::original as middle;"),
+            ("libs/lib/B.simf", "pub use crate::A::original as middle;"),
             ("main.simf", "use lib::B::middle as final_name;"),
         ]);
 
@@ -840,7 +840,7 @@ mod alias_tests {
         let (graph, _ids, _dir) = setup_graph(vec![
             ("libs/lib/A.simf", "pub fn target() {}"),
             // Note: Missing `pub` keyword here! This makes `hidden_alias` private to B.
-            ("libs/lib/B.simf", "use lib::A::target as hidden_alias;"),
+            ("libs/lib/B.simf", "use crate::A::target as hidden_alias;"),
             ("main.simf", "use lib::B::hidden_alias;"),
         ]);
 
@@ -865,8 +865,8 @@ mod alias_tests {
         // Scenario: A malicious or confused user creates an infinite alias/import loop.
         let (graph, _ids, _dir) = setup_graph(vec![
             // A imports from B, B imports from A. This creates a file-level cycle!
-            ("libs/lib/A.simf", "pub use lib::B::pong as ping;"),
-            ("libs/lib/B.simf", "pub use lib::A::ping as pong;"),
+            ("libs/lib/A.simf", "pub use crate::B::pong as ping;"),
+            ("libs/lib/B.simf", "pub use crate::A::ping as pong;"),
             ("main.simf", "use lib::A::ping;"),
         ]);
 

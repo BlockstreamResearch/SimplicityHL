@@ -116,8 +116,8 @@ mod tests {
 
         let (graph, ids, _dir) = setup_graph(vec![
             ("main.simf", "use lib::A::foo; use lib::B::bar;"),
-            ("libs/lib/A.simf", "use lib::Common::dummy1;"),
-            ("libs/lib/B.simf", "use lib::Common::dummy2;"),
+            ("libs/lib/A.simf", "use crate::Common::dummy1;"),
+            ("libs/lib/B.simf", "use crate::Common::dummy2;"),
             ("libs/lib/Common.simf", ""),
         ]);
 
@@ -139,8 +139,8 @@ mod tests {
     fn test_linearize_detects_cycle() {
         let (graph, _, _dir) = setup_graph(vec![
             ("main.simf", "use lib::A::entry;"),
-            ("libs/lib/A.simf", "use lib::B::func;"),
-            ("libs/lib/B.simf", "use lib::A::func;"),
+            ("libs/lib/A.simf", "use crate::B::func;"),
+            ("libs/lib/B.simf", "use crate::A::func;"),
         ]);
 
         let order = graph.linearize();
@@ -156,8 +156,8 @@ mod tests {
         // This DAG is still valid because neither X nor Y depends on the other.
         let (graph, ids, _dir) = setup_graph(vec![
             ("main.simf", "use lib::A::foo; use lib::B::bar;"),
-            ("libs/lib/A.simf", "use lib::X::foo; use lib::Y::bar;"),
-            ("libs/lib/B.simf", "use lib::Y::baz; use lib::X::qux;"),
+            ("libs/lib/A.simf", "use crate::X::foo; use crate::Y::bar;"),
+            ("libs/lib/B.simf", "use crate::Y::baz; use crate::X::qux;"),
             ("libs/lib/X.simf", ""),
             ("libs/lib/Y.simf", ""),
         ]);
