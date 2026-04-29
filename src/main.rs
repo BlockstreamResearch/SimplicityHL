@@ -132,10 +132,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut dependencies = DependencyMap::new();
 
     // Automatically assign the `crate` root to the project directory
-    if let Some(parent) = main_path.as_path().parent() {
-        if let Ok(canon_root) = CanonPath::canonicalize(parent) {
-            let _ = dependencies.insert(canon_root.clone(), CRATE_STR.to_string(), canon_root);
-        }
+    let canon_root = main_path
+        .as_path()
+        .parent()
+        .and_then(|p| CanonPath::canonicalize(p).ok());
+    if let Some(ref canon) = canon_root {
+        let _ = dependencies.insert(canon.clone(), CRATE_STR.to_string(), canon.clone());
     }
 
     for arg in dep_args {
@@ -152,15 +154,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let canon_path = CanonPath::canonicalize(Path::new(ctx_str))?;
             (canon_path, alias_str)
         } else {
-            // No context provided (e.g., math=...). Bind it to the main file!
-            (main_path.clone(), left_side)
+            // No context provided (e.g., math=...). Bind it to the workspace root (or main file if root failed)!
+            (
+                canon_root.clone().unwrap_or_else(|| main_path.clone()),
+                left_side,
+            )
         };
 
         let target_path = CanonPath::canonicalize(Path::new(path_str))?;
 
-        // Insert and handle the potential io::Error!
-        // We convert path_str to PathBuf so it maches the tyep of context_path
-        if let Err(e) = dependencies.insert(context_path, alias.to_string(), target_path) {
+        if let Err(e) = dependencies.insert(context_path, alias.to_string(), target_path.clone()) {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+
+        // Treat the external package as an isolated boundary, allowing it to use `crate::` internally
+        if let Err(e) = dependencies.insert(target_path.clone(), CRATE_STR.to_string(), target_path)
+        {
             eprintln!("Error: {e}");
             std::process::exit(1);
         }
