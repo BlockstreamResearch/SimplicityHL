@@ -1461,9 +1461,9 @@ impl ChumskyParse for UseDecl {
             .or_not()
             .map(Option::unwrap_or_default);
 
-        // Parse the base path prefix (e.g., `dependency_root_path::file::` or `dependency_root_path::dir::file::`).
+        // Parse the base path prefix (e.g., `dependency_root_path::file::`, `dependency_root_path::dir::file::`, or `crate::dir::file::`).
         // We require at least 2 segments here because a valid import needs a minimum
-        // of 3 items total: the dependency_root_path, the file, and the specific item/function.
+        // of 3 items total: the dependency root path (or `crate`), the file, and the specific item/function.
         let first_segment = select! {
             Token::Ident(ident) => Identifier::from_str_unchecked(ident),
             Token::Crate => Identifier::from_str_unchecked(CRATE_STR),
