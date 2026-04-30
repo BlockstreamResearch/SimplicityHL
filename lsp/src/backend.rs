@@ -1,8 +1,12 @@
 use ropey::Rope;
 use serde_json::Value;
+use simplicityhl::driver;
+use simplicityhl::error::WithContent;
 use simplicityhl::parse::ParseFromStrWithErrors;
+use simplicityhl::resolution::SourceFile;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -674,8 +678,10 @@ impl Backend {
 
     /// Function which executed on change of file (`did_save`, `did_open` or `did_change` methods)
     async fn on_change(&self, params: TextDocumentItem<'_>) {
+        let path = Path::new(params.uri.path().as_str());
+
         // Check if this is a witness file
-        if std::path::Path::new(params.uri.path().as_str())
+        if path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("wit"))
         {
@@ -683,7 +689,8 @@ impl Backend {
             return;
         }
 
-        let (err, document) = parse_program(params.text);
+        let (err, document) = parse_program(params.text, path);
+
         let rope = Rope::from_str(params.text);
         let mut documents = self.document_map.write().await;
         if let Some(doc) = document {
@@ -752,21 +759,30 @@ fn create_document(program: &simplicityhl::parse::Program, text: &str) -> Docume
 
 /// Parse and analyze program using [`simplicityhl`] compiler and return an list of [`RichError`]
 /// to use in diagnostics. Also creates a [`Document`] if parsing is successfull.
-fn parse_program(text: &str) -> (Vec<RichError>, Option<Document>) {
-    let mut error_collector = simplicityhl::error::ErrorCollector::new(Arc::from(text));
+fn parse_program(text: &str, path: &Path) -> (Vec<RichError>, Option<Document>) {
+    let mut error_collector = simplicityhl::error::ErrorCollector::new();
+    let text: Arc<str> = Arc::from(text);
+    let source_file = SourceFile::new(path, Arc::clone(&text));
 
-    let Some(program) = parse::Program::parse_from_str_with_errors(text, &mut error_collector)
+    let Some(program) =
+        parse::Program::parse_from_str_with_errors(source_file.clone(), &mut error_collector)
     else {
         return (error_collector.get().to_vec(), None);
     };
 
-    if let Err(err) = ast::Program::analyze(&program) {
-        error_collector.update([err]);
+    let Some(driver_program) =
+        driver::Program::from_parse(&program, Arc::clone(&text), &mut error_collector)
+    else {
+        return (error_collector.get().to_vec(), None);
+    };
+
+    if let Err(err) = ast::Program::analyze(&driver_program).with_content(Arc::clone(&text)) {
+        error_collector.extend(source_file, [err]);
     }
 
     (
         error_collector.get().to_vec(),
-        Some(create_document(&program, text)),
+        Some(create_document(&program, text.as_ref())),
     )
 }
 
@@ -855,7 +871,7 @@ mod tests {
 
     #[test]
     fn test_parse_program_valid() {
-        let (err, doc) = parse_program(sample_program());
+        let (err, doc) = parse_program(sample_program(), Path::new(""));
         assert!(err.is_empty(), "Expected no parsing error");
         let doc = doc.expect("Expected Some(Document)");
         assert_eq!(doc.functions.map.len(), 2);
@@ -863,7 +879,7 @@ mod tests {
 
     #[test]
     fn test_parse_program_invalid_ast() {
-        let (err, doc) = parse_program(invalid_program_on_ast());
+        let (err, doc) = parse_program(invalid_program_on_ast(), Path::new(""));
         assert!(
             err.first()
                 .expect("program should produce an error")
@@ -876,7 +892,7 @@ mod tests {
 
     #[test]
     fn test_parse_program_invalid_parse() {
-        let (err, doc) = parse_program(invalid_program_on_parsing());
+        let (err, doc) = parse_program(invalid_program_on_parsing(), Path::new(""));
         assert_eq!(
             err.first()
                 .expect("program should produce an error")
