@@ -1,0 +1,5 @@
+use crate::math::add;
+
+fn main() {
+    assert!(jet::eq_32(add(2, 2), 4));
+}

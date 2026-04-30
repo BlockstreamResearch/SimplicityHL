@@ -1,4 +1,4 @@
-pub use temp::funcs::Smth;
+pub use crate::funcs::Smth;
 
 pub fn two() -> Smth {
     2

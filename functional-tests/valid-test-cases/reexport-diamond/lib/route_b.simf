@@ -1,4 +1,4 @@
-pub use lib::core::Coin;
+pub use crate::core::Coin;
 
 pub fn burn(c: Coin) -> (bool, Coin) {
     jet::subtract_64(c, 1)

@@ -2,7 +2,7 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::driver::CanonSourceFile;
+use crate::driver::{CanonSourceFile, CRATE_STR};
 use crate::error::{Error, RichError, WithSpan as _};
 use crate::parse::UseDecl;
 
@@ -192,15 +192,71 @@ impl DependencyMap {
 
             // Check if the alias matches what the user typed
             if remapping.drp_name == drp_name {
-                return Self::build_and_verify_path(&remapping.target, &parts[1..]).map_err(
-                    |failed_path| {
-                        RichError::new(Error::FileNotFound(failed_path), *use_decl.span())
-                    },
-                );
+                let resolved = Self::build_and_verify_path(&remapping.target, &parts[1..])
+                    .map_err(|failed_path| {
+                        let err = if drp_name == CRATE_STR {
+                            Error::FileNotFound(failed_path)
+                        } else {
+                            Error::ExternalFileNotFound(drp_name.to_string(), failed_path)
+                        };
+                        RichError::new(err, *use_decl.span())
+                    })?;
+
+                self.check_local_file_imported_as_external(
+                    drp_name,
+                    current_file,
+                    &resolved,
+                    use_decl,
+                )?;
+
+                return Ok(resolved);
             }
         }
 
+        // If the unmapped root path is "crate", it means the compiler driver failed to configure the workspace root.
+        // "crate" explicitly signals local code and should never be treated as an unknown external library.
+        if drp_name == CRATE_STR {
+            return Err(Error::Internal(
+                "The 'crate' root path was not configured by the compiler.".to_string(),
+            ))
+            .with_span(*use_decl.span());
+        }
+
         Err(Error::UnknownLibrary(drp_name.to_string())).with_span(*use_decl.span())
+    }
+
+    /// Enforces that a local file is imported via `crate::` and not via an external alias.
+    fn check_local_file_imported_as_external(
+        &self,
+        drp_name: &str,
+        current_file: &CanonPath,
+        resolved: &CanonPath,
+        use_decl: &UseDecl,
+    ) -> Result<(), RichError> {
+        if drp_name == CRATE_STR {
+            return Ok(());
+        }
+
+        let current_crate = self
+            .inner
+            .iter()
+            .find(|r| current_file.starts_with(&r.context_prefix) && r.drp_name == CRATE_STR);
+
+        let resolved_crate = self
+            .inner
+            .iter()
+            .find(|r| resolved.starts_with(&r.context_prefix) && r.drp_name == CRATE_STR);
+
+        if let (Some(curr), Some(res)) = (current_crate, resolved_crate) {
+            if curr.target == res.target {
+                return Err(Error::LocalFileImportedAsExternal(
+                    resolved.as_path().to_path_buf(),
+                ))
+                .with_span(*use_decl.span());
+            }
+        }
+
+        Ok(())
     }
 
     /// Replace `.join` method to better error handling
@@ -229,7 +285,7 @@ pub(crate) mod tests {
     use super::*;
 
     pub fn canon(p: &Path) -> CanonPath {
-        CanonPath::canonicalize(p).unwrap()
+        CanonPath::canonicalize(p).unwrap_or_else(|_| CanonPath::dummy_for_test(p))
     }
 
     impl CanonPath {
@@ -333,6 +389,83 @@ pub(crate) mod tests {
         let backend_file = canon(&ws.create_file("workspace/backend/src/main.simf", ""));
         let resolved_backend = map.resolve_path(&backend_file, &use_decl).unwrap();
         assert_eq!(resolved_backend, global_expected);
+    }
+
+    /// It proves that a file inside the local project cannot be imported via an external dependency alias.
+    #[test]
+    fn test_local_file_imported_as_external() {
+        let ws = TempWorkspace::new("local_as_ext");
+
+        let project_dir = canon(&ws.create_dir("workspace"));
+        ws.create_file("workspace/utils.simf", "");
+        let current_file = canon(&ws.create_file("workspace/main.simf", ""));
+
+        let mut map = DependencyMap::new();
+        // The driver sets up the crate root
+        map.insert(
+            project_dir.clone(),
+            CRATE_STR.to_string(),
+            project_dir.clone(),
+        )
+        .unwrap();
+        // The user tries to alias a folder inside their own project as an external dependency
+        map.insert(
+            project_dir.clone(),
+            "utils_lib".to_string(),
+            project_dir.clone(),
+        )
+        .unwrap();
+
+        let use_decl = create_dummy_use_decl(&["utils_lib", "utils"]);
+        let result = map.resolve_path(&current_file, &use_decl);
+
+        assert!(matches!(
+            result.unwrap_err().error(),
+            Error::LocalFileImportedAsExternal(..)
+        ));
+    }
+
+    /// It verifies that the "crate" dependency root path successfully resolves
+    /// to the local workspace root directory.
+    #[test]
+    fn test_crate_resolution() {
+        let ws = TempWorkspace::new("crate_res");
+
+        let project_dir = canon(&ws.create_dir("workspace"));
+        let expected = canon(&ws.create_file("workspace/utils.simf", ""));
+        let current_file = canon(&ws.create_file("workspace/main.simf", ""));
+
+        let mut map = DependencyMap::new();
+        map.insert(
+            project_dir.clone(),
+            CRATE_STR.to_string(),
+            project_dir.clone(),
+        )
+        .unwrap();
+
+        let use_decl = create_dummy_use_decl(&[CRATE_STR, "utils"]);
+        let result = map.resolve_path(&current_file, &use_decl).unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    /// It proves that the compiler throws an Internal error if the driver forgets
+    /// to map the "crate" dependency, rather than an `UnknownLibrary` error.
+    #[test]
+    fn test_crate_unconfigured_error() {
+        let ws = TempWorkspace::new("crate_unconf");
+        let current_file = canon(&ws.create_file("workspace/main.simf", ""));
+
+        let map = DependencyMap::new();
+
+        let use_decl = create_dummy_use_decl(&[CRATE_STR, "utils"]);
+        let result = map.resolve_path(&current_file, &use_decl);
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err().error(),
+            Error::Internal(msg) if msg.contains("The 'crate' root path was not configured")
+        ));
     }
 
     /// it proves that `start_with()` and `resolve_path()` logic correctly handles files

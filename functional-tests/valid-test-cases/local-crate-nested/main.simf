@@ -1,0 +1,5 @@
+use crate::a::b::helper;
+
+fn main() {
+    assert!(helper());
+}

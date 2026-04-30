@@ -1,2 +1,2 @@
-pub use lib::level2::CoreSmth;
-pub use lib::level2::core_val;
+pub use crate::level2::CoreSmth;
+pub use crate::level2::core_val;

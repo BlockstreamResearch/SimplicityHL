@@ -1,13 +1,23 @@
 # Architecture Notes
 
-## Omitted Keywords
+## Crate and Module Paths
 
-The `crate` and `super` keywords were not added to the compiler because they
-are unnecessary at this stage. Typically, they are used to resolve relative
-paths during import parsing. However, in our architecture, the prefix before
-the first `::` in a `use` statement is always an dependency root path. Since all
-dependency root paths are unique and strictly bound to specific paths, the resolver
-can always unambiguously resolve the path without needing relative pointers.
+The `crate` keyword is used to construct absolute paths where the path root is the current package's root directory. This provides an explicit and readable way to distinguish local imports from external library imports.
+
+```rust
+// Import the `add` function from the local `math.simf` file
+use crate::math::add;
+```
+
+The compiler driver (`simc`) automatically maps the `crate` keyword to the directory containing the entry-point file. For external libraries linked via `--dep`, the driver also maps `crate` to the library's root, ensuring that `use crate::...` statements inside the library resolve correctly within that library's scope.
+
+### Strict Local Imports
+
+To enforce clear project boundaries, the compiler requires that any file belonging to the local workspace *must* be imported using a `crate::` prefixed path. Attempting to create an external dependency alias that points to a local file will result in a `LocalFileImportedAsExternal` error.
+
+### Omitted Keywords
+
+The `super` keyword for relative parent-module imports has not yet been implemented. All local imports should use absolute paths starting from the `crate` root.
 
 ## Namespace Separation in SimplicityHL
 

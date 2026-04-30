@@ -1,0 +1,5 @@
+use crate::internal::core_add;
+
+pub fn add_one(a: u32) -> u32 {
+    core_add(a, 1)
+}
