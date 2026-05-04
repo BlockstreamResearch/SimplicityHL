@@ -30,6 +30,9 @@
 mod linearization;
 pub(crate) mod resolve_order;
 
+#[cfg(test)]
+mod version_tests;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
