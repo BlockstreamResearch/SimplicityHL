@@ -63,6 +63,16 @@ which ensures that merge commits have a uniform commit message style, have
 GPG signatures, and avoid several simple mistakes (e.g. @-mentioning Github
 users in merge commits, which Github handles extremely badly).
 
+## Updating the Compiler Version
+
+If your pull request bumps the compiler version in `Cargo.toml`, you must also update the version pragmas across all example contracts and functional tests. To do this automatically, run the included Python script from the root of the repository:
+
+```bash
+python3 update_examples.py <new_version>
+```
+
+For example: `python3 update_examples.py 0.7.0`. This will safely update the `#![compiler_version("...")]` lines in the `examples/` and `functional-tests/` directories. Note that our CI pipelines will automatically fail if these pragmas are left out of date.
+
 # LLMs
 
 LLM-assisted contributions are welcome, but they must follow our "PR Structure"

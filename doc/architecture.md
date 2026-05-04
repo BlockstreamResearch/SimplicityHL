@@ -85,3 +85,13 @@ fn main() {
 ```
 
 > NOTE: For more details, see the `multiple_deps` test inside the `src/lib.rs` file.
+
+## Compiler Versioning
+
+The SimplicityHL compiler enforces strict version compatibility to prevent contracts from breaking due to compiler updates or semantic changes. Every `.simf` file must begin with a `#![compiler_version("...")]` pragma.
+
+### Multi-File Enforcement
+
+Version checking is performed eagerly during the parsing phase, before the Abstract Syntax Tree (AST) is constructed. When building a multi-file project, the compiler driver evaluates the version pragma of the `main.simf` entry point, as well as the pragmas of every external library file imported via the `--dep` flag.
+
+If *any* file in the dependency graph requires a compiler version that is incompatible with the currently running compiler (following standard `semver` rules), the driver immediately halts compilation. This mathematical guarantee ensures that an older, stable library cannot be accidentally compiled with an incompatible compiler without the developer's explicit consent.
