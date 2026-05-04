@@ -71,6 +71,11 @@ impl TemplateProgram {
             parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler)
                 .ok_or_else(|| error_handler.to_string())?;
 
+        parsed_program.check_version(&source, &mut error_handler);
+        if error_handler.has_errors() {
+            return Err(error_handler.to_string());
+        }
+
         // 2. Create the driver program
         let driver_program: driver::Program = if dependency_map.is_empty() {
             driver::Program::from_parse(&parsed_program, source.content(), &mut error_handler)
@@ -106,22 +111,28 @@ impl TemplateProgram {
         let file = s.into();
         let source = SourceFile::anonymous(file.clone());
         let mut error_handler = ErrorCollector::new();
-        let parse_program = parse::Program::parse_from_str_with_errors(source, &mut error_handler);
+        let parse_program =
+            parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler);
 
         let driver_program = if let Some(parse_program) = parse_program {
-            driver::Program::from_parse(&parse_program, file.clone(), &mut error_handler)
+            parse_program.check_version(&source, &mut error_handler);
+            if error_handler.has_errors() {
+                None
+            } else {
+                driver::Program::from_parse(&parse_program, file.clone(), &mut error_handler)
+            }
         } else {
             None
         };
 
         if let Some(program) = driver_program {
-            let ast_program = ast::Program::analyze(&program).with_content(Arc::clone(&file))?;
+            let ast_program = ast::Program::analyze(&program).with_source(source)?;
             Ok(Self {
                 simfony: ast_program,
                 file,
             })
         } else {
-            Err(ErrorCollector::to_string(&error_handler))?
+            Err(error_handler.to_string())
         }
     }
 
@@ -438,7 +449,19 @@ pub(crate) mod tests {
         }
 
         pub fn template_text(program_text: Cow<str>) -> Self {
-            let program = match TemplateProgram::new(program_text.as_ref()) {
+            let clean_text = program_text
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("#![compiler_version"))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let current_version = env!("CARGO_PKG_VERSION");
+            let injected_text = format!(
+                "#![compiler_version(\"{}\")]\n{}",
+                current_version, clean_text
+            );
+
+            let program = match TemplateProgram::new(injected_text.as_str()) {
                 Ok(x) => x,
                 Err(error) => panic!("{error}"),
             };
@@ -730,13 +753,14 @@ pub(crate) mod tests {
 
         let ws = TempWorkspace::new("crate_success");
         let root = ws.create_dir("workspace");
+        let version = env!("CARGO_PKG_VERSION");
         ws.create_file(
             "workspace/main.simf",
-            "use crate::utils::add;\nfn main() { assert!(jet::eq_32(add(2, 2), 4)); }",
+            &format!("#![compiler_version(\"{version}\")]\nuse crate::utils::add;\nfn main() {{ assert!(jet::eq_32(add(2, 2), 4)); }}"),
         );
         ws.create_file(
             "workspace/utils.simf",
-            "pub fn add(a: u32, b: u32) -> u32 { let (_, sum): (bool, u32) = jet::add_32(a, b); sum }",
+            &format!("#![compiler_version(\"{version}\")]\npub fn add(a: u32, b: u32) -> u32 {{ let (_, sum): (bool, u32) = jet::add_32(a, b); sum }}"),
         );
 
         let main_path = root.join("main.simf");
@@ -942,14 +966,19 @@ pub(crate) mod tests {
 
     #[test]
     fn empty_function_body_nonempty_return() {
-        let prog_text = r#"fn my_true() -> bool {
+        let prog_text = format!(
+            "#![compiler_version(\"{}\")]\n{}",
+            env!("CARGO_PKG_VERSION"),
+            r#"
+fn my_true() -> bool {
     // function body is empty, although function must return `bool`
 }
 
 fn main() {
     assert!(my_true());
 }
-"#;
+"#
+        );
         match SatisfiedProgram::new(
             prog_text,
             Arguments::default(),
@@ -1153,6 +1182,91 @@ fn main() {
             regression_test("transfer_with_timeout");
         }
     }
+
+    #[test]
+    fn test_compiler_version_missing() {
+        let missing = "fn main() {}";
+        let err = TemplateProgram::new(missing).unwrap_err();
+        assert!(err.contains("Missing compiler version"));
+    }
+
+    #[test]
+    fn test_compiler_version_checked_with_empty_dependency_map() {
+        let missing = "fn main() {}";
+        let source = SourceFile::anonymous(Arc::from(missing));
+        let empty_map = DependencyMap::new();
+        let err = TemplateProgram::new_with_dep(source, &empty_map).unwrap_err();
+        assert!(err.contains("Missing compiler version"));
+    }
+
+    #[test]
+    fn test_compiler_version_exact_match() {
+        let exact = format!(
+            "#![compiler_version(\"{}\")]\nfn main() {{}}",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(TemplateProgram::new(exact.as_str()).is_ok());
+    }
+
+    #[test]
+    fn test_compiler_version_mismatch_too_old() {
+        // We require 99.99.99, meaning the current compiler is TOO OLD
+        let too_old = "#![compiler_version(\">= 99.99.99\")]\nfn main() {}";
+        let err = TemplateProgram::new(too_old).unwrap_err();
+        assert!(
+            err.contains("Compiler too old"),
+            "Expected 'Compiler too old', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_compiler_version_contract_too_old() {
+        // We strictly require an ancient version, meaning the contract is TOO OLD for this compiler
+        let contract_too_old = "#![compiler_version(\"< 0.0.1\")]\nfn main() {}";
+        let err = TemplateProgram::new(contract_too_old).unwrap_err();
+        assert!(
+            err.contains("Contract too old"),
+            "Expected 'Contract too old', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_compiler_version_exact_mismatch() {
+        let exact_mismatch = "#![compiler_version(\"= 0.0.1\")]\nfn main() {}";
+        let err = TemplateProgram::new(exact_mismatch).unwrap_err();
+        assert!(
+            err.contains("Exact version mismatch"),
+            "Expected 'Exact version mismatch', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_compiler_version_operator_caret() {
+        let caret = format!(
+            "#![compiler_version(\"^{}\")]\nfn main() {{}}",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(TemplateProgram::new(caret.as_str()).is_ok());
+    }
+
+    #[test]
+    fn test_compiler_version_operator_gte() {
+        let gte = format!(
+            "#![compiler_version(\">={}\")]\nfn main() {{}}",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(TemplateProgram::new(gte.as_str()).is_ok());
+    }
+
+    #[test]
+    fn test_compiler_version_syntax_garbage_version() {
+        let garbage = "#![compiler_version(\"i-love-rust\")]\nfn main() {}";
+        let err = TemplateProgram::new(garbage).unwrap_err();
+        assert!(err.contains("Invalid version syntax"));
+    }
 }
 
 #[cfg(test)]
@@ -1187,13 +1301,16 @@ mod error_tests {
         let ws = TempWorkspace::new("dependency_ast_error_source");
         let root_dir = ws.create_dir("workspace");
         let lib_dir = ws.create_dir("workspace/lib");
+        let version = env!("CARGO_PKG_VERSION");
         let main_path = ws.create_file(
             "workspace/main.simf",
-            "use lib::bad::f;\nfn main() { f(); }\n",
+            &format!(
+                "#![compiler_version(\"{version}\")]\nuse lib::bad::f;\nfn main() {{ f(); }}\n"
+            ),
         );
         let bad_path = ws.create_file(
             "workspace/lib/bad.simf",
-            "pub fn f() { let x: u32 = true; }\n",
+            &format!("#![compiler_version(\"{version}\")]\npub fn f() {{ let x: u32 = true; }}\n"),
         );
 
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
@@ -1212,15 +1329,19 @@ mod error_tests {
     fn omitted_context_dependency_applies_inside_dependency_files() {
         let ws = TempWorkspace::new("omitted_context_dependency");
         let lib_dir = ws.create_dir("workspace/lib");
+        let version = env!("CARGO_PKG_VERSION");
         let main_path = ws.create_file(
             "workspace/main.simf",
-            "use lib::nested::two;\nfn main() { assert!(jet::eq_32(two(), 2)); }\n",
+            &format!("#![compiler_version(\"{version}\")]\nuse lib::nested::two;\nfn main() {{ assert!(jet::eq_32(two(), 2)); }}\n"),
         );
         ws.create_file(
             "workspace/lib/nested.simf",
-            "use lib::base::one;\npub fn two() -> u32 {\n    let (_, out): (bool, u32) = jet::add_32(one(), 1);\n    out\n}\n",
+            &format!("#![compiler_version(\"{version}\")]\nuse lib::base::one;\npub fn two() -> u32 {{\n    let (_, out): (bool, u32) = jet::add_32(one(), 1);\n    out\n}}\n"),
         );
-        ws.create_file("workspace/lib/base.simf", "pub fn one() -> u32 { 1 }\n");
+        ws.create_file(
+            "workspace/lib/base.simf",
+            &format!("#![compiler_version(\"{version}\")]\npub fn one() -> u32 {{ 1 }}\n"),
+        );
 
         let dependencies = dependency_map(&main_path, "lib", &lib_dir);
         let _err = TemplateProgram::new_with_dep(source_file(&main_path), &dependencies)
@@ -1232,9 +1353,12 @@ mod error_tests {
         let ws = TempWorkspace::new("missing_mapped_module");
         let root_dir = ws.create_dir("workspace");
         let lib_dir = ws.create_dir("workspace/lib");
+        let version = env!("CARGO_PKG_VERSION");
         let main_path = ws.create_file(
             "workspace/main.simf",
-            "use lib::missing::Thing;\nfn main() {}\n",
+            &format!(
+                "#![compiler_version(\"{version}\")]\nuse lib::missing::Thing;\nfn main() {{}}\n"
+            ),
         );
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
 

@@ -1,3 +1,5 @@
+#![compiler_version("0.6.0-rc.0")]
+
 type SecretKey = u64;
 
 pub fn unlock(key: SecretKey) -> u64 {

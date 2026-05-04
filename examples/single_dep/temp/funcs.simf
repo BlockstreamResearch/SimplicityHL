@@ -1,3 +1,5 @@
+#![compiler_version("0.6.0-rc.0")]
+
 pub type Smth = u32;
 
 pub fn get_five() -> u32 {

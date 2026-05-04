@@ -1,3 +1,5 @@
+#![compiler_version("0.6.0-rc.0")]
+
 use types::def::UserId;
 use db::store::get_record;
 

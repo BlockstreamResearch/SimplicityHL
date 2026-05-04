@@ -1,3 +1,5 @@
+#![compiler_version("0.6.0-rc.0")]
+
 pub use temp::constants::utils::two as smth;
 use temp::funcs::{get_five, Smth};
 

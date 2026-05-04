@@ -1,1 +1,3 @@
+#![compiler_version("0.6.0-rc.0")]
+
 type SecretType = u32; pub fn ok() {}

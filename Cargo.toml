@@ -39,6 +39,7 @@ itertools = "0.13.0"
 arbitrary = { version = "1", optional = true, features = ["derive"] }
 clap = "4.5.37"
 chumsky = "0.11.2"
+semver = "1.0.27"
 
 [target.wasm32-unknown-unknown.dependencies]
 getrandom = { version = "0.2", features = ["js"] }

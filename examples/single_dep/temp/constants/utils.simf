@@ -1,3 +1,5 @@
+#![compiler_version("0.6.0-rc.0")]
+
 pub use crate::funcs::Smth;
 
 pub fn two() -> Smth {

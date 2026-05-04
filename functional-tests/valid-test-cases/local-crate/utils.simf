@@ -1,3 +1,5 @@
+#![compiler_version("0.6.0-rc.0")]
+
 pub fn helper() -> bool {
     true
 }

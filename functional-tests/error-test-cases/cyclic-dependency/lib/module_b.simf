@@ -1,2 +1,4 @@
+#![compiler_version("0.6.0-rc.0")]
+
 pub use crate::module_a::TypeA;
 pub type TypeB = u32;

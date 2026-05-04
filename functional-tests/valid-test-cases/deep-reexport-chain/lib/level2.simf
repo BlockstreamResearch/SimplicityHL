@@ -1,2 +1,4 @@
+#![compiler_version("0.6.0-rc.0")]
+
 pub use crate::level3::CoreSmth;
 pub use crate::level3::core_val;
