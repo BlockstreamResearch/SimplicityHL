@@ -148,7 +148,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         });
 
-        let (context_path, alias) = if let Some((ctx_str, alias_str)) = left_side.split_once(':') {
+        // Use the right most `:` because on Windows, there might be a drive letter, e.g. C:\
+        let (context_path, alias) = if let Some((ctx_str, alias_str)) = left_side.rsplit_once(':') {
             // Specific context provided (e.g., merkle:base_math=...)
             // We convert it to PathBuf so it shares the same type as main_path
             let canon_path = CanonPath::canonicalize(Path::new(ctx_str))?;
