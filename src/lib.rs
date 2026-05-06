@@ -29,7 +29,7 @@ mod witness;
 use std::sync::Arc;
 
 use simplicity::jet::elements::ElementsEnv;
-use simplicity::{jet::Elements, CommitNode, RedeemNode};
+use simplicity::{CommitNode, RedeemNode};
 
 pub extern crate either;
 pub extern crate simplicity;
@@ -174,7 +174,7 @@ impl TemplateProgram {
 /// A SimplicityHL program, compiled to Simplicity.
 #[derive(Clone, Debug)]
 pub struct CompiledProgram {
-    simplicity: Arc<named::CommitNode<Elements>>,
+    simplicity: Arc<named::CommitNode>,
     witness_types: WitnessTypes,
     debug_symbols: DebugSymbols,
     parameter_types: Parameters,
@@ -218,7 +218,7 @@ impl CompiledProgram {
     }
 
     /// Access the Simplicity target code, without witness data.
-    pub fn commit(&self) -> Arc<CommitNode<Elements>> {
+    pub fn commit(&self) -> Arc<CommitNode> {
         named::forget_names(&self.simplicity)
     }
 
@@ -275,7 +275,7 @@ pub struct AbiMeta {
 /// A SimplicityHL program, compiled to Simplicity and satisfied with witness data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SatisfiedProgram {
-    simplicity: Arc<RedeemNode<Elements>>,
+    simplicity: Arc<RedeemNode>,
     debug_symbols: DebugSymbols,
 }
 
@@ -298,7 +298,7 @@ impl SatisfiedProgram {
     }
 
     /// Access the Simplicity target code, including witness data.
-    pub fn redeem(&self) -> &Arc<RedeemNode<Elements>> {
+    pub fn redeem(&self) -> &Arc<RedeemNode> {
         &self.simplicity
     }
 

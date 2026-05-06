@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use simplicity::dag::{InternalSharing, PostOrderIterItem};
-use simplicity::jet::Jet;
 use simplicity::node::{
     self, Converter, CoreConstructible, Inner, NoDisconnect, NoWitness, Node, WitnessConstructible,
 };
@@ -22,7 +21,6 @@ impl<M: node::Marker> node::Marker for WithNames<M> {
     // we don't use disconnect in this library right now, so punt on it for now.
     type Disconnect = NoDisconnect;
     type SharingId = M::SharingId;
-    type Jet = M::Jet;
 
     fn compute_sharing_id(cmr: Cmr, cached_data: &Self::CachedData) -> Option<Self::SharingId> {
         M::compute_sharing_id(cmr, cached_data)
@@ -56,17 +54,17 @@ impl Nullable for NoDisconnect {
 /// [`simplicity::ConstructNode`] with named witness nodes.
 ///
 /// Nodes other than witness don't have names.
-pub type ConstructNode<'brand, J> = Node<WithNames<node::Construct<'brand, J>>>;
+pub type ConstructNode<'brand> = Node<WithNames<node::Construct<'brand>>>;
 
 /// [`simplicity::CommitNode`] with named witness nodes.
 ///
 /// Nodes other than witness don't have names.
-pub type CommitNode<J> = Node<WithNames<node::Commit<J>>>;
+pub type CommitNode = Node<WithNames<node::Commit>>;
 
 // FIXME: The following methods cannot be implemented for simplicity::node::Node because that is a foreign type
-pub fn finalize_types<J: Jet>(
-    node: &Node<WithNames<node::Construct<J>>>,
-) -> Result<Arc<Node<WithNames<node::Commit<J>>>>, types::Error> {
+pub fn finalize_types<'brand>(
+    node: &Node<WithNames<node::Construct<'brand>>>,
+) -> Result<Arc<Node<WithNames<node::Commit>>>, types::Error> {
     // We finalize all types but don't bother to set the root source and target
     // to unit. This is a bit annoying to do, and anyway these types will already
     // be unit by construction.
@@ -82,11 +80,11 @@ fn translate<M, N, F, E>(
 ) -> Result<Arc<Node<WithNames<N>>>, E>
 where
     M: node::Marker,
-    N: node::Marker<Jet = M::Jet>,
+    N: node::Marker,
     N::Witness: Nullable,
     F: FnMut(
         &Node<WithNames<M>>,
-        Inner<&N::CachedData, N::Jet, &NoDisconnect, &WitnessName>,
+        Inner<&N::CachedData, &NoDisconnect, &WitnessName>,
     ) -> Result<N::CachedData, E>,
 {
     struct Translator<F>(F);
@@ -94,11 +92,11 @@ where
     impl<M, N, F, E> Converter<WithNames<M>, WithNames<N>> for Translator<F>
     where
         M: node::Marker,
-        N: node::Marker<Jet = M::Jet>,
+        N: node::Marker,
         N::Witness: Nullable,
         F: FnMut(
             &Node<WithNames<M>>,
-            Inner<&N::CachedData, N::Jet, &NoDisconnect, &WitnessName>,
+            Inner<&N::CachedData, &NoDisconnect, &WitnessName>,
         ) -> Result<N::CachedData, E>,
     {
         type Error = E;
@@ -123,7 +121,7 @@ where
         fn convert_data(
             &mut self,
             data: &PostOrderIterItem<&Node<WithNames<M>>>,
-            inner: Inner<&Arc<Node<WithNames<N>>>, N::Jet, &NoDisconnect, &WitnessName>,
+            inner: Inner<&Arc<Node<WithNames<N>>>, &NoDisconnect, &WitnessName>,
         ) -> Result<N::CachedData, Self::Error> {
             let new_inner = inner.map(|node| node.cached_data());
             self.0(data.node, new_inner)
@@ -170,7 +168,7 @@ where
         fn convert_data(
             &mut self,
             data: &PostOrderIterItem<&Node<WithNames<M>>>,
-            _: Inner<&Arc<Node<M>>, M::Jet, &M::Disconnect, &M::Witness>,
+            _: Inner<&Arc<Node<M>>, &M::Disconnect, &M::Witness>,
         ) -> Result<M::CachedData, Self::Error> {
             Ok(data.node.cached_data().clone())
         }
@@ -194,20 +192,20 @@ where
 /// It is the responsibility of the caller to ensure that the given witness `values` match the
 /// types in the construct `node`. This can be done by calling [`WitnessValues::is_consistent`]
 /// on the original SimplicityHL program before it is compiled to Simplicity.
-pub fn populate_witnesses<J: Jet>(
-    node: &CommitNode<J>,
+pub fn populate_witnesses(
+    node: &CommitNode,
     values: WitnessValues,
-) -> Result<Arc<node::RedeemNode<J>>, String> {
+) -> Result<Arc<node::RedeemNode>, String> {
     struct Populator {
         values: WitnessValues,
     }
 
-    impl<J: Jet> Converter<WithNames<node::Commit<J>>, node::Redeem<J>> for Populator {
+    impl Converter<WithNames<node::Commit>, node::Redeem> for Populator {
         type Error = String;
 
         fn convert_witness(
             &mut self,
-            _: &PostOrderIterItem<&CommitNode<J>>,
+            _: &PostOrderIterItem<&CommitNode>,
             witness: &WitnessName,
         ) -> Result<simplicity::Value, Self::Error> {
             match self.values.get(witness) {
@@ -218,23 +216,18 @@ pub fn populate_witnesses<J: Jet>(
 
         fn convert_disconnect(
             &mut self,
-            _: &PostOrderIterItem<&CommitNode<J>>,
-            _: Option<&Arc<node::RedeemNode<J>>>,
+            _: &PostOrderIterItem<&CommitNode>,
+            _: Option<&Arc<node::RedeemNode>>,
             _: &NoDisconnect,
-        ) -> Result<Arc<node::RedeemNode<J>>, Self::Error> {
+        ) -> Result<Arc<node::RedeemNode>, Self::Error> {
             unreachable!("SimplicityHL does not use disconnect right now")
         }
 
         fn convert_data(
             &mut self,
-            data: &PostOrderIterItem<&CommitNode<J>>,
-            inner: Inner<
-                &Arc<node::RedeemNode<J>>,
-                J,
-                &Arc<node::RedeemNode<J>>,
-                &simplicity::Value,
-            >,
-        ) -> Result<Arc<node::RedeemData<J>>, Self::Error> {
+            data: &PostOrderIterItem<&CommitNode>,
+            inner: Inner<&Arc<node::RedeemNode>, &Arc<node::RedeemNode>, &simplicity::Value>,
+        ) -> Result<Arc<node::RedeemData>, Self::Error> {
             let inner = inner
                 .map(|node| node.cached_data())
                 .map_disconnect(|node| node.cached_data())
@@ -253,7 +246,7 @@ pub fn populate_witnesses<J: Jet>(
 // This awkward construction is required by rust-simplicity to implement WitnessConstructible
 // for Node<WithNames<Construct>>. See
 //     https://docs.rs/simplicity-lang/latest/simplicity/node/trait.WitnessConstructible.html#foreign-impls
-impl<'brand, J: Jet> WitnessConstructible<'brand, WitnessName> for node::ConstructData<'brand, J> {
+impl<'brand> WitnessConstructible<'brand, WitnessName> for node::ConstructData<'brand> {
     fn witness(inference_context: &types::Context<'brand>, _: WitnessName) -> Self {
         WitnessConstructible::<Option<_>>::witness(inference_context, None)
     }

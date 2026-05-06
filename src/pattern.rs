@@ -443,7 +443,6 @@ impl From<&Pattern> for BasePattern {
 mod tests {
     use super::*;
     use crate::named;
-    use simplicity::jet::Elements;
 
     #[test]
     fn translate_pattern() {
@@ -468,7 +467,7 @@ mod tests {
         for (target, expected_expr) in target_expr {
             simplicity::types::Context::with_context(|ctx| {
                 let expr = env
-                    .translate::<Arc<named::ConstructNode<Elements>>>(&ctx, &target)
+                    .translate::<Arc<named::ConstructNode>>(&ctx, &target)
                     .unwrap();
                 assert_eq!(expected_expr, expr.as_ref().display_expr().to_string());
             });
