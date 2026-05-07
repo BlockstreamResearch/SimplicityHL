@@ -153,7 +153,7 @@
                 },
                 {
                     "name": "keyword.other.simplicityhl",
-                    "match": "\\b(mod|const)\\b"
+                    "match": "\\b(mod|const|use|as|crate|pub)\\b"
                 },
                 {
                     "name": "storage.type.simplicityhl",
