@@ -161,7 +161,7 @@ export function getSimcPath(): string {
   }
 
   throw new Error(
-    "simc compiler not found. See https://github.com/BlockstreamResearch/simfony#installation " +
+    "simc compiler not found. See https://github.com/BlockstreamResearch/SimplicityHL#installation " +
     "or set simplicityhl.compiler.path in settings."
   );
 }
