@@ -42,6 +42,7 @@ use crate::driver::DependencyGraph;
 use crate::error::{ErrorCollector, WithContent, WithSource as _};
 use crate::parse::ParseFromStrWithErrors;
 use crate::resolution::DependencyMap;
+use crate::source::CanonSourceFile;
 use crate::source::SourceFile;
 pub use crate::types::ResolvedType;
 pub use crate::value::Value;
@@ -57,14 +58,13 @@ pub struct TemplateProgram {
 }
 
 impl TemplateProgram {
-    // TODO: Consider passing `CanonSourceFile`` deeper into the driver to avoid paying the path canonicalization cost multiple times.
     /// Parse the template of a SimplicityHL program.
     ///
     /// ## Errors
     ///
     /// The string is not a valid SimplicityHL program.
     pub fn new_with_dep(
-        source: SourceFile,
+        source: CanonSourceFile,
         dependency_map: &DependencyMap,
     ) -> Result<Self, String> {
         let mut error_handler = ErrorCollector::new();
@@ -186,7 +186,7 @@ impl CompiledProgram {
     /// - [`TemplateProgram::new_with_dep`]
     /// - [`TemplateProgram::instantiate`]
     pub fn new_with_dep(
-        source: SourceFile,
+        source: CanonSourceFile,
         dependency_map: &DependencyMap,
         arguments: Arguments,
         include_debug_symbols: bool,
@@ -424,7 +424,10 @@ pub(crate) mod tests {
 
         pub fn template_deps(prog_path: &Path, dependency_map: &DependencyMap) -> Self {
             let program_text = std::fs::read_to_string(prog_path).unwrap();
-            let source = SourceFile::new(prog_path, Arc::from(program_text));
+            let source = CanonSourceFile::new(
+                crate::source::CanonPath::canonicalize(prog_path).unwrap(),
+                Arc::from(program_text),
+            );
 
             let program = match TemplateProgram::new_with_dep(source, dependency_map) {
                 Ok(x) => x,
@@ -735,6 +738,16 @@ pub(crate) mod tests {
             .with_arguments(Arguments::default())
             .with_witness_values(WitnessValues::default())
             .assert_run_success();
+    }
+
+    #[test]
+    fn test_anonymous_source_compiles_without_dependencies() {
+        let code = "fn main() { assert!(true); }";
+        let program = TemplateProgram::new(code);
+        assert!(
+            program.is_ok(),
+            "TemplateProgram::new should successfully compile anonymous source files without requiring canonical paths"
+        );
     }
 
     #[test]
@@ -1157,9 +1170,9 @@ mod error_tests {
             .unwrap()
     }
 
-    fn source_file(path: &Path) -> SourceFile {
+    fn source_file(path: &Path) -> CanonSourceFile {
         let content = std::fs::read_to_string(path).expect("Failed to read test file");
-        SourceFile::new(path, Arc::from(content))
+        CanonSourceFile::new(canon(path), Arc::from(content))
     }
 
     #[test]
