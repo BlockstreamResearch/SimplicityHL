@@ -1,6 +1,6 @@
 {
     "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
-    "name": "Simfony",
+    "name": "SimplicityHL",
     "patterns": [
         {
             "include": "#preprocessor"
@@ -34,32 +34,32 @@
         "preprocessor": {
             "patterns": [
                 {
-                    "name": "meta.preprocessor.simfony",
+                    "name": "meta.preprocessor.simplicityhl",
                     "match": "^\\s*#\\s*(include|define|undef|if|ifdef|ifndef|else|elif|endif|line|error|pragma)\\b",
                     "captures": {
                         "1": {
-                            "name": "keyword.other.preprocessor.directive.simfony"
+                            "name": "keyword.other.preprocessor.directive.simplicityhl"
                         }
                     }
                 },
                 {
-                    "name": "meta.preprocessor.include.simfony",
+                    "name": "meta.preprocessor.include.simplicityhl",
                     "match": "^\\s*#\\s*include\\s+([\"<].*[\">])",
                     "captures": {
                         "1": {
-                            "name": "string.quoted.other.lt-gt.include.simfony"
+                            "name": "string.quoted.other.lt-gt.include.simplicityhl"
                         }
                     }
                 },
                 {
-                    "name": "meta.preprocessor.define.simfony",
+                    "name": "meta.preprocessor.define.simplicityhl",
                     "begin": "^\\s*#\\s*(define)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
                     "beginCaptures": {
                         "1": {
-                            "name": "keyword.other.preprocessor.directive.simfony"
+                            "name": "keyword.other.preprocessor.directive.simplicityhl"
                         },
                         "2": {
-                            "name": "entity.name.function.preprocessor.simfony"
+                            "name": "entity.name.function.preprocessor.simplicityhl"
                         }
                     },
                     "end": "(?=(?://|/\\*))|$",
@@ -70,34 +70,34 @@
                     ]
                 },
                 {
-                    "name": "meta.preprocessor.macro.simfony",
+                    "name": "meta.preprocessor.macro.simplicityhl",
                     "begin": "^\\s*#\\s*(define)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\(",
                     "beginCaptures": {
                         "1": {
-                            "name": "keyword.other.preprocessor.directive.simfony"
+                            "name": "keyword.other.preprocessor.directive.simplicityhl"
                         },
                         "2": {
-                            "name": "entity.name.function.preprocessor.simfony"
+                            "name": "entity.name.function.preprocessor.simplicityhl"
                         }
                     },
                     "end": "\\)|(?=(?://|/\\*))|$",
                     "patterns": [
                         {
-                            "name": "variable.parameter.preprocessor.simfony",
+                            "name": "variable.parameter.preprocessor.simplicityhl",
                             "match": "[a-zA-Z_][a-zA-Z0-9_]*"
                         },
                         {
-                            "name": "punctuation.separator.parameters.simfony",
+                            "name": "punctuation.separator.parameters.simplicityhl",
                             "match": ","
                         }
                     ]
                 },
                 {
-                    "name": "meta.preprocessor.conditional.simfony",
+                    "name": "meta.preprocessor.conditional.simplicityhl",
                     "begin": "^\\s*#\\s*(if|ifdef|ifndef|elif)\\b",
                     "beginCaptures": {
                         "1": {
-                            "name": "keyword.other.preprocessor.directive.simfony"
+                            "name": "keyword.other.preprocessor.directive.simplicityhl"
                         }
                     },
                     "end": "(?=(?://|/\\*))|$",
@@ -112,18 +112,18 @@
         "preprocessor-expression": {
             "patterns": [
                 {
-                    "name": "constant.language.preprocessor.simfony",
+                    "name": "constant.language.preprocessor.simplicityhl",
                     "match": "\\b(defined)\\b"
                 },
                 {
-                    "name": "entity.name.function.preprocessor.simfony",
+                    "name": "entity.name.function.preprocessor.simplicityhl",
                     "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
                 },
                 {
                     "include": "#literals"
                 },
                 {
-                    "name": "keyword.operator.preprocessor.simfony",
+                    "name": "keyword.operator.preprocessor.simplicityhl",
                     "match": "&&|\\|\\||==|!=|<=|>=|<|>|!|&&|\\|\\||\\+|\\-|\\*|\\/|%|<<|>>|&|\\||\\^|~"
                 }
             ]
@@ -131,11 +131,11 @@
         "comments": {
             "patterns": [
                 {
-                    "name": "comment.line.double-slash.simfony",
+                    "name": "comment.line.double-slash.simplicityhl",
                     "match": "//.*$"
                 },
                 {
-                    "name": "comment.block.simfony",
+                    "name": "comment.block.simplicityhl",
                     "begin": "/\\*",
                     "end": "\\*/"
                 }
@@ -144,27 +144,27 @@
         "keywords": {
             "patterns": [
                 {
-                    "name": "storage.type.function.simfony",
+                    "name": "storage.type.function.simplicityhl",
                     "match": "\\bfn\\b"
                 },
                 {
-                    "name": "storage.type.simfony",
+                    "name": "storage.type.simplicityhl",
                     "match": "\\btype\\b"
                 },
                 {
-                    "name": "keyword.other.simfony",
-                    "match": "\\b(mod|const)\\b"
+                    "name": "keyword.other.simplicityhl",
+                    "match": "\\b(mod|const|use|as|crate|pub)\\b"
                 },
                 {
-                    "name": "storage.type.simfony",
+                    "name": "storage.type.simplicityhl",
                     "match": "\\blet\\b"
                 },
                 {
-                    "name": "keyword.control.simfony",
+                    "name": "keyword.control.simplicityhl",
                     "match": "\\b(match|if|else|while|for|return)\\b"
                 },
                 {
-                    "name": "keyword.operator.simfony",
+                    "name": "keyword.operator.simplicityhl",
                     "match": "(->|=>|=|:|,|;)"
                 }
             ]
@@ -175,10 +175,10 @@
                     "match": "\\b(assert|panic)(!)(\\s*\\(|\\s|$)",
                     "captures": {
                         "1": {
-                            "name": "keyword.other.preprocessor.directive.simfony"
+                            "name": "keyword.other.preprocessor.directive.simplicityhl"
                         },
                         "2": {
-                            "name": "keyword.other.preprocessor.directive.simfony"
+                            "name": "keyword.other.preprocessor.directive.simplicityhl"
                         }
                     }
                 },
@@ -186,10 +186,10 @@
                     "match": "\\b([a-z][a-zA-Z0-9_]*)(!)(\\s*\\(|\\s|$)",
                     "captures": {
                         "1": {
-                            "name": "keyword.other.preprocessor.directive.simfony"
+                            "name": "keyword.other.preprocessor.directive.simplicityhl"
                         },
                         "2": {
-                            "name": "keyword.other.preprocessor.directive.simfony"
+                            "name": "keyword.other.preprocessor.directive.simplicityhl"
                         }
                     }
                 }
@@ -198,17 +198,17 @@
         "functions": {
             "patterns": [
                 {
-                    "name": "entity.name.function.simfony",
+                    "name": "entity.name.function.simplicityhl",
                     "match": "\\b(unwrap_left|unwrap_right|for_while|is_none|array_fold|unwrap|into|fold|dbg)\\b"
                 },
                 {
                     "match": "\\b(fn)\\s+([a-zA-Z][a-zA-Z0-9_]*)\\s*\\(",
                     "captures": {
                         "1": {
-                            "name": "storage.type.function.simfony"
+                            "name": "storage.type.function.simplicityhl"
                         },
                         "2": {
-                            "name": "entity.name.function.simfony"
+                            "name": "entity.name.function.simplicityhl"
                         }
                     }
                 },
@@ -216,7 +216,7 @@
                     "match": "\\b([a-zA-Z][a-zA-Z0-9_]*)(?!!\\s*)\\s*\\(",
                     "captures": {
                         "1": {
-                            "name": "entity.name.function.call.simfony"
+                            "name": "entity.name.function.call.simplicityhl"
                         }
                     }
                 }
@@ -225,21 +225,21 @@
         "types": {
             "patterns": [
                 {
-                    "name": "entity.name.type.simfony",
+                    "name": "entity.name.type.simplicityhl",
                     "match": "\\b(Either|Option|bool|List|u128|u256|u16|u32|u64|u1|u2|u4|u8)\\b"
                 },
                 {
-                    "name": "entity.name.type.simfony",
+                    "name": "entity.name.type.simplicityhl",
                     "match": "\\b(Ctx8|Pubkey|Message64|Message|Signature|Scalar|Fe|Gej|Ge|Point|Height|Time|Distance|Duration|Lock|Outpoint|Confidential1|ExplicitAsset|Asset1|ExplicitAmount|Amount1|ExplicitNonce|Nonce|TokenAmount1)\\b"
                 },
                 {
                     "match": "\\b(type)\\s+([A-Z][a-zA-Z0-9_]*)\\s*=",
                     "captures": {
                         "1": {
-                            "name": "storage.type.simfony"
+                            "name": "storage.type.simplicityhl"
                         },
                         "2": {
-                            "name": "entity.name.type.alias.simfony"
+                            "name": "entity.name.type.alias.simplicityhl"
                         }
                     }
                 },
@@ -247,7 +247,7 @@
                     "match": "\\b([A-Z][a-zA-Z0-9_]*)\\b",
                     "captures": {
                         "1": {
-                            "name": "entity.name.type.simfony"
+                            "name": "entity.name.type.simplicityhl"
                         }
                     }
                 },
@@ -255,7 +255,7 @@
                     "match": ":\\s*([a-zA-Z][a-zA-Z0-9_]*|Either<.*>|Option<.*>|\\(.*\\)|\\[.*\\]|List<.*>)",
                     "captures": {
                         "1": {
-                            "name": "entity.name.type.simfony"
+                            "name": "entity.name.type.simplicityhl"
                         }
                     }
                 }
@@ -264,32 +264,32 @@
         "literals": {
             "patterns": [
                 {
-                    "name": "constant.numeric.decimal.simfony",
+                    "name": "constant.numeric.decimal.simplicityhl",
                     "match": "\\b[0-9][0-9_]*\\b"
                 },
                 {
-                    "name": "constant.numeric.binary.simfony",
+                    "name": "constant.numeric.binary.simplicityhl",
                     "match": "\\b0b[01_]+\\b"
                 },
                 {
-                    "name": "constant.numeric.hex.simfony",
+                    "name": "constant.numeric.hex.simplicityhl",
                     "match": "\\b0x[0-9a-fA-F_]+\\b"
                 },
                 {
-                    "name": "constant.language.boolean.simfony",
+                    "name": "constant.language.boolean.simplicityhl",
                     "match": "\\b(true|false)\\b"
                 },
                 {
-                    "name": "constant.language.simfony",
+                    "name": "constant.language.simplicityhl",
                     "match": "\\b(None)\\b"
                 },
                 {
-                    "name": "string.quoted.double.simfony",
+                    "name": "string.quoted.double.simplicityhl",
                     "begin": "\"",
                     "end": "\"",
                     "patterns": [
                         {
-                            "name": "constant.character.escape.simfony",
+                            "name": "constant.character.escape.simplicityhl",
                             "match": "\\\\."
                         }
                     ]
@@ -302,22 +302,22 @@
                     "match": "\\b(jet|witness|param)::(\\w+)",
                     "captures": {
                         "1": {
-                            "name": "entity.name.namespace.simfony"
+                            "name": "entity.name.namespace.simplicityhl"
                         },
                         "2": {
-                            "name": "entity.name.function.simfony"
+                            "name": "entity.name.function.simplicityhl"
                         }
                     }
                 },
                 {
-                    "name": "variable.other.simfony",
+                    "name": "variable.other.simplicityhl",
                     "match": "\\b[a-z][a-zA-Z0-9_]*\\b"
                 },
                 {
                     "match": "\\b(Left|Right|Some)\\s*\\(",
                     "captures": {
                         "1": {
-                            "name": "support.function.simfony"
+                            "name": "support.function.simplicityhl"
                         }
                     }
                 }
@@ -329,19 +329,19 @@
                     "match": "\\b(mod)\\s+(witness|param)\\b",
                     "captures": {
                         "1": {
-                            "name": "keyword.other.simfony"
+                            "name": "keyword.other.simplicityhl"
                         },
                         "2": {
-                            "name": "entity.name.namespace.simfony"
+                            "name": "entity.name.namespace.simplicityhl"
                         }
                     }
                 },
                 {
                     "match": "\\b(jet)\\b",
-                    "name": "entity.name.namespace.simfony"
+                    "name": "entity.name.namespace.simplicityhl"
                 }
             ]
         }
     },
-    "scopeName": "source.simfony"
-} 
+    "scopeName": "source.simplicityhl"
+}

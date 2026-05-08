@@ -55,8 +55,8 @@
     "grammars": [
       {
         "language": "simplicityhl",
-        "scopeName": "source.simfony",
-        "path": "./syntaxes/simfony.tmLanguage.json"
+        "scopeName": "source.simplicityhl",
+        "path": "./syntaxes/simplicityhl.tmLanguage.json"
       },
       {
         "language": "simplicityhl-witness",
