@@ -44,6 +44,19 @@ jobs:
       - name: "Run test script"
         run: ./maintainer-tools/ci/run_task.sh stable
 
+  Windows:
+    name: Test - Windows stable toolchain
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - name: "Checkout repo"
+        uses: actions/checkout@v4
+      - name: "Select toolchain"
+        uses: dtolnay/rust-toolchain@stable
+      - name: "Run tests"
+        run: cargo test
+
   Nightly:
     name: Test - nightly toolchain
     needs: Prepare
