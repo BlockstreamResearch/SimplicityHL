@@ -554,6 +554,7 @@ pub(crate) mod tests {
             }
         }
 
+        #[cfg(feature = "serde")]
         pub fn get_encoding(self) -> String {
             let program_bytes = self.program.commit().to_vec_without_witness();
             Base64Display::new(&program_bytes, &STANDARD).to_string()
@@ -615,6 +616,7 @@ pub(crate) mod tests {
             }
         }
 
+        #[cfg(feature = "serde")]
         pub fn get_encoding_with_witness(self) -> (String, String) {
             let (program_bytes, witness_bytes) = self.program.redeem().to_vec_with_witness();
             (
