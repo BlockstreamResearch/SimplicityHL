@@ -4,6 +4,32 @@ use crate::types::UIntType::*;
 use crate::types::*;
 
 use simplicity::jet::Elements;
+use simplicity::jet::Jet;
+
+pub trait JetHL {
+    fn source_type(&self) -> Vec<AliasedType>;
+    fn target_type(&self) -> AliasedType;
+    fn verify() -> Box<dyn Jet>;
+    fn is_disabled(&self) -> bool;
+}
+
+impl JetHL for Elements {
+    fn source_type(&self) -> Vec<AliasedType> {
+        source_type(*self)
+    }
+
+    fn target_type(&self) -> AliasedType {
+        target_type(*self)
+    }
+
+    fn verify() -> Box<dyn Jet> {
+        Box::new(Elements::Verify)
+    }
+
+    fn is_disabled(&self) -> bool {
+        matches!(self, Elements::CheckSigVerify | Elements::Verify)
+    }
+}
 
 fn tuple<A: Into<AliasedType>, I: IntoIterator<Item = A>>(elements: I) -> AliasedType {
     AliasedType::tuple(elements.into_iter().map(A::into))
@@ -1044,7 +1070,7 @@ mod tests {
     fn compatible_source_type() {
         for jet in Elements::ALL {
             let resolved_ty = ResolvedType::tuple(
-                source_type(jet)
+                jet.source_type()
                     .into_iter()
                     .map(|t| t.resolve_builtin().unwrap()),
             );
@@ -1059,7 +1085,7 @@ mod tests {
     #[test]
     fn compatible_target_type() {
         for jet in Elements::ALL {
-            let resolved_ty = target_type(jet).resolve_builtin().unwrap();
+            let resolved_ty = jet.target_type().resolve_builtin().unwrap();
             let structural_ty = StructuralType::from(&resolved_ty);
             let simplicity_ty = jet.target_ty().to_final();
 

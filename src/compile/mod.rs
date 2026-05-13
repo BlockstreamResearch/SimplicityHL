@@ -17,6 +17,7 @@ use crate::ast::{
 };
 use crate::debug::CallTracker;
 use crate::error::{Error, RichError, Span, WithSpan};
+use crate::jet::JetHL;
 use crate::named::{self, CoreExt, PairBuilder};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::pattern::{BasePattern, Pattern};
@@ -410,7 +411,7 @@ impl Call {
                 args.comp(&body).with_span(self)
             }
             CallName::Assert => {
-                let jet = ProgNode::jet(scope.ctx(), &Elements::Verify);
+                let jet = ProgNode::jet(scope.ctx(), &*Elements::verify());
                 scope.with_debug_symbol(args, &jet, self)
             }
             CallName::Panic => {

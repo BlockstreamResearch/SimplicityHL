@@ -11,6 +11,7 @@ use simplicity::jet::Elements;
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
 use crate::driver::{FileScoped, SymbolTable, MAIN_MODULE, MAIN_STR};
 use crate::error::{Error, RichError, Span, WithSpan};
+use crate::jet::JetHL;
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::parse::MatchPattern;
 use crate::pattern::Pattern;
@@ -1266,14 +1267,16 @@ impl AbstractSyntaxTree for Call {
         let name = CallName::analyze(from, ty, scope)?;
         let args = match name.clone() {
             CallName::Jet(jet) => {
-                let args_tys = crate::jet::source_type(jet)
+                let args_tys = jet
+                    .source_type()
                     .iter()
                     .map(AliasedType::resolve_builtin)
                     .collect::<Result<Vec<ResolvedType>, AliasName>>()
                     .map_err(Error::UndefinedAlias)
                     .with_span(from)?;
                 check_argument_types(from.args(), &args_tys).with_span(from)?;
-                let out_ty = crate::jet::target_type(jet)
+                let out_ty = jet
+                    .target_type()
                     .resolve_builtin()
                     .map_err(Error::UndefinedAlias)
                     .with_span(from)?;
@@ -1440,10 +1443,8 @@ impl AbstractSyntaxTree for CallName {
     ) -> Result<Self, RichError> {
         match from.name() {
             parse::CallName::Jet(name) => match Elements::from_str(name.as_inner()) {
-                Ok(Elements::CheckSigVerify | Elements::Verify) | Err(_) => {
-                    Err(Error::JetDoesNotExist(name.clone())).with_span(from)
-                }
-                Ok(jet) => Ok(Self::Jet(jet)),
+                Ok(jet) if !jet.is_disabled() => Ok(Self::Jet(jet)),
+                _ => Err(Error::JetDoesNotExist(name.clone())).with_span(from),
             },
             parse::CallName::UnwrapLeft(right_ty) => scope
                 .resolve(right_ty)
