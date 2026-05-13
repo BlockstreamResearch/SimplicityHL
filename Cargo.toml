@@ -47,6 +47,13 @@ getrandom = { version = "0.2", features = ["js"] }
 members = ["codegen", "fuzz"]
 exclude = ["bitcoind-tests", "lsp"]
 
+[workspace.metadata.rbmt.toolchains]
+nightly = "nightly-2025-08-23"
+stable = "1.95.0"
+
+[workspace.metadata.rbmt.tools]
+cargo-fuzz = "0.13.1"
+
 [lints.clippy]
 # Exclude lints we don't think are valuable.
 large_enum_variant = "allow" # docs say "measure before paying attention to this"; why is it on by default??

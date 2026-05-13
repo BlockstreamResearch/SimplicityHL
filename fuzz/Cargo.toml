@@ -3,6 +3,7 @@ name = "simplicityhl-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
+rust-version = "1.79.0"
 
 [package.metadata]
 cargo-fuzz = true
