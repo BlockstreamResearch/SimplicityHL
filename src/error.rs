@@ -643,6 +643,7 @@ pub enum Error {
     ParsingError(crate::parse::Error),
     AnalyzingError(crate::ast::Error),
     DriverError(crate::driver::Error),
+    CompileError(crate::compile::Error),
 }
 
 #[rustfmt::skip]
@@ -881,6 +882,10 @@ impl fmt::Display for Error {
                 f,
                 "{err}"
             ),
+            Error::CompileError(err) => write!(
+                f,
+                "{err}"
+            ),
         }
     }
 }
@@ -942,6 +947,12 @@ impl From<crate::driver::Error> for Error {
             crate::driver::Error::Internal { msg } => Self::Internal { msg },
             _ => Self::DriverError(error),
         }
+    }
+}
+
+impl From<crate::compile::Error> for Error {
+    fn from(error: crate::compile::Error) -> Self {
+        Self::CompileError(error)
     }
 }
 
