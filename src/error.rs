@@ -634,6 +634,8 @@ pub enum Error {
         assigned: ResolvedType,
     },
     UseKeywordIsNotSupported,
+
+    ParsingError(crate::parse::Error),
 }
 
 #[rustfmt::skip]
@@ -860,6 +862,10 @@ impl fmt::Display for Error {
                 f,
                 "The `use` keyword is not supported yet"
             ),
+            Error::ParsingError(err) => write!(
+                f,
+                "{err}"
+            ),
         }
     }
 }
@@ -897,6 +903,12 @@ impl From<crate::num::ParseIntError> for Error {
 impl From<simplicity::types::Error> for Error {
     fn from(error: simplicity::types::Error) -> Self {
         Self::CannotCompile { source: error }
+    }
+}
+
+impl From<crate::parse::Error> for Error {
+    fn from(error: crate::parse::Error) -> Self {
+        Self::ParsingError(error)
     }
 }
 
