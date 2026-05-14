@@ -1,6 +1,5 @@
 use std::fmt;
 use std::ops::Range;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use chumsky::error::Error as ChumskyError;
@@ -10,14 +9,9 @@ use chumsky::text::Char;
 use chumsky::util::MaybeRef;
 use chumsky::DefaultExpected;
 
-use itertools::Itertools;
-
 use crate::lexer::Token;
-use crate::parse::MatchPattern;
 use crate::parse::SyntaxErrorInfo;
 use crate::source::SourceFile;
-use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName, WitnessName};
-use crate::types::{ResolvedType, UIntType};
 
 /// Area that an object spans inside a file.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -480,169 +474,8 @@ impl fmt::Display for ErrorCollector {
 /// Records _what_ happened but not where.
 #[derive(Debug, Clone)]
 pub enum Error {
-    DependencyPathNotFound {
-        path: PathBuf,
-    },
-    DependencyNotADirectory {
-        path: PathBuf,
-    },
-    ReservedDependencyKeyword {
-        keyword: String,
-    },
-    DuplicateDependencyAlias {
-        alias: String,
-        context: String,
-    },
-    InvalidDependencyIdentifier {
-        alias: String,
-    },
-    Internal {
-        msg: String,
-    },
-    UnknownLibrary {
-        name: String,
-    },
-    ArraySizeNonZero {
-        size: usize,
-    },
-    ListBoundPow2 {
-        bound: usize,
-    },
-    BitStringPow2 {
-        len: usize,
-    },
-    CannotParse {
-        msg: String,
-    },
-    Grammar {
-        msg: String,
-    },
-    Syntax {
-        expected: Vec<String>,
-        label: Option<String>,
-        found: Option<String>,
-    },
-    IncompatibleMatchArms {
-        first: MatchPattern,
-        second: MatchPattern,
-    },
-    // TODO: Remove CompileError once SimplicityHL has a type system
-    // The SimplicityHL compiler should never produce ill-typed Simplicity code
-    // The compiler can only be this precise if it knows a type system at least as expressive as Simplicity's
-    CannotCompile {
-        source: simplicity::types::Error,
-    },
-    ParseInt {
-        source: std::num::ParseIntError,
-    },
-    ParseCrateInt {
-        source: crate::num::ParseIntError,
-    },
-    JetDoesNotExist {
-        name: JetName,
-    },
-    InvalidCast {
-        source: ResolvedType,
-        target: ResolvedType,
-    },
-    FileNotFound {
-        filename: PathBuf,
-    },
-    ExternalFileNotFound {
-        lib: String,
-        filename: PathBuf,
-    },
-    LocalFileImportedAsExternal {
-        path: PathBuf,
-    },
-    RedefinedItem {
-        name: String,
-    },
-    UnresolvedItem {
-        name: String,
-    },
-    PrivateItem {
-        name: String,
-    },
-    MainNoInputs,
-    MainNoOutput,
-    MainRequired,
-    MainOutOfEntryFile,
-    MainCannotBePublic,
-    MainCannotBeAlias,
-    FunctionRedefined {
-        name: FunctionName,
-    },
-    FunctionUndefined {
-        name: FunctionName,
-    },
-    InvalidNumberOfArguments {
-        expected: usize,
-        found: usize,
-    },
-    FunctionNotFoldable {
-        name: FunctionName,
-    },
-    FunctionNotLoopable {
-        name: FunctionName,
-    },
-    ExpressionUnexpectedType {
-        ty: ResolvedType,
-    },
-    ExpressionTypeMismatch {
-        expected: ResolvedType,
-        found: ResolvedType,
-    },
-    ExpressionNotConstant,
-    IntegerOutOfBounds {
-        ty: UIntType,
-    },
-    UndefinedVariable {
-        identifier: Identifier,
-    },
-    RedefinedAlias {
-        name: AliasName,
-    },
-    RedefinedAliasAsBuiltin {
-        name: AliasName,
-    },
-    UndefinedAlias {
-        name: AliasName,
-    },
-    DuplicateAlias {
-        name: String,
-    },
-    VariableReuseInPattern {
-        identifier: Identifier,
-    },
-    WitnessReused {
-        name: WitnessName,
-    },
-    WitnessTypeMismatch {
-        name: WitnessName,
-        declared: ResolvedType,
-        assigned: ResolvedType,
-    },
-    WitnessReassigned {
-        name: WitnessName,
-    },
-    WitnessOutsideMain,
-    ModuleRedefined {
-        name: ModuleName,
-    },
-    ArgumentMissing {
-        name: WitnessName,
-    },
-    ArgumentTypeMismatch {
-        name: WitnessName,
-        declared: ResolvedType,
-        assigned: ResolvedType,
-    },
-    UseKeywordIsNotSupported,
-
-    LexerError {
-        msg: String,
-    },
+    Internal { msg: String },
+    LexerError { msg: String },
     ParsingError(crate::parse::Error),
     AnalyzingError(crate::ast::Error),
     DriverError(crate::driver::Error),
@@ -653,225 +486,9 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::DependencyPathNotFound { path } => write!(
-                f,
-                "Path not found: {}", path.display()
-            ),
-            Error::DependencyNotADirectory { path } => write!(
-                f,
-                "Path must be a directory: {}", path.display()
-            ),
-            Error::ReservedDependencyKeyword { keyword } => write!(
-                f,
-                "The '{keyword}' keyword is reserved and cannot be manually mapped. Use the builder's context definitions instead."
-            ),
-            Error::DuplicateDependencyAlias { alias, context } => write!(
-                f,
-                "Duplicate dependency mapping: alias '{alias}' is defined multiple times for context '{context}'"
-            ),
-            Error::InvalidDependencyIdentifier { alias } => write!(
-                f,
-                "Invalid dependency alias '{alias}': must be a valid identifier and not a reserved keyword"
-            ),
             Error::Internal { msg } => write!(
                 f,
-                "INTERNAL ERROR: {msg}"
-            ),
-            Error::UnknownLibrary { name } => write!(
-                f,
-                "Unknown module or library '{name}'"
-            ),
-            Error::ArraySizeNonZero { size } => write!(
-                f,
-                "Expected a non-negative integer as array size, found {size}"
-            ),
-            Error::ListBoundPow2 { bound } => write!(
-                f,
-                "Expected a power of two greater than one (2, 4, 8, 16, 32, ...) as list bound, found {bound}"
-            ),
-            Error::BitStringPow2 { len } => write!(
-                f,
-                "Expected a valid bit string length (1, 2, 4, 8, 16, 32, 64, 128, 256), found {len}"
-            ),
-            Error::CannotParse{ msg } => write!(
-                f,
-                "Cannot parse: {msg}"
-            ),
-            Error::Grammar{ msg } => write!(
-                f,
-                "Grammar error: {msg}"
-            ),
-            Error::FileNotFound { filename: path } => write!(
-                f,
-                "Local file `{}` not found", path.to_string_lossy()
-            ),
-            Error::ExternalFileNotFound { lib, filename: path } => write!(
-                f,
-                "File `{}` not found in external library `{}`", path.to_string_lossy(), lib
-            ),
-            Error::LocalFileImportedAsExternal { path } => write!(
-                f,
-                "File `{}` is part of the local project and must be imported using the `crate::` prefix", path.to_string_lossy()
-            ),
-            Error::Syntax { expected, label, found } => {
-                let found_text = found.clone().unwrap_or("end of input".to_string());
-                match (label, expected.len()) {
-                    (Some(l), _) => write!(f, "Expected {}, found {}", l, found_text),
-                    (None, 1) => {
-                        let exp_text = expected.first().unwrap();
-                        write!(f, "Expected '{}', found '{}'", exp_text, found_text)
-                    }
-                    (None, 0) => write!(f, "Unexpected {}", found_text),
-                    (None, _) => {
-                        let exp_text = expected.iter().map(|s| format!("'{}'", s)).join(", ");
-                        write!(f, "Expected one of {}, found '{}'", exp_text, found_text)
-                    }
-                }
-            }
-            Error::IncompatibleMatchArms { first, second} => write!(
-                f,
-                "Match arm `{first}` is incompatible with arm `{second}`"
-            ),
-            Error::CannotCompile{ .. } => write!(
-                f,
-                "Failed to compile to Simplicity"
-            ),
-            Error::ParseInt { .. } | Error::ParseCrateInt { .. } => write!(f, "Integer parsing error"),
-            Error::JetDoesNotExist { name } => write!(
-                f,
-                "Jet `{name}` does not exist"
-            ),
-            Error::InvalidCast { source, target } => write!(
-                f,
-                "Cannot cast values of type `{source}` as values of type `{target}`"
-            ),
-            Error::MainNoInputs => write!(
-                f,
-                "Main function takes no input parameters"
-            ),
-            Error::MainNoOutput => write!(
-                f,
-                "Main function produces no output"
-            ),
-            Error::MainRequired => write!(
-                f,
-                "Main function is required"
-            ),
-            Error::MainOutOfEntryFile => write!(
-                f,
-                "The 'main' function must be defined in the entry point file"
-            ),
-            Error::MainCannotBePublic => write!(
-                f,
-                "Main function cannot be public"
-            ),
-            Error::MainCannotBeAlias => write!(
-                f,
-                "Main function cannot be alias",
-            ),
-            Error::FunctionRedefined { name } => write!(
-                f,
-                "Function `{name}` was defined multiple times"
-            ),
-            Error::FunctionUndefined { name } => write!(
-                f,
-                "Function `{name}` was called but not defined"
-            ),
-            Error::RedefinedItem { name } => write!(
-                f,
-                "Item `{name}` was defined multiple times"
-            ),
-            Error::UnresolvedItem { name } => write!(
-                f,
-                "Item `{name}` could not be found"
-            ),
-            Error::PrivateItem { name } => write!(
-                f,
-                "Item `{name}` is private"
-            ),
-            Error::InvalidNumberOfArguments { expected, found } => write!(
-                f,
-                "Expected {expected} arguments, found {found} arguments"
-            ),
-            Error::FunctionNotFoldable { name } => write!(
-                f,
-                "Expected a signature like `fn {name}(element: E, accumulator: A) -> A` for a fold"
-            ),
-            Error::FunctionNotLoopable { name } => write!(
-                f,
-                "Expected a signature like `fn {name}(accumulator: A, context: C, counter u{{1,2,4,8,16}}) -> Either<B, A>` for a for-while loop"
-            ),
-            Error::ExpressionUnexpectedType { ty } => write!(
-                f,
-                "Expected expression of type `{ty}`; found something else"
-            ),
-            Error::ExpressionTypeMismatch { expected, found } => write!(
-                f,
-                "Expected expression of type `{expected}`, found type `{found}`"
-            ),
-            Error::ExpressionNotConstant => write!(
-                f,
-                "Expression cannot be evaluated at compile time"
-            ),
-            Error::IntegerOutOfBounds { ty } => write!(
-                f,
-                "Value is out of bounds for type `{ty}`"
-            ),
-            Error::UndefinedVariable { identifier } => write!(
-                f,
-                "Variable `{identifier}` is not defined"
-            ),
-            Error::RedefinedAlias { name } => write!(
-                f,
-                "Type alias `{name}` was defined multiple times"
-            ),
-            Error::RedefinedAliasAsBuiltin { name } => write!(
-                f,
-                "Type alias `{name}` is already exists as built-in alias"
-            ),
-            Error::UndefinedAlias { name } => write!(
-                f,
-                "Type alias `{name}` is not defined"
-            ),
-            Error::DuplicateAlias { name } => write!(
-                f,
-                "The alias `{name}` was defined multiple times"
-            ),
-            Error::VariableReuseInPattern { identifier } => write!(
-                f,
-                "Variable `{identifier}` is used twice in the pattern"
-            ),
-            Error::WitnessReused { name } => write!(
-                f,
-                "Witness `{name}` has been used before somewhere in the program"
-            ),
-            Error::WitnessTypeMismatch { name, declared, assigned } => write!(
-                f,
-                "Witness `{name}` was declared with type `{declared}` but its assigned value is of type `{assigned}`"
-            ),
-            Error::WitnessReassigned { name } => write!(
-                f,
-                "Witness `{name}` has already been assigned a value"
-            ),
-            Error::WitnessOutsideMain => write!(
-                f,
-                "Witness expressions are not allowed outside the `main` function"
-            ),
-            Error::ModuleRedefined { name } => write!(
-                f,
-                "Module `{name}` is defined twice"
-            ),
-            Error::ArgumentMissing { name } => write!(
-                f,
-                "Parameter `{name}` is missing an argument"
-            ),
-            Error::ArgumentTypeMismatch { name, declared, assigned } => write!(
-                f,
-                "Parameter `{name}` was declared with type `{declared}` but its assigned argument is of type `{assigned}`"
-            ),
-            Error::UseKeywordIsNotSupported => write!(
-                f,
-                "The `use` keyword is not supported yet"
+                "{msg}"
             ),
             Error::ParsingError(err) => write!(
                 f,
@@ -889,7 +506,7 @@ impl fmt::Display for Error {
                 f,
                 "{err}"
             ),
-            Error::LexerError{msg} => write!(
+            Error::LexerError { msg } => write!(
                 f,
                 "{msg}"
             ),
@@ -900,9 +517,10 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::ParseInt { source } => Some(source),
-            Error::ParseCrateInt { source } => Some(source),
-            Error::CannotCompile { source } => Some(source),
+            Error::ParsingError(err) => Some(err),
+            Error::AnalyzingError(err) => Some(err),
+            Error::DriverError(err) => Some(err),
+            Error::CompileError(err) => Some(err),
             _ => None,
         }
     }
@@ -915,21 +533,9 @@ impl Error {
     }
 }
 
-impl From<std::num::ParseIntError> for Error {
-    fn from(error: std::num::ParseIntError) -> Self {
-        Self::ParseInt { source: error }
-    }
-}
-
-impl From<crate::num::ParseIntError> for Error {
-    fn from(error: crate::num::ParseIntError) -> Self {
-        Self::ParseCrateInt { source: error }
-    }
-}
-
 impl From<simplicity::types::Error> for Error {
     fn from(error: simplicity::types::Error) -> Self {
-        Self::CannotCompile { source: error }
+        Self::CompileError(crate::compile::Error::TypeError(error))
     }
 }
 
