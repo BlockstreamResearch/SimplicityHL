@@ -640,6 +640,9 @@ pub enum Error {
     },
     UseKeywordIsNotSupported,
 
+    LexerError {
+        msg: String,
+    },
     ParsingError(crate::parse::Error),
     AnalyzingError(crate::ast::Error),
     DriverError(crate::driver::Error),
@@ -885,6 +888,10 @@ impl fmt::Display for Error {
             Error::CompileError(err) => write!(
                 f,
                 "{err}"
+            ),
+            Error::LexerError{msg} => write!(
+                f,
+                "{msg}"
             ),
         }
     }
