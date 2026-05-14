@@ -8,7 +8,8 @@ use simplicity::types::Final as SimType;
 use simplicity::{BitCollector, Value as SimValue, ValueRef};
 
 use crate::array::{BTreeSlice, Combiner, Partition, Unfolder};
-use crate::error::{Error, RichError, WithSpan};
+use crate::ast::Error;
+use crate::error::{RichError, WithSpan};
 use crate::num::{NonZeroPow2Usize, Pow2Usize, U256};
 use crate::parse::ParseFromStr;
 use crate::str::{Binary, Decimal, Hexadecimal};

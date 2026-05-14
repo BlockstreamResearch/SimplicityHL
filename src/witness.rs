@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::error::{Error, RichError, WithContent, WithSpan};
+use crate::ast::Error;
+use crate::error::{RichError, WithContent, WithSpan};
 use crate::parse::ParseFromStr;
 use crate::str::WitnessName;
 use crate::types::{AliasedType, ResolvedType};
@@ -234,10 +235,10 @@ mod tests {
         )
         .expect("driver works");
         match ast::Program::analyze(&driver_program, Box::new(ElementsJetHinter::new()))
-            .map_err(Error::from)
+            .map_err(crate::error::Error::from)
         {
             Ok(_) => panic!("Witness reuse was falsely accepted"),
-            Err(Error::WitnessReused { .. }) => {}
+            Err(crate::error::Error::AnalyzingError(ast::Error::WitnessReused { .. })) => {}
             Err(error) => panic!("Unexpected error: {error}"),
         }
     }

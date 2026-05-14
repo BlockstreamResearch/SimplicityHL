@@ -9,18 +9,133 @@ use simplicity::jet::{Elements, Jet};
 
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
 use crate::driver::{FileScoped, SymbolTable, MAIN_MODULE, MAIN_STR};
-use crate::error::{Error, RichError, Span, WithSpan};
+use crate::error::{RichError, Span, WithSpan};
 use crate::jet::JetHL;
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::parse::MatchPattern;
 use crate::pattern::Pattern;
-use crate::str::{AliasName, FunctionName, Identifier, ModuleName, WitnessName};
+use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName, WitnessName};
 use crate::types::{
     AliasedType, ResolvedType, StructuralType, TypeConstructible, TypeDeconstructible, UIntType,
 };
 use crate::value::{UIntValue, Value};
 use crate::witness::{Parameters, WitnessTypes};
 use crate::{driver, impl_eq_hash, parse};
+
+#[derive(Debug, thiserror::Error, Clone)]
+pub enum Error {
+    #[error("Main function is required")]
+    MainRequired,
+
+    #[error("Function `{name}` was defined multiple times")]
+    FunctionRedefined { name: FunctionName },
+
+    #[error("Type alias `{name}` is not defined")]
+    UndefinedAlias { name: AliasName },
+
+    #[error("INTERNAL ERROR: {msg}")]
+    Internal { msg: String },
+
+    #[error("Item `{name}` is private")]
+    PrivateItem { name: String },
+
+    #[error("Type alias `{name}` was defined multiple times")]
+    RedefinedAlias { name: AliasName },
+
+    #[error("Expected expression of type `{expected}`, found type `{found}`")]
+    ExpressionTypeMismatch {
+        expected: ResolvedType,
+        found: ResolvedType,
+    },
+
+    #[error("Witness expressions are not allowed outside the `main` function")]
+    WitnessOutsideMain,
+
+    #[error("Witness `{name}` has been used before somewhere in the program")]
+    WitnessReused { name: WitnessName },
+
+    #[error("Function `{name}` was called but not defined")]
+    FunctionUndefined { name: FunctionName },
+
+    #[error("Failed to compile to Simplicity: {msg}")]
+    CannotCompile { msg: String },
+
+    #[error("Main function takes no input parameters")]
+    MainNoInputs,
+
+    #[error("Main function produces no output")]
+    MainNoOutput,
+
+    #[error("The 'main' function must be defined in the entry point file")]
+    MainOutOfEntryFile,
+
+    #[error("Expected expression of type `{ty}`; found something else")]
+    ExpressionUnexpectedType { ty: ResolvedType },
+
+    #[error("Variable `{identifier}` is used twice in the pattern")]
+    VariableReuseInPattern { identifier: Identifier },
+
+    #[error("Variable `{identifier}` is not defined")]
+    UndefinedVariable { identifier: Identifier },
+
+    #[error("Value is out of bounds for type `{ty}`")]
+    IntegerOutOfBounds { ty: UIntType },
+
+    #[error("Expected {expected} arguments, found {found} arguments")]
+    InvalidNumberOfArguments { expected: usize, found: usize },
+
+    #[error("Cannot cast values of type `{source_type}` as values of type `{target_type}`")]
+    InvalidCast {
+        source_type: ResolvedType,
+        target_type: ResolvedType,
+    },
+
+    #[error("Jet `{name}` does not exist")]
+    JetDoesNotExist { name: JetName },
+
+    #[error("Expected a signature like `fn {name}(element: E, accumulator: A) -> A` for a fold")]
+    FunctionNotFoldable { name: FunctionName },
+
+    #[error("Module `{0}` is defined twice")]
+    ModuleRedefined(ModuleName),
+
+    #[error("Witness `{0}` has already been assigned a value")]
+    WitnessReassigned(WitnessName),
+
+    #[error("Expected a signature like `fn {name}(accumulator: A, context: C, counter u{{1,2,4,8,16}}) -> Either<B, A>` for a for-while loop")]
+    FunctionNotLoopable { name: FunctionName },
+
+    #[error("Witness `{name}` was declared with type `{declared}` but its assigned value is of type `{assigned}`")]
+    WitnessTypeMismatch {
+        name: WitnessName,
+        declared: ResolvedType,
+        assigned: ResolvedType,
+    },
+
+    #[error("Parameter `{name}` is missing an argument")]
+    ArgumentMissing { name: WitnessName },
+
+    #[error(
+        "Parameter `{name}` was declared with type `{declared}` but its assigned argument is of type `{assigned}`"
+    )]
+    ArgumentTypeMismatch {
+        name: WitnessName,
+        declared: ResolvedType,
+        assigned: ResolvedType,
+    },
+
+    #[error("The `use` keyword is not supported yet")]
+    UseKeywordIsNotSupported,
+
+    #[error("Integer parsing error")]
+    ParseIntCrate(#[from] crate::num::ParseIntError),
+
+    #[error("Integer parsing error")]
+    ParseInt(#[from] std::num::ParseIntError),
+
+    #[error("Expected a valid bit string length (1, 2, 4, 8, 16, 32, 64, 128, 256), found {len}")]
+    BitStringPow2 { len: usize },
+}
 
 /// A program consists of the main function.
 ///
@@ -981,7 +1096,7 @@ impl AbstractSyntaxTree for Item {
                 Function::analyze(function, ty, scope).map(Self::Function)
             }
             parse::Item::Use(use_decl) => Err(RichError::new(
-                Error::UseKeywordIsNotSupported,
+                crate::error::Error::AnalyzingError(Error::UseKeywordIsNotSupported),
                 *use_decl.span(),
             )),
             parse::Item::Module => Ok(Self::Module),
@@ -1428,8 +1543,8 @@ impl AbstractSyntaxTree for Call {
             CallName::TypeCast(source) => {
                 if StructuralType::from(&source) != StructuralType::from(ty) {
                     return Err(Error::InvalidCast {
-                        source,
-                        target: ty.clone(),
+                        source_type: source,
+                        target_type: ty.clone(),
                     })
                     .with_span(from);
                 }

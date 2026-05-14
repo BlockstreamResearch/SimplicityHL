@@ -641,6 +641,7 @@ pub enum Error {
     UseKeywordIsNotSupported,
 
     ParsingError(crate::parse::Error),
+    AnalyzingError(crate::ast::Error),
 }
 
 #[rustfmt::skip]
@@ -871,6 +872,10 @@ impl fmt::Display for Error {
                 f,
                 "{err}"
             ),
+            Error::AnalyzingError(err) => write!(
+                f,
+                "{err}"
+            ),
         }
     }
 }
@@ -914,6 +919,15 @@ impl From<simplicity::types::Error> for Error {
 impl From<crate::parse::Error> for Error {
     fn from(error: crate::parse::Error) -> Self {
         Self::ParsingError(error)
+    }
+}
+
+impl From<crate::ast::Error> for Error {
+    fn from(error: crate::ast::Error) -> Self {
+        match error {
+            crate::ast::Error::Internal { msg } => Self::Internal { msg },
+            _ => Self::AnalyzingError(error),
+        }
     }
 }
 
