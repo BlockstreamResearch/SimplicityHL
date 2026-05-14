@@ -14,6 +14,7 @@ use itertools::Itertools;
 
 use crate::lexer::Token;
 use crate::parse::MatchPattern;
+use crate::parse::SyntaxErrorInfo;
 use crate::source::SourceFile;
 use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName, WitnessName};
 use crate::types::{ResolvedType, UIntType};
@@ -203,9 +204,9 @@ impl RichError {
     /// a problem on the parsing side.
     pub fn parsing_error(reason: &str) -> Self {
         Self {
-            error: Box::new(Error::CannotParse {
+            error: Box::new(Error::ParsingError(crate::parse::Error::CannotParse {
                 msg: reason.to_string(),
-            }),
+            })),
             span: Span::new(0, 0),
             source: None,
         }
@@ -323,9 +324,8 @@ where
 {
     fn merge(self, other: Self) -> Self {
         match (self.error.as_ref(), other.error.as_ref()) {
-            (Error::Grammar { .. }, Error::Grammar { .. }) => other,
-            (Error::Grammar { .. }, _) => other,
-            (_, Error::Grammar { .. }) => self,
+            (Error::ParsingError(crate::parse::Error::Grammar { .. }), _) => other,
+            (_, Error::ParsingError(crate::parse::Error::Grammar { .. })) => self,
             _ => other,
         }
     }
@@ -358,11 +358,13 @@ where
         let found_string = found.map(|t| t.to_string());
 
         Self {
-            error: Box::new(Error::Syntax {
-                expected: expected_tokens,
-                label: None,
-                found: found_string,
-            }),
+            error: Box::new(Error::ParsingError(crate::parse::Error::SyntaxError(
+                SyntaxErrorInfo {
+                    expected: expected_tokens,
+                    label: None,
+                    found: found_string,
+                },
+            ))),
             span,
             source: None,
         }
@@ -385,20 +387,23 @@ where
         let found_string = found.map(|t| t.to_string());
 
         Self {
-            error: Box::new(Error::Syntax {
-                expected: expected_strings,
-                label: None,
-                found: found_string,
-            }),
+            error: Box::new(Error::ParsingError(crate::parse::Error::SyntaxError(
+                SyntaxErrorInfo {
+                    expected: expected_strings,
+                    label: None,
+                    found: found_string,
+                },
+            ))),
             span,
             source: None,
         }
     }
 
     fn label_with(&mut self, label: &'tokens str) {
-        if let Error::Syntax {
-            label: ref mut l, ..
-        } = self.error.as_mut()
+        if let Error::ParsingError(crate::parse::Error::SyntaxError(SyntaxErrorInfo {
+            label: ref mut l,
+            ..
+        })) = self.error.as_mut()
         {
             *l = Some(label.to_string());
         }
@@ -915,6 +920,7 @@ impl From<crate::parse::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse::Error;
 
     const CONTENT: &str = r#"let a1: List<u32, 5> = None;
 let x: u32 = Left(
