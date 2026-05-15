@@ -17,20 +17,3 @@ fn main() {}
 
 #[cfg(fuzzing)]
 libfuzzer_sys::fuzz_target!(|data: simplicityhl::WitnessValues| do_test(data));
-
-#[cfg(test)]
-mod test {
-    use simplicityhl::{parse::ParseFromStr, WitnessValues};
-    #[test]
-    fn test() {
-        let witness_text = r#"mod witness {
-            const A: u32 = 1;
-            const B: u32 = 2;
-            const C: u32 = 3;
-        }"#;
-
-        let witness_values = WitnessValues::parse_from_str(witness_text)
-            .expect("parsing of valid string should work");
-        super::do_test(witness_values);
-    }
-}

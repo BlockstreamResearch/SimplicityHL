@@ -617,34 +617,6 @@ impl MatchPattern {
     }
 }
 
-/// Program root when parsing modules.
-#[derive(Clone, Debug)]
-pub struct ModuleProgram {
-    items: Arc<[ModuleItem]>,
-    span: Span,
-}
-
-impl ModuleProgram {
-    /// Access the items of the program.
-    pub fn items(&self) -> &[ModuleItem] {
-        &self.items
-    }
-
-    /// Access the span of the program.
-    pub fn span(&self) -> &Span {
-        &self.span
-    }
-}
-
-impl_eq_hash!(ModuleProgram; items);
-
-/// Item when parsing modules.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub enum ModuleItem {
-    Ignored,
-    Module(Module),
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Module {
     name: ModuleName,
@@ -2091,32 +2063,6 @@ impl Match {
     }
 }
 
-impl ChumskyParse for ModuleItem {
-    fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
-    where
-        I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
-    {
-        let module = Module::parser().map(Self::Module);
-
-        module
-    }
-}
-
-impl ChumskyParse for ModuleProgram {
-    fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
-    where
-        I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
-    {
-        ModuleItem::parser()
-            .repeated()
-            .collect::<Vec<_>>()
-            .map_with(|items, e| Self {
-                items: Arc::from(items),
-                span: e.span(),
-            })
-    }
-}
-
 impl ChumskyParse for Module {
     fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
     where
@@ -2222,12 +2168,6 @@ impl AsRef<Span> for Call {
 }
 
 impl AsRef<Span> for Match {
-    fn as_ref(&self) -> &Span {
-        &self.span
-    }
-}
-
-impl AsRef<Span> for ModuleProgram {
     fn as_ref(&self) -> &Span {
         &self.span
     }

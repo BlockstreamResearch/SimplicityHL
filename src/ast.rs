@@ -19,7 +19,7 @@ use crate::types::{
     AliasedType, ResolvedType, StructuralType, TypeConstructible, TypeDeconstructible, UIntType,
 };
 use crate::value::{UIntValue, Value};
-use crate::witness::{Parameters, WitnessTypes, WitnessValues};
+use crate::witness::{Parameters, WitnessTypes};
 use crate::{driver, impl_eq_hash, parse};
 
 /// A program consists of the main function.
@@ -1565,72 +1565,6 @@ impl AbstractSyntaxTree for Match {
             },
             span: *from.as_ref(),
         })
-    }
-}
-
-fn analyze_named_module(
-    name: ModuleName,
-    from: &parse::ModuleProgram,
-) -> Result<HashMap<WitnessName, Value>, RichError> {
-    let unit = ResolvedType::unit();
-
-    // IMPORTANT! If modules allow imports, then we need to consider
-    // passing the resolution conetxt by calling `Scope::new(resolutions)`
-    let mut scope = Scope::default();
-    let items = from
-        .items()
-        .iter()
-        .map(|s| ModuleItem::analyze(s, &unit, &mut scope))
-        .collect::<Result<Vec<ModuleItem>, RichError>>()?;
-    debug_assert!(scope.is_topmost());
-    let mut iter = items.into_iter().filter_map(|item| match item {
-        ModuleItem::Module(module) if module.name == name => Some(module),
-        _ => None,
-    });
-    let Some(witness_module) = iter.next() else {
-        return Ok(HashMap::new()); // "not present" is equivalent to empty
-    };
-    if iter.next().is_some() {
-        return Err(Error::ModuleRedefined(name)).with_span(from);
-    }
-    let mut map = HashMap::new();
-    for assignment in witness_module.assignments() {
-        if map.contains_key(assignment.name()) {
-            return Err(Error::WitnessReassigned(assignment.name().shallow_clone()))
-                .with_span(assignment);
-        }
-        map.insert(
-            assignment.name().shallow_clone(),
-            assignment.value().clone(),
-        );
-    }
-    Ok(map)
-}
-
-impl WitnessValues {
-    pub fn analyze(from: &parse::ModuleProgram) -> Result<Self, RichError> {
-        analyze_named_module(ModuleName::witness(), from).map(Self::from)
-    }
-}
-
-impl crate::witness::Arguments {
-    pub fn analyze(from: &parse::ModuleProgram) -> Result<Self, RichError> {
-        analyze_named_module(ModuleName::param(), from).map(Self::from)
-    }
-}
-
-impl AbstractSyntaxTree for ModuleItem {
-    type From = parse::ModuleItem;
-
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
-        assert!(ty.is_unit(), "Items cannot return anything");
-        assert!(scope.is_topmost(), "Items live in the topmost scope only");
-        match from {
-            parse::ModuleItem::Ignored => Ok(Self::Ignored),
-            parse::ModuleItem::Module(witness_module) => {
-                Module::analyze(witness_module, ty, scope).map(Self::Module)
-            }
-        }
     }
 }
 

@@ -56,13 +56,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "parse_witness_module_rtt"
-path = "fuzz_targets/parse_witness_module_rtt.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "reconstruct_value"
 path = "fuzz_targets/reconstruct_value.rs"
 test = false

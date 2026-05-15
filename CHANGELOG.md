@@ -1,3 +1,7 @@
+# Unreleased
+
+* Remove ModuleProgram and the parsing of Arguments and Witnesses from the core compiler [#323](https://github.com/BlockstreamResearch/SimplicityHL/pull/323)
+
 # 0.6.0-rc.0 - 2026-04-24
 
 * Add imports and dependency resolution, including `pub`/`use` syntax, re-exports, aliases, transitive dependencies, collision diagnostics, functional tests, examples, and `simc --dep` for compiling multi-file programs. [#264](https://github.com/BlockstreamResearch/SimplicityHL/pull/264)

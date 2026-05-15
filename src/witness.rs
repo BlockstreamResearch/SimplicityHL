@@ -3,7 +3,6 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::error::{Error, RichError, WithContent, WithSpan};
-use crate::parse;
 use crate::parse::ParseFromStr;
 use crate::str::WitnessName;
 use crate::types::{AliasedType, ResolvedType};
@@ -64,12 +63,6 @@ macro_rules! impl_name_value_map {
         impl From<HashMap<WitnessName, Value>> for $wrapper {
             fn from(value: HashMap<WitnessName, Value>) -> Self {
                 Self(Arc::new(value))
-            }
-        }
-
-        impl ParseFromStr for $wrapper {
-            fn parse_from_str(s: &str) -> Result<Self, RichError> {
-                parse::ModuleProgram::parse_from_str(s).and_then(|x| Self::analyze(&x))
             }
         }
 
@@ -281,28 +274,6 @@ fn main() {
                 assert!(error
                     .contains("Witness expressions are not allowed outside the `main` function"))
             }
-        }
-    }
-
-    #[test]
-    fn missing_witness_module() {
-        match WitnessValues::parse_from_str("") {
-            Ok(v) => assert!(
-                v.iter().next().is_none(),
-                "empty witness module was parsed as nonempty"
-            ),
-            Err(error) => panic!("Missing witness module was falsely rejected: {error}"),
-        }
-    }
-
-    #[test]
-    fn redefined_witness_module() {
-        let s = r#"mod witness {} mod witness {}"#;
-        match WitnessValues::parse_from_str(s) {
-            Ok(_) => panic!("Redefined witness module was falsely accepted"),
-            Err(error) => assert!(error
-                .to_string()
-                .contains("Module `witness` is defined twice")),
         }
     }
 
