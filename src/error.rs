@@ -745,7 +745,16 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::ParseInt { source } => Some(source),
+            Error::ParseCrateInt { source } => Some(source),
+            Error::CannotCompile { source } => Some(source),
+            _ => None,
+        }
+    }
+}
 
 impl Error {
     /// Update the error with the affected span.
