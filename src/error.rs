@@ -489,7 +489,15 @@ pub enum Error {
     // TODO: Remove CompileError once SimplicityHL has a type system
     // The SimplicityHL compiler should never produce ill-typed Simplicity code
     // The compiler can only be this precise if it knows a type system at least as expressive as Simplicity's
-    CannotCompile(String),
+    CannotCompile {
+        source: simplicity::types::Error,
+    },
+    ParseInt {
+        source: std::num::ParseIntError,
+    },
+    ParseCrateInt {
+        source: crate::num::ParseIntError,
+    },
     JetDoesNotExist(JetName),
     InvalidCast(ResolvedType, ResolvedType),
     FileNotFound(PathBuf),
@@ -592,10 +600,11 @@ impl fmt::Display for Error {
                 f,
                 "Match arm `{pattern1}` is incompatible with arm `{pattern2}`"
             ),
-            Error::CannotCompile(description) => write!(
+            Error::CannotCompile{ .. } => write!(
                 f,
-                "Failed to compile to Simplicity: {description}"
+                "Failed to compile to Simplicity"
             ),
+            Error::ParseInt { .. } | Error::ParseCrateInt { .. } => write!(f, "Integer parsing error"),
             Error::JetDoesNotExist(name) => write!(
                 f,
                 "Jet `{name}` does not exist"
@@ -747,19 +756,19 @@ impl Error {
 
 impl From<std::num::ParseIntError> for Error {
     fn from(error: std::num::ParseIntError) -> Self {
-        Self::CannotParse(error.to_string())
+        Self::ParseInt { source: error }
     }
 }
 
 impl From<crate::num::ParseIntError> for Error {
     fn from(error: crate::num::ParseIntError) -> Self {
-        Self::CannotParse(error.to_string())
+        Self::ParseCrateInt { source: error }
     }
 }
 
 impl From<simplicity::types::Error> for Error {
     fn from(error: simplicity::types::Error) -> Self {
-        Self::CannotCompile(error.to_string())
+        Self::CannotCompile { source: error }
     }
 }
 
