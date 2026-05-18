@@ -11,7 +11,6 @@ use chumsky::util::MaybeRef;
 use chumsky::DefaultExpected;
 
 use itertools::Itertools;
-use simplicity::elements;
 
 use crate::lexer::Token;
 use crate::parse::MatchPattern;
@@ -743,12 +742,6 @@ impl Error {
     /// Update the error with the affected span.
     pub fn with_span(self, span: Span) -> RichError {
         RichError::new(self, span)
-    }
-}
-
-impl From<elements::hex::Error> for Error {
-    fn from(error: elements::hex::Error) -> Self {
-        Self::CannotParse(error.to_string())
     }
 }
 
