@@ -527,6 +527,7 @@ pub enum Error {
     ModuleRedefined(ModuleName),
     ArgumentMissing(WitnessName),
     ArgumentTypeMismatch(WitnessName, ResolvedType, ResolvedType),
+    UseKeywordIsNotSupported,
 }
 
 #[rustfmt::skip]
@@ -727,6 +728,10 @@ impl fmt::Display for Error {
             Error::ArgumentTypeMismatch(name, declared, assigned) => write!(
                 f,
                 "Parameter `{name}` was declared with type `{declared}` but its assigned argument is of type `{assigned}`"
+            ),
+            Error::UseKeywordIsNotSupported => write!(
+                f,
+                "The `use` keyword is not supported yet"
             ),
         }
     }
