@@ -236,14 +236,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if output_json {
         #[cfg(not(feature = "serde"))]
-        return Err(
-            "Program was compiled without the 'serde' feature and cannot output JSON.".into(),
-        );
+        {
+            return Err(
+                "Program was compiled without the 'serde' feature and cannot output JSON.".into(),
+            );
+        }
+
         #[cfg(feature = "serde")]
-        println!("{}", serde_json::to_string(&output)?);
-    } else {
-        println!("{}", output);
+        {
+            println!("{}", serde_json::to_string(&output)?);
+            return Ok(());
+        }
     }
+
+    println!("{}", output);
 
     Ok(())
 }

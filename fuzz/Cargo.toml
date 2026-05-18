@@ -3,9 +3,14 @@ name = "simplicityhl-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
+rust-version = "1.79.0"
 
 [package.metadata]
 cargo-fuzz = true
+
+[package.metadata.rbmt.lint]
+# Existing transitive split: derive_arbitrary uses syn 1 while serde/wasm tooling uses syn 2.
+allowed_duplicates = ["syn"]
 
 [dependencies]
 libfuzzer-sys = "0.4"
