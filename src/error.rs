@@ -149,7 +149,7 @@ impl<T> WithSource<T> for Result<T, RichError> {
 /// An error enriched with context.
 ///
 /// Records _what_ happened and _where_.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct RichError {
     /// The error that occurred.
     ///
@@ -403,7 +403,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone)]
 pub struct ErrorCollector {
     /// Collected errors.
     errors: Vec<RichError>,
@@ -471,7 +471,7 @@ impl fmt::Display for ErrorCollector {
 /// An individual error.
 ///
 /// Records _what_ happened but not where.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub enum Error {
     Internal(String),
     UnknownLibrary(String),
