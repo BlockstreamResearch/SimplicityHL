@@ -1,8 +1,0 @@
-<svg width="32" height="32" viewBox="-70 -25 250 250" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- White diamond (center-right) -->
-  <rect x="96.0328" y="55" width="58.0523" height="58.0523" transform="rotate(45 96.0328 55)" fill="white"/>
-  <!-- Green diamond (top-left) - for witness/data files -->
-  <rect x="41.0492" width="58.0523" height="58.0523" transform="rotate(45 41.0492 0)" fill="#2ecc71"/>
-  <!-- Green diamond (bottom-left) -->
-  <rect x="41.0492" y="110" width="58.0523" height="58.0523" transform="rotate(45 41.0492 110)" fill="#2ecc71"/>
-</svg>

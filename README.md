@@ -71,6 +71,9 @@ Produce JSON output with the `--json` flag.
 ./target/debug/simc examples/p2pkh.simf -w examples/p2pkh.wit --json
 ```
 
-### VSCode extension
+### Editor tooling
 
-See the installation [instructions](./vscode/README.md).
+The language server and VS Code extension are maintained in separate repositories:
+
+* [simplicityhl-lsp](https://github.com/BlockstreamResearch/simplicityhl-lsp)
+* [simplicityhl-vscode](https://github.com/BlockstreamResearch/simplicityhl-vscode)

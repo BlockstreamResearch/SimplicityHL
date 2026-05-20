@@ -9,10 +9,10 @@ check out the following resources:
 * Our in-browser playground: https://ide.simplicity-lang.org/
 
 This project defines and implements the SimplicityHL language, and provides
-a compiler binary and language server protocol (LSP) implementation. We
-welcome contributions across a wide spectrum of tasks. For example,
+a compiler binary. We welcome contributions across a wide spectrum of tasks.
+For example,
 
-* Improving tooling: compiler command-line interface or LSP
+* Improving tooling: compiler command-line interface
 * Documentation: this repository can always use more documentation; for
   documentation about Simplicity and SimplicityHL it may make more sense
   to contribute to https://github.com/BlockstreamResearch/simplicity-lang-org/
