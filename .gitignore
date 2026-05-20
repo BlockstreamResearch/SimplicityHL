@@ -13,17 +13,8 @@ target/
 .idea
 *.iml
 
-# Vscode project files
-.vscode
-
 # mdbook HTML output dir
 book/book/
-
-# Node.js modules
-node_modules/
-
-# VSCode extension package
-*.vsix
 
 # macOS
 .DS_Store

@@ -9,7 +9,7 @@ body:
     attributes:
       label: "Project"
       description: "Which subproject or area"
-      placeholder: "core | compiler | vscode | book | tests | other"
+      placeholder: "core | compiler | book | tests | other"
     validations:
       required: true
   - type: textarea

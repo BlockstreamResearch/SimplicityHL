@@ -49,7 +49,7 @@ getrandom = { version = "0.2", features = ["js"] }
 
 [workspace]
 members = ["codegen", "fuzz"]
-exclude = ["bitcoind-tests", "lsp"]
+exclude = ["bitcoind-tests"]
 
 [workspace.metadata.rbmt.toolchains]
 nightly = "nightly-2025-08-23"
