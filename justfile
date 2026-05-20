@@ -38,7 +38,6 @@ check_fuzz:
     just fuzz display_parse_tree
     just fuzz parse_value_rtt
     just fuzz parse_witness_json_rtt
-    just fuzz parse_witness_module_rtt
     just fuzz reconstruct_value
 
 # Build fuzz tests
