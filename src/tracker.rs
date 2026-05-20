@@ -305,6 +305,8 @@ impl ExecTracker for DefaultTracker<'_> {
             Inner::Jet(jet) => {
                 if let Some(&elements_jet) = jet.as_any().downcast_ref::<Elements>() {
                     self.handle_jet(node, elements_jet, &input, &output);
+                } else {
+                    panic!("Expected an Elements jet, found a different type of jet: {jet:?}");
                 }
             }
             Inner::AssertL(_, cmr) => self.handle_debug(node, &input, cmr),
