@@ -15,7 +15,7 @@ use simplicity::elements;
 
 use crate::lexer::Token;
 use crate::parse::MatchPattern;
-use crate::resolution::SourceFile;
+use crate::source::SourceFile;
 use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName, WitnessName};
 use crate::types::{ResolvedType, UIntType};
 
@@ -474,6 +474,11 @@ impl fmt::Display for ErrorCollector {
 /// Records _what_ happened but not where.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Error {
+    DependencyPathNotFound(String),
+    DependencyNotADirectory(String),
+    ReservedDependencyKeyword(String),
+    DuplicateDependencyAlias(String, String),
+    InvalidDependencyIdentifier(String),
     Internal(String),
     UnknownLibrary(String),
     ArraySizeNonZero(usize),
@@ -533,6 +538,11 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::DependencyPathNotFound(path) => write!(f, "Path not found: {}", path),
+            Error::DependencyNotADirectory(path) => write!(f, "Path must be a directory: {}", path),
+            Error::ReservedDependencyKeyword(kw) => write!(f, "The '{}' keyword is reserved and cannot be manually mapped. Use the builder's context definitions instead.", kw),
+            Error::DuplicateDependencyAlias(alias, context) => write!(f, "Duplicate dependency mapping: alias '{}' is defined multiple times for context '{}'", alias, context),
+            Error::InvalidDependencyIdentifier(alias) => write!(f, "Invalid dependency alias '{}': must be a valid identifier and not a reserved keyword", alias),
             Error::Internal(err) => write!(
                 f,
                 "INTERNAL ERROR: {err}"

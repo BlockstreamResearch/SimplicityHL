@@ -1,119 +1,34 @@
-use std::io;
-use std::path::Path;
-use std::sync::Arc;
-
-use crate::driver::{CanonSourceFile, CRATE_STR};
+use crate::driver::CRATE_STR;
 use crate::error::{Error, RichError, WithSpan as _};
 use crate::parse::UseDecl;
-
-/// Powers error reporting by mapping compiler diagnostics to the specific file.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct SourceFile {
-    /// The path of the source file (e.g., "./src/main.simf").
-    name: Option<Arc<Path>>,
-    /// The actual text content of the source file.
-    content: Arc<str>,
-}
-
-impl From<(&Path, &str)> for SourceFile {
-    fn from((name, content): (&Path, &str)) -> Self {
-        Self::new(name, Arc::from(content))
-    }
-}
-
-impl From<CanonSourceFile> for SourceFile {
-    fn from(canon_source: CanonSourceFile) -> Self {
-        Self::new(canon_source.name().as_path(), canon_source.content())
-    }
-}
-
-impl SourceFile {
-    /// Creates a standard `SourceFile` from a file path and its content.
-    pub fn new(name: &Path, content: Arc<str>) -> Self {
-        Self {
-            name: Some(Arc::from(name)),
-            content,
-        }
-    }
-
-    /// Creates an anonymous `SourceFile` without a file path (e.g., for a single-file programs)
-    pub fn anonymous(content: Arc<str>) -> Self {
-        Self {
-            name: None,
-            content,
-        }
-    }
-
-    pub fn name(&self) -> &Option<Arc<Path>> {
-        &self.name
-    }
-
-    pub fn content(&self) -> Arc<str> {
-        self.content.clone()
-    }
-}
-
-/// A guaranteed, fully coanonicalized absolute path.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct CanonPath(Arc<Path>);
-
-impl CanonPath {
-    /// Safely resolves an absolute path via the OS and wraps it in a `CanonPath`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a `String` containing the OS error if the path does not exist or
-    /// cannot be accessed. The caller is expected to map this into a more specific
-    /// compiler diagnostic (e.g., `RichError`).
-    pub fn canonicalize(path: &Path) -> Result<Self, String> {
-        // We use `map_err` here to intercept the generic OS error and enrich
-        // it with the specific path that failed
-        let canon_path = std::fs::canonicalize(path).map_err(|err| {
-            format!(
-                "Failed to find library target path '{}' :{}",
-                path.display(),
-                err
-            )
-        })?;
-
-        Ok(Self(Arc::from(canon_path.as_path())))
-    }
-
-    /// Appends a logical module path to this physical root directory and verifies it.
-    /// It automatically appends the `.simf` extension to the final path *before* asking
-    /// the OS to verify its existence.
-    pub fn join(&self, parts: &[&str]) -> Result<Self, String> {
-        let mut new_path = self.0.to_path_buf();
-
-        for part in parts {
-            new_path.push(part);
-        }
-
-        Self::canonicalize(&new_path.with_extension("simf"))
-    }
-
-    /// Check if the current file is executing inside the context's directory tree.
-    /// This prevents a file in `/project_a/` from using a dependency meant for `/project_b/`
-    pub fn starts_with(&self, path: &CanonPath) -> bool {
-        self.as_path().starts_with(path.as_path())
-    }
-
-    pub fn as_path(&self) -> &Path {
-        &self.0
-    }
-}
+use crate::source::CanonPath;
 
 /// This defines how a specific dependency root path (e.g. "math")
 /// should be resolved to a physical path on the disk, restricted to
 /// files executing within the `context_prefix`.
 #[derive(Debug, Clone)]
-pub struct Remapping {
+pub(crate) struct Remapping {
     /// The base directory that owns this dependency mapping.
-    pub context_prefix: CanonPath,
+    pub(crate) context_prefix: CanonPath,
     /// The dependency root path name used in the `use` statement (e.g., "math").
-    pub drp_name: String,
+    pub(crate) drp_name: String,
     /// The physical path this dependency root path points to.
-    pub target: CanonPath,
+    pub(crate) target: CanonPath,
+}
+
+fn is_valid_dependency_identifier(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let mut chars = s.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return false;
+    }
+    !crate::lexer::is_keyword(s)
 }
 
 /// A router for resolving dependencies across multi-file workspaces.
@@ -121,56 +36,146 @@ pub struct Remapping {
 /// Mappings are strictly sorted by the longest `context_prefix` match.
 /// This mathematical guarantee ensures that if multiple nested directories
 /// define the same dependency root path, the most specific (deepest) context wins.
-#[derive(Debug, Clone, Default)]
+/// This struct must always be constructed via [`DependencyMapBuilder`].
+/// Builder guarantees that the vector is never empty and contains no duplicates, so we can safely sort without worrying about edge cases.
+#[derive(Debug, Clone)]
 pub struct DependencyMap {
-    inner: Vec<Remapping>,
+    /// External dependency remappings (e.g., `use math::...`)
+    remappings: Vec<Remapping>,
+    /// Package roots for resolving local workspace paths (`crate::...`).
+    ///
+    /// In a multi-file workspace with nested dependencies,
+    /// a file might be part of an external dependency package rather than the top-level
+    /// project. These paths are sorted by descending length, allowing the compiler to
+    /// match a file to its closest (most deeply nested) owning package root.
+    /// This prevents symlink escapes and ensures `crate::` correctly resolves relative
+    /// to the dependency's own root directory, rather than the parent workspace root.
+    package_roots: Vec<CanonPath>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DependencyMapBuilder {
+    entry_root: CanonPath,
+    deps: Vec<Remapping>,
+}
+
+impl DependencyMapBuilder {
+    pub fn new(entry_root: CanonPath) -> Self {
+        Self {
+            entry_root,
+            deps: Vec::new(),
+        }
+    }
+
+    pub fn add_dependency(mut self, context: CanonPath, alias: String, target: CanonPath) -> Self {
+        self.deps.push(Remapping {
+            context_prefix: context,
+            drp_name: alias,
+            target,
+        });
+        self
+    }
+
+    pub fn build(self) -> Result<DependencyMap, Error> {
+        let mut remappings = Vec::new();
+        let mut crate_roots = Vec::new();
+
+        // This guarantees that `crate_roots` is never empty, so `get_package_root()`
+        // will always return `Some()` for files under the entry root.
+        let root = self.entry_root;
+        if !root.as_path().exists() {
+            return Err(Error::DependencyPathNotFound(
+                root.as_path().display().to_string(),
+            ));
+        }
+        if !root.as_path().is_dir() {
+            return Err(Error::DependencyNotADirectory(
+                root.as_path().display().to_string(),
+            ));
+        }
+        crate_roots.push(root);
+
+        for dep in self.deps {
+            if !dep.context_prefix.as_path().exists() {
+                return Err(Error::DependencyPathNotFound(
+                    dep.context_prefix.as_path().display().to_string(),
+                ));
+            }
+            if !dep.context_prefix.as_path().is_dir() {
+                return Err(Error::DependencyNotADirectory(
+                    dep.context_prefix.as_path().display().to_string(),
+                ));
+            }
+            if !dep.target.as_path().exists() {
+                return Err(Error::DependencyPathNotFound(
+                    dep.target.as_path().display().to_string(),
+                ));
+            }
+            if !dep.target.as_path().is_dir() {
+                return Err(Error::DependencyNotADirectory(
+                    dep.target.as_path().display().to_string(),
+                ));
+            }
+
+            if !is_valid_dependency_identifier(&dep.drp_name) {
+                if dep.drp_name == CRATE_STR {
+                    return Err(Error::ReservedDependencyKeyword(dep.drp_name));
+                }
+                return Err(Error::InvalidDependencyIdentifier(dep.drp_name));
+            }
+
+            // Reject duplicates: same context and same alias
+            if remappings.iter().any(|r: &Remapping| {
+                r.context_prefix == dep.context_prefix && r.drp_name == dep.drp_name
+            }) {
+                return Err(Error::DuplicateDependencyAlias(
+                    dep.drp_name.clone(),
+                    dep.context_prefix.as_path().display().to_string(),
+                ));
+            }
+
+            crate_roots.push(dep.target.clone());
+            remappings.push(dep);
+        }
+
+        // Sort package roots by length descending (for longest prefix match),
+        // and then alphabetically to group duplicates together for deduplication.
+        crate_roots.sort_by(|a, b| {
+            let len_a = a.as_path().as_os_str().len();
+            let len_b = b.as_path().as_os_str().len();
+            len_b.cmp(&len_a).then_with(|| a.cmp(b))
+        });
+        crate_roots.dedup();
+
+        let mut map = DependencyMap {
+            remappings,
+            package_roots: crate_roots,
+        };
+        map.sort_mappings();
+        Ok(map)
+    }
 }
 
 impl DependencyMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-
     /// Re-sort the vector in descending order so the longest context paths are always at the front.
     /// This mathematically guarantees that the first match we find is the most specific.
     fn sort_mappings(&mut self) {
-        self.inner.sort_by(|a, b| {
+        self.remappings.sort_by(|a, b| {
             let len_a = a.context_prefix.as_path().as_os_str().len();
             let len_b = b.context_prefix.as_path().as_os_str().len();
-            len_b.cmp(&len_a)
+            len_b
+                .cmp(&len_a)
+                .then_with(|| a.context_prefix.cmp(&b.context_prefix))
+                .then_with(|| a.drp_name.cmp(&b.drp_name))
         });
     }
 
-    /// Add a dependency mapped to a specific calling file's path prefix.
-    /// Re-sorts the vector internally to guarantee the Longest Prefix Match.
-    ///
-    /// # Arguments
-    ///
-    /// * `context` - The physical root directory where this dependency rule applies
-    ///   (e.g., `/workspace/frontend`).
-    /// * `drp_name` - The Dependency Root Path Name. This is the logical alias the
-    ///   programmer types in their source code (e.g., the `"math"` in `use math::vector;`).
-    /// * `target` - The physical directory where the compiler should actually
-    ///   look for the code (e.g., `/libs/frontend_math`).
-    pub fn insert(
-        &mut self,
-        context: CanonPath,
-        drp_name: String,
-        target: CanonPath,
-    ) -> io::Result<()> {
-        self.inner.push(Remapping {
-            context_prefix: context,
-            drp_name,
-            target,
-        });
-
-        self.sort_mappings();
-
-        Ok(())
+    /// Returns the package root for the given file, which corresponds to the
+    /// target directory of the most specific dependency or the entry root.
+    pub fn get_package_root(&self, current_file: &CanonPath) -> Option<&CanonPath> {
+        self.package_roots
+            .iter()
+            .find(|root| current_file.starts_with(root))
     }
 
     /// Resolve `use dependency_root_path_name::...` into a physical file path by finding the
@@ -183,72 +188,97 @@ impl DependencyMap {
         let parts = use_decl.path();
         let drp_name = use_decl.drp_name()?;
 
+        if drp_name == CRATE_STR {
+            return self.resolve_crate_path(current_file, use_decl, &parts);
+        }
+
         // Because the vector is sorted by longest prefix,
         // the VERY FIRST match we find is guaranteed to be the correct one.
-        for remapping in &self.inner {
+        for remapping in &self.remappings {
             if !current_file.starts_with(&remapping.context_prefix) {
                 continue;
             }
 
             // Check if the alias matches what the user typed
             if remapping.drp_name == drp_name {
-                let resolved = Self::build_and_verify_path(&remapping.target, &parts[1..])
-                    .map_err(|failed_path| {
-                        let err = if drp_name == CRATE_STR {
-                            Error::FileNotFound(failed_path)
-                        } else {
-                            Error::ExternalFileNotFound(drp_name.to_string(), failed_path)
-                        };
-                        RichError::new(err, *use_decl.span())
-                    })?;
-
-                self.check_local_file_imported_as_external(
-                    drp_name,
-                    current_file,
-                    &resolved,
-                    use_decl,
-                )?;
-
-                return Ok(resolved);
+                return self.resolve_external_path(remapping, current_file, use_decl, &parts);
             }
-        }
-
-        // If the unmapped root path is "crate", it means the compiler driver failed to configure the workspace root.
-        // "crate" explicitly signals local code and should never be treated as an unknown external library.
-        if drp_name == CRATE_STR {
-            return Err(Error::Internal(
-                "The 'crate' root path was not configured by the compiler.".to_string(),
-            ))
-            .with_span(*use_decl.span());
         }
 
         Err(Error::UnknownLibrary(drp_name.to_string())).with_span(*use_decl.span())
     }
 
+    fn resolve_external_path(
+        &self,
+        remapping: &Remapping,
+        current_file: &CanonPath,
+        use_decl: &UseDecl,
+        parts: &[&str],
+    ) -> Result<CanonPath, RichError> {
+        let drp_name = use_decl.drp_name()?;
+
+        let resolved =
+            Self::build_and_verify_path(&remapping.target, &parts[1..]).map_err(|failed_path| {
+                RichError::new(
+                    Error::ExternalFileNotFound(drp_name.to_string(), failed_path),
+                    *use_decl.span(),
+                )
+            })?;
+
+        if !resolved.starts_with(&remapping.target) {
+            return Err(RichError::new(
+                Error::ExternalFileNotFound(drp_name.to_string(), resolved.as_path().to_path_buf()),
+                *use_decl.span(),
+            ));
+        }
+
+        self.check_local_file_imported_as_external(current_file, &resolved, use_decl)?;
+
+        Ok(resolved)
+    }
+
+    /// Resolves `crate::...` imports into a physical file path.
+    fn resolve_crate_path(
+        &self,
+        current_file: &CanonPath,
+        use_decl: &UseDecl,
+        parts: &[&str],
+    ) -> Result<CanonPath, RichError> {
+        let root = self
+            .get_package_root(current_file)
+            .ok_or_else(|| {
+                Error::Internal(
+                    "The 'crate' root path was not configured by the compiler.".to_string(),
+                )
+            })
+            .map_err(|e| RichError::new(e, *use_decl.span()))?;
+
+        let resolved = Self::build_and_verify_path(root, &parts[1..]).map_err(|failed_path| {
+            RichError::new(Error::FileNotFound(failed_path), *use_decl.span())
+        })?;
+
+        if !resolved.starts_with(root) {
+            return Err(RichError::new(
+                Error::FileNotFound(resolved.as_path().to_path_buf()),
+                *use_decl.span(),
+            ));
+        }
+
+        Ok(resolved)
+    }
+
     /// Enforces that a local file is imported via `crate::` and not via an external alias.
     fn check_local_file_imported_as_external(
         &self,
-        drp_name: &str,
         current_file: &CanonPath,
         resolved: &CanonPath,
         use_decl: &UseDecl,
     ) -> Result<(), RichError> {
-        if drp_name == CRATE_STR {
-            return Ok(());
-        }
-
-        let current_crate = self
-            .inner
-            .iter()
-            .find(|r| current_file.starts_with(&r.context_prefix) && r.drp_name == CRATE_STR);
-
-        let resolved_crate = self
-            .inner
-            .iter()
-            .find(|r| resolved.starts_with(&r.context_prefix) && r.drp_name == CRATE_STR);
+        let current_crate = self.get_package_root(current_file);
+        let resolved_crate = self.get_package_root(resolved);
 
         if let (Some(curr), Some(res)) = (current_crate, resolved_crate) {
-            if curr.target == res.target {
+            if curr == res {
                 return Err(Error::LocalFileImportedAsExternal(
                     resolved.as_path().to_path_buf(),
                 ))
@@ -281,17 +311,12 @@ impl DependencyMap {
 pub(crate) mod tests {
     use crate::str::Identifier;
     use crate::test_utils::TempWorkspace;
+    use std::path::Path;
 
     use super::*;
 
     pub fn canon(p: &Path) -> CanonPath {
         CanonPath::canonicalize(p).unwrap_or_else(|_| CanonPath::dummy_for_test(p))
-    }
-
-    impl CanonPath {
-        pub fn dummy_for_test(path: &Path) -> Self {
-            Self(Arc::from(path))
-        }
     }
 
     /// Helper to easily construct a `UseDecl` for path resolution tests.
@@ -302,6 +327,26 @@ pub(crate) mod tests {
             .collect();
 
         UseDecl::dummy_path(path)
+    }
+
+    /// Attempting to manually map the `crate` keyword using `insert()` must result in an error.
+    #[test]
+    fn test_insert_crate_fails() {
+        let ws = TempWorkspace::new("insert_crate_fail");
+        let project_dir = canon(&ws.create_dir("workspace"));
+
+        let result = DependencyMapBuilder::new(project_dir.clone())
+            .add_dependency(
+                project_dir.clone(),
+                CRATE_STR.to_string(),
+                project_dir.clone(),
+            )
+            .build();
+
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::ReservedDependencyKeyword(_)
+        ));
     }
 
     /// When a user registers the same library dependency root path multiple times
@@ -318,18 +363,17 @@ pub(crate) mod tests {
         let target_v3 = canon(&ws.create_dir("lib/math_v3"));
         let target_v2 = canon(&ws.create_dir("lib/math_v2"));
 
-        let mut map = DependencyMap::new();
-        map.insert(workspace_dir.clone(), "math".to_string(), target_v1)
-            .unwrap();
-        map.insert(nested_dir.clone(), "math".to_string(), target_v3)
-            .unwrap();
-        map.insert(project_a_dir.clone(), "math".to_string(), target_v2)
+        let map = DependencyMapBuilder::new(workspace_dir.clone())
+            .add_dependency(workspace_dir.clone(), "math".to_string(), target_v1)
+            .add_dependency(nested_dir.clone(), "math".to_string(), target_v3)
+            .add_dependency(project_a_dir.clone(), "math".to_string(), target_v2)
+            .build()
             .unwrap();
 
         // The longest prefixes should bubble to the top
-        assert_eq!(map.inner[0].context_prefix, nested_dir);
-        assert_eq!(map.inner[1].context_prefix, project_a_dir);
-        assert_eq!(map.inner[2].context_prefix, workspace_dir);
+        assert_eq!(map.remappings[0].context_prefix, nested_dir);
+        assert_eq!(map.remappings[1].context_prefix, project_a_dir);
+        assert_eq!(map.remappings[2].context_prefix, workspace_dir);
     }
 
     /// Projects should not be able to "steal" or accidentally access dependencies
@@ -342,8 +386,9 @@ pub(crate) mod tests {
         let target_utils = canon(&ws.create_dir("libs/utils_a"));
         let current_file = canon(&ws.create_file("project_b/main.simf", ""));
 
-        let mut map = DependencyMap::new();
-        map.insert(project_a, "utils".to_string(), target_utils)
+        let map = DependencyMapBuilder::new(project_a.clone())
+            .add_dependency(project_a, "utils".to_string(), target_utils)
+            .build()
             .unwrap();
 
         let use_decl = create_dummy_use_decl(&["utils"]);
@@ -362,30 +407,26 @@ pub(crate) mod tests {
     fn test_resolve_longest_prefix_match() {
         let ws = TempWorkspace::new("resolve_prefix");
 
-        // 1. Setup Global Context
         let global_context = canon(&ws.create_dir("workspace"));
         let global_target = canon(&ws.create_dir("libs/global_math"));
         let global_expected = canon(&ws.create_file("libs/global_math/vector.simf", ""));
 
-        // 2. Setup Frontend Context
         let frontend_context = canon(&ws.create_dir("workspace/frontend"));
         let frontend_target = canon(&ws.create_dir("libs/frontend_math"));
         let frontend_expected = canon(&ws.create_file("libs/frontend_math/vector.simf", ""));
 
-        let mut map = DependencyMap::new();
-        map.insert(global_context, "math".to_string(), global_target)
-            .unwrap();
-        map.insert(frontend_context, "math".to_string(), frontend_target)
+        let map = DependencyMapBuilder::new(global_context.clone())
+            .add_dependency(global_context, "math".to_string(), global_target)
+            .add_dependency(frontend_context, "math".to_string(), frontend_target)
+            .build()
             .unwrap();
 
         let use_decl = create_dummy_use_decl(&["math", "vector"]);
 
-        // 3. Test Frontend Override
         let frontend_file = canon(&ws.create_file("workspace/frontend/src/main.simf", ""));
         let resolved_frontend = map.resolve_path(&frontend_file, &use_decl).unwrap();
         assert_eq!(resolved_frontend, frontend_expected);
 
-        // 4. Test Global Fallback
         let backend_file = canon(&ws.create_file("workspace/backend/src/main.simf", ""));
         let resolved_backend = map.resolve_path(&backend_file, &use_decl).unwrap();
         assert_eq!(resolved_backend, global_expected);
@@ -400,21 +441,14 @@ pub(crate) mod tests {
         ws.create_file("workspace/utils.simf", "");
         let current_file = canon(&ws.create_file("workspace/main.simf", ""));
 
-        let mut map = DependencyMap::new();
-        // The driver sets up the crate root
-        map.insert(
-            project_dir.clone(),
-            CRATE_STR.to_string(),
-            project_dir.clone(),
-        )
-        .unwrap();
-        // The user tries to alias a folder inside their own project as an external dependency
-        map.insert(
-            project_dir.clone(),
-            "utils_lib".to_string(),
-            project_dir.clone(),
-        )
-        .unwrap();
+        let map = DependencyMapBuilder::new(project_dir.clone())
+            .add_dependency(
+                project_dir.clone(),
+                "utils_lib".to_string(),
+                project_dir.clone(),
+            )
+            .build()
+            .unwrap();
 
         let use_decl = create_dummy_use_decl(&["utils_lib", "utils"]);
         let result = map.resolve_path(&current_file, &use_decl);
@@ -435,13 +469,9 @@ pub(crate) mod tests {
         let expected = canon(&ws.create_file("workspace/utils.simf", ""));
         let current_file = canon(&ws.create_file("workspace/main.simf", ""));
 
-        let mut map = DependencyMap::new();
-        map.insert(
-            project_dir.clone(),
-            CRATE_STR.to_string(),
-            project_dir.clone(),
-        )
-        .unwrap();
+        let map = DependencyMapBuilder::new(project_dir.clone())
+            .build()
+            .unwrap();
 
         let use_decl = create_dummy_use_decl(&[CRATE_STR, "utils"]);
         let result = map.resolve_path(&current_file, &use_decl).unwrap();
@@ -449,14 +479,16 @@ pub(crate) mod tests {
         assert_eq!(result, expected);
     }
 
-    /// It proves that the compiler throws an Internal error if the driver forgets
-    /// to map the "crate" dependency, rather than an `UnknownLibrary` error.
+    /// It proves that the compiler throws an Internal error if a file attempting
+    /// to resolve `crate::` is mysteriously located completely outside any known
+    /// package root.
     #[test]
     fn test_crate_unconfigured_error() {
         let ws = TempWorkspace::new("crate_unconf");
         let current_file = canon(&ws.create_file("workspace/main.simf", ""));
 
-        let map = DependencyMap::new();
+        let other_dir = canon(&ws.create_dir("other_dir"));
+        let map = DependencyMapBuilder::new(other_dir).build().unwrap();
 
         let use_decl = create_dummy_use_decl(&[CRATE_STR, "utils"]);
         let result = map.resolve_path(&current_file, &use_decl);
@@ -480,12 +512,205 @@ pub(crate) mod tests {
 
         let current_file = canon(&ws.create_file("workspace/frontend/src/main.simf", ""));
 
-        let mut map = DependencyMap::new();
-        map.insert(context, "math".to_string(), target).unwrap();
+        let map = DependencyMapBuilder::new(context.clone())
+            .add_dependency(context, "math".to_string(), target)
+            .build()
+            .unwrap();
 
         let use_decl = create_dummy_use_decl(&["math", "vector"]);
         let result = map.resolve_path(&current_file, &use_decl).unwrap();
 
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_builder_rejects_file_as_directory() {
+        let ws = TempWorkspace::new("file_as_dir");
+        let file_path = canon(&ws.create_file("workspace/not_a_dir.simf", ""));
+        let valid_dir = canon(&ws.create_dir("workspace/valid_dir"));
+
+        let res1 = DependencyMapBuilder::new(file_path.clone()).build();
+        assert!(matches!(
+            res1.unwrap_err(),
+            Error::DependencyNotADirectory(_)
+        ));
+
+        let res2 = DependencyMapBuilder::new(valid_dir.clone())
+            .add_dependency(file_path.clone(), "alias".to_string(), valid_dir.clone())
+            .build();
+        assert!(matches!(
+            res2.unwrap_err(),
+            Error::DependencyNotADirectory(_)
+        ));
+
+        let res3 = DependencyMapBuilder::new(valid_dir.clone())
+            .add_dependency(valid_dir.clone(), "alias".to_string(), file_path)
+            .build();
+        assert!(matches!(
+            res3.unwrap_err(),
+            Error::DependencyNotADirectory(_)
+        ));
+    }
+
+    #[test]
+    fn test_builder_rejects_non_existent_paths() {
+        let ws = TempWorkspace::new("non_existent");
+        let valid_dir = canon(&ws.create_dir("workspace/valid_dir"));
+        let fake_path = CanonPath::dummy_for_test(Path::new("/does/not/exist/in/this/universe"));
+
+        let res = DependencyMapBuilder::new(valid_dir.clone())
+            .add_dependency(valid_dir.clone(), "alias".to_string(), fake_path)
+            .build();
+        assert!(matches!(res.unwrap_err(), Error::DependencyPathNotFound(_)));
+    }
+
+    #[test]
+    fn test_builder_rejects_invalid_identifiers() {
+        let ws = TempWorkspace::new("invalid_idents");
+        let valid_dir = canon(&ws.create_dir("workspace/valid_dir"));
+
+        let bad_aliases = vec!["", "123lib", "my-lib", "lib!", " space "];
+
+        for bad_alias in bad_aliases {
+            let res = DependencyMapBuilder::new(valid_dir.clone())
+                .add_dependency(valid_dir.clone(), bad_alias.to_string(), valid_dir.clone())
+                .build();
+            assert!(
+                matches!(res.unwrap_err(), Error::InvalidDependencyIdentifier(_)),
+                "Builder should reject alias: '{}'",
+                bad_alias
+            );
+        }
+    }
+
+    #[test]
+    fn test_builder_rejects_reserved_keywords() {
+        let ws = TempWorkspace::new("reserved_keywords");
+        let valid_dir = canon(&ws.create_dir("workspace/valid_dir"));
+
+        let keywords = crate::lexer::KEYWORDS.to_vec();
+
+        for kw in keywords {
+            let res = DependencyMapBuilder::new(valid_dir.clone())
+                .add_dependency(valid_dir.clone(), kw.to_string(), valid_dir.clone())
+                .build();
+            let err = res.unwrap_err();
+            if kw == CRATE_STR {
+                assert!(matches!(err, Error::ReservedDependencyKeyword(_)));
+            } else {
+                assert!(matches!(err, Error::InvalidDependencyIdentifier(_)));
+            }
+        }
+    }
+
+    #[test]
+    fn test_builder_rejects_duplicates() {
+        let ws = TempWorkspace::new("duplicates");
+        let valid_dir = canon(&ws.create_dir("workspace/valid_dir"));
+        let target1 = canon(&ws.create_dir("workspace/target1"));
+        let target2 = canon(&ws.create_dir("workspace/target2"));
+
+        let res = DependencyMapBuilder::new(valid_dir.clone())
+            .add_dependency(valid_dir.clone(), "alias".to_string(), target1)
+            .add_dependency(valid_dir.clone(), "alias".to_string(), target2)
+            .build();
+
+        assert!(matches!(
+            res.unwrap_err(),
+            Error::DuplicateDependencyAlias(..)
+        ));
+    }
+
+    #[test]
+    fn test_resolve_rejects_escaping_package_root() {
+        let ws = TempWorkspace::new("escaping_root");
+        let context = canon(&ws.create_dir("workspace"));
+        let target = canon(&ws.create_dir("libs/target"));
+        let current_file = canon(&ws.create_file("workspace/main.simf", ""));
+
+        let _outside_file = canon(&ws.create_file("libs/escaped.simf", ""));
+
+        let map = DependencyMapBuilder::new(context.clone())
+            .add_dependency(context, "alias".to_string(), target.clone())
+            .build()
+            .unwrap();
+
+        let use_decl = create_dummy_use_decl(&["alias", "..", "escaped"]);
+        let result = map.resolve_path(&current_file, &use_decl);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    /// A dependency package should not be able to expose a symlinked source file
+    /// whose canonical path escapes the dependency root.
+    #[cfg(unix)]
+    #[test]
+    fn test_dependency_symlink_escape_rejected() {
+        let ws = TempWorkspace::new("dependency_symlink_escape");
+
+        let workspace_dir = canon(&ws.create_dir("workspace"));
+        let dependency_dir_path = ws.create_dir("deps/package");
+        let escaped_file = ws.create_file("outside/foo.simf", "");
+        std::os::unix::fs::symlink(&escaped_file, dependency_dir_path.join("foo.simf")).unwrap();
+
+        let dependency_dir = canon(&dependency_dir_path);
+        let current_file = canon(&ws.create_file("workspace/main.simf", ""));
+
+        let map = DependencyMapBuilder::new(workspace_dir.clone())
+            .add_dependency(workspace_dir, "dep".to_string(), dependency_dir)
+            .build()
+            .unwrap();
+
+        let use_decl = create_dummy_use_decl(&["dep", "foo"]);
+        map.resolve_path(&current_file, &use_decl)
+            .expect_err("dependency symlink escape was accepted");
+    }
+
+    /// It proves that the builder correctly deduplicates `package_roots`
+    /// even if multiple roots have the exact same string length.
+    #[test]
+    fn test_package_roots_deduplication() {
+        let ws = TempWorkspace::new("dedup_roots");
+
+        let workspace_dir = canon(&ws.create_dir("workspace"));
+        let lib_a = canon(&ws.create_dir("workspace/libs/A"));
+        let lib_b = canon(&ws.create_dir("workspace/libs/B"));
+
+        let map = DependencyMapBuilder::new(workspace_dir.clone())
+            .add_dependency(workspace_dir.clone(), "lib_a".to_string(), lib_a.clone())
+            .add_dependency(workspace_dir.clone(), "lib_b".to_string(), lib_b.clone())
+            .add_dependency(lib_b.clone(), "lib_a".to_string(), lib_a.clone())
+            .build()
+            .unwrap();
+
+        // The package roots should only contain workspace_dir, lib_a, and lib_b (exactly 3 unique roots).
+        assert_eq!(
+            map.package_roots.len(),
+            3,
+            "Package roots were not correctly deduplicated"
+        );
+    }
+
+    /// It proves that if a dependency is nested physically inside the entry root,
+    /// files inside the dependency correctly resolve `crate::` to their own sandbox boundary,
+    /// and NOT the parent workspace boundary.
+    #[test]
+    fn test_crate_resolves_to_closest_package_root() {
+        let ws = TempWorkspace::new("closest_root");
+        let workspace_dir = canon(&ws.create_dir("workspace"));
+        let lib_dir = canon(&ws.create_dir("workspace/libs/math"));
+
+        let map = DependencyMapBuilder::new(workspace_dir.clone())
+            .add_dependency(workspace_dir.clone(), "math".to_string(), lib_dir.clone())
+            .build()
+            .unwrap();
+
+        let lib_file = canon(&ws.create_file("workspace/libs/math/vector.simf", ""));
+        let lib_crate = map.get_package_root(&lib_file).unwrap();
+        assert_eq!(
+            lib_crate, &lib_dir,
+            "Nested dependency did not securely shadow the parent workspace root"
+        );
     }
 }

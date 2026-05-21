@@ -255,24 +255,14 @@ pub fn lex<'src>(input: &'src str) -> (Option<Tokens<'src>>, Vec<crate::error::R
     )
 }
 
+/// A list of all reserved keywords.
+pub const KEYWORDS: &[&str] = &[
+    "pub", "use", "as", "fn", "let", "type", "mod", "const", "match", CRATE_STR, "true", "false",
+];
+
 /// Checks whether a given string is a keyword.
-#[cfg(feature = "arbitrary")]
 pub fn is_keyword(s: &str) -> bool {
-    matches!(
-        s,
-        "pub"
-            | "use"
-            | "as"
-            | "fn"
-            | "let"
-            | "type"
-            | "mod"
-            | "const"
-            | "match"
-            | CRATE_STR
-            | "true"
-            | "false"
-    )
+    KEYWORDS.contains(&s)
 }
 
 #[cfg(test)]

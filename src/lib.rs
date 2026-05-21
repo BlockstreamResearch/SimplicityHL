@@ -16,6 +16,8 @@ pub mod num;
 pub mod parse;
 pub mod pattern;
 pub mod resolution;
+pub mod source;
+
 #[cfg(feature = "serde")]
 mod serde;
 pub mod str;
@@ -39,7 +41,8 @@ use crate::debug::DebugSymbols;
 use crate::driver::DependencyGraph;
 use crate::error::{ErrorCollector, WithContent, WithSource as _};
 use crate::parse::ParseFromStrWithErrors;
-use crate::resolution::{DependencyMap, SourceFile};
+use crate::resolution::DependencyMap;
+use crate::source::SourceFile;
 pub use crate::types::ResolvedType;
 pub use crate::value::Value;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
@@ -72,22 +75,17 @@ impl TemplateProgram {
                 .ok_or_else(|| error_handler.to_string())?;
 
         // 2. Create the driver program
-        let driver_program: driver::Program = if dependency_map.is_empty() {
-            driver::Program::from_parse(&parsed_program, source.content(), &mut error_handler)
-                .ok_or_else(|| error_handler.to_string())?
-        } else {
-            let graph = DependencyGraph::new(
-                source.clone(),
-                Arc::from(dependency_map.clone()),
-                &parsed_program,
-                &mut error_handler,
-            )?
-            .ok_or_else(|| error_handler.to_string())?;
+        let graph = DependencyGraph::new(
+            source.clone(),
+            Arc::from(dependency_map.clone()),
+            &parsed_program,
+            &mut error_handler,
+        )?
+        .ok_or_else(|| error_handler.to_string())?;
 
-            graph
-                .linearize_and_build(&mut error_handler)?
-                .ok_or_else(|| error_handler.to_string())?
-        };
+        let driver_program: driver::Program = graph
+            .linearize_and_build(&mut error_handler)?
+            .ok_or_else(|| error_handler.to_string())?;
 
         // 3. AST Analysis
         let ast_program = ast::Program::analyze(&driver_program).with_source(source.clone())?;
@@ -399,6 +397,10 @@ pub trait ArbitraryOfType: Sized {
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::parse::ParseFromStr;
+    use crate::resolution::tests::canon;
+    use crate::resolution::DependencyMapBuilder;
+    use crate::source::CanonPath;
+    use crate::test_utils::TempWorkspace;
     use base64::display::Base64Display;
     use base64::engine::general_purpose::STANDARD;
     use simplicity::BitMachine;
@@ -494,32 +496,18 @@ pub(crate) mod tests {
             I: IntoIterator<Item = (P, K, P)>,
             K: Into<String>,
         {
-            let mut dependency_map = DependencyMap::new();
-
-            if let Some(parent) = prog_path.as_ref().parent() {
-                let canon_root = crate::resolution::tests::canon(parent);
-                let _ = dependency_map.insert(
-                    canon_root.clone(),
-                    crate::driver::CRATE_STR.to_string(),
-                    canon_root,
-                );
-            }
+            let parent = prog_path.as_ref().parent().unwrap();
+            let canon_root = canon(parent);
+            let mut builder = DependencyMapBuilder::new(canon_root);
 
             for (context, alias, target) in dependencies {
-                let context = crate::resolution::tests::canon(context.as_ref());
-                let target = crate::resolution::tests::canon(target.as_ref());
+                let context = canon(context.as_ref());
+                let target = canon(target.as_ref());
 
-                dependency_map
-                    .insert(context.clone(), alias.into(), target.clone())
-                    .unwrap();
-
-                // Treat each mapped dependency as an isolated external package to satisfy strict local-file checks
-                let _ = dependency_map.insert(
-                    target.clone(),
-                    crate::driver::CRATE_STR.to_string(),
-                    target,
-                );
+                builder = builder.add_dependency(context, alias.into(), target);
             }
+
+            let dependency_map = builder.build().unwrap();
 
             TestCase::<TemplateProgram>::template_deps(prog_path.as_ref(), &dependency_map)
                 .with_arguments(Arguments::default())
@@ -725,9 +713,6 @@ pub(crate) mod tests {
 
     #[test]
     fn test_crate_keyword_compilation_success() {
-        use crate::resolution::{CanonPath, DependencyMap};
-        use crate::test_utils::TempWorkspace;
-
         let ws = TempWorkspace::new("crate_success");
         let root = ws.create_dir("workspace");
         ws.create_file(
@@ -740,15 +725,9 @@ pub(crate) mod tests {
         );
 
         let main_path = root.join("main.simf");
-        let mut dependency_map = DependencyMap::new();
         let canon_root = CanonPath::canonicalize(&root).unwrap();
-        dependency_map
-            .insert(
-                canon_root.clone(),
-                crate::driver::CRATE_STR.to_string(),
-                canon_root,
-            )
-            .unwrap();
+
+        let dependency_map = DependencyMapBuilder::new(canon_root).build().unwrap();
 
         TestCase::<TemplateProgram>::template_deps(&main_path, &dependency_map)
             .with_arguments(Arguments::default())
@@ -1162,18 +1141,18 @@ mod error_tests {
     use super::*;
 
     use crate::resolution::tests::canon;
-    use crate::resolution::CanonPath;
+    use crate::resolution::DependencyMapBuilder;
+    use crate::source::CanonPath;
     use crate::test_utils::TempWorkspace;
 
     fn dependency_map(root_dir: &Path, drp: &str, lib_dir: &Path) -> DependencyMap {
-        let mut dependency_map = DependencyMap::new();
-
         let context = CanonPath::canonicalize(root_dir).unwrap();
         let target = CanonPath::canonicalize(lib_dir).unwrap();
 
-        dependency_map.insert(context, drp.into(), target).unwrap();
-
-        dependency_map
+        DependencyMapBuilder::new(context.clone())
+            .add_dependency(context, drp.into(), target)
+            .build()
+            .unwrap()
     }
 
     fn source_file(path: &Path) -> SourceFile {
@@ -1211,6 +1190,7 @@ mod error_tests {
     #[test]
     fn omitted_context_dependency_applies_inside_dependency_files() {
         let ws = TempWorkspace::new("omitted_context_dependency");
+        let root_dir = ws.create_dir("workspace");
         let lib_dir = ws.create_dir("workspace/lib");
         let main_path = ws.create_file(
             "workspace/main.simf",
@@ -1222,7 +1202,7 @@ mod error_tests {
         );
         ws.create_file("workspace/lib/base.simf", "pub fn one() -> u32 { 1 }\n");
 
-        let dependencies = dependency_map(&main_path, "lib", &lib_dir);
+        let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
         let _err = TemplateProgram::new_with_dep(source_file(&main_path), &dependencies)
             .expect_err("omitted-context dependencies");
     }
@@ -1333,7 +1313,7 @@ mod functional_tests {
     }
 
     #[test]
-    #[should_panic(expected = "not found")]
+    #[should_panic(expected = "DependencyPathNotFound")]
     fn file_not_found_error() {
         run_dependency_test(
             format!("{}/file-not-found", ERROR_TESTS_DIR).as_str(),
@@ -1342,7 +1322,7 @@ mod functional_tests {
     }
 
     #[test]
-    #[should_panic(expected = "not found")]
+    #[should_panic(expected = "DependencyPathNotFound")]
     fn lib_not_found_error() {
         run_dependency_test(format!("{}/lib-not-found", ERROR_TESTS_DIR).as_str(), "lib");
     }

@@ -3,8 +3,8 @@ use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
 use simplicityhl::{
-    driver::CRATE_STR,
-    resolution::{CanonPath, DependencyMap, SourceFile},
+    resolution::DependencyMapBuilder,
+    source::{CanonPath, SourceFile},
     AbiMeta, CompiledProgram,
 };
 use std::path::Path;
@@ -129,16 +129,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_many::<String>("dependencies")
         .unwrap_or_default();
 
-    let mut dependencies = DependencyMap::new();
-
-    // Automatically assign the `crate` root to the project directory
     let canon_root = main_path
         .as_path()
         .parent()
-        .and_then(|p| CanonPath::canonicalize(p).ok());
-    if let Some(ref canon) = canon_root {
-        let _ = dependencies.insert(canon.clone(), CRATE_STR.to_string(), canon.clone());
-    }
+        .and_then(|p| CanonPath::canonicalize(p).ok())
+        .ok_or("Failed to determine project root directory from entry file")?;
+
+    let mut builder = DependencyMapBuilder::new(canon_root.clone());
 
     for arg in dep_args {
         let (left_side, path_str) = arg.split_once('=').unwrap_or_else(|| {
@@ -155,27 +152,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let canon_path = CanonPath::canonicalize(Path::new(ctx_str))?;
             (canon_path, alias_str)
         } else {
-            // No context provided (e.g., math=...). Bind it to the workspace root (or main file if root failed)!
-            (
-                canon_root.clone().unwrap_or_else(|| main_path.clone()),
-                left_side,
-            )
+            // No context provided (e.g., math=...). Bind it to the workspace root!
+            (canon_root.clone(), left_side)
         };
 
         let target_path = CanonPath::canonicalize(Path::new(path_str))?;
 
-        if let Err(e) = dependencies.insert(context_path, alias.to_string(), target_path.clone()) {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
-        }
-
-        // Treat the external package as an isolated boundary, allowing it to use `crate::` internally
-        if let Err(e) = dependencies.insert(target_path.clone(), CRATE_STR.to_string(), target_path)
-        {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
-        }
+        builder = builder.add_dependency(context_path, alias.to_string(), target_path);
     }
+
+    let dependencies = match builder.build() {
+        Ok(map) => map,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    };
 
     let source = SourceFile::new(main_path.as_path(), std::sync::Arc::from(main_text));
     let compiled =
