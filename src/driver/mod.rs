@@ -38,7 +38,8 @@ use chumsky::container::Container;
 
 use crate::error::{Error, ErrorCollector, RichError, Span};
 use crate::parse::{self, ParseFromStrWithErrors};
-use crate::resolution::{CanonPath, DependencyMap, SourceFile};
+use crate::resolution::DependencyMap;
+use crate::source::{CanonPath, CanonSourceFile, SourceFile};
 
 pub use crate::driver::resolve_order::{FileScoped, Program, SymbolTable};
 
@@ -46,57 +47,10 @@ pub use crate::driver::resolve_order::{FileScoped, Program, SymbolTable};
 pub(crate) const MAIN_STR: &str = "main";
 
 /// The reserved identifier for the local workspace root.
-pub const CRATE_STR: &str = "crate";
+pub(crate) const CRATE_STR: &str = "crate";
 
 /// The root node index in the [`DependencyGraph`] representing the entry file.
 pub(crate) const MAIN_MODULE: usize = 0;
-
-/// Caches the canonicalized path of a source file to prevent redundant,
-/// expensive, and potentially failing filesystem operations.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct CanonSourceFile {
-    /// The path of the source file (e.g., "./src/main.simf").
-    name: CanonPath,
-    /// The actual text content of the source file.
-    content: Arc<str>,
-}
-
-impl TryFrom<SourceFile> for CanonSourceFile {
-    type Error = String;
-
-    fn try_from(source: SourceFile) -> Result<Self, Self::Error> {
-        let name = if let Some(root_name) = source.name() {
-            CanonPath::canonicalize(root_name)?
-        } else {
-            return Err(
-                "Cannot canonicalize the SourceFile because it is missing a file name.".to_string(),
-            );
-        };
-
-        Ok(CanonSourceFile {
-            name,
-            content: source.content(),
-        })
-    }
-}
-
-impl CanonSourceFile {
-    pub fn new(name: CanonPath, content: Arc<str>) -> Self {
-        Self { name, content }
-    }
-
-    pub fn name(&self) -> &CanonPath {
-        &self.name
-    }
-
-    pub fn str_name(&self) -> String {
-        self.name.as_path().display().to_string()
-    }
-
-    pub fn content(&self) -> Arc<str> {
-        self.content.clone()
-    }
-}
 
 /// Represents a single, isolated file in the SimplicityHL project.
 /// In this architecture, a file and a module are the exact same thing.
@@ -351,6 +305,7 @@ impl DependencyGraph {
 pub(crate) mod tests {
     use super::*;
     use crate::resolution::tests::canon;
+    use crate::resolution::DependencyMapBuilder;
     use crate::test_utils::TempWorkspace;
 
     /// Initializes a raw graph environment for testing, explicitly allowing for and capturing failure states.
@@ -389,15 +344,10 @@ pub(crate) mod tests {
         let lib_dir = canon(&ws.create_dir("workspace/libs/lib"));
 
         // Set up the dependency map for imports (e.g. `use lib::...`)
-        let mut map = DependencyMap::new();
-        map.insert(workspace_dir.clone(), "lib".to_string(), lib_dir.clone())
-            .expect("Failed to insert dependency map");
-
-        // Register the strict crate boundaries so local files are forced to use `crate::`
-        map.insert(workspace_dir.clone(), CRATE_STR.to_string(), workspace_dir)
-            .expect("Failed to insert workspace crate boundary");
-        map.insert(lib_dir.clone(), CRATE_STR.to_string(), lib_dir)
-            .expect("Failed to insert library crate boundary");
+        let map = DependencyMapBuilder::new(workspace_dir.clone())
+            .add_dependency(workspace_dir.clone(), "lib".to_string(), lib_dir.clone())
+            .build()
+            .expect("Failed to create dependency map");
         let map = Arc::new(map);
 
         let mut root_file_path = None;

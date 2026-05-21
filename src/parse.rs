@@ -24,7 +24,7 @@ use crate::impl_eq_hash;
 use crate::lexer::Token;
 use crate::num::NonZeroPow2Usize;
 use crate::pattern::Pattern;
-use crate::resolution::SourceFile;
+use crate::source::SourceFile;
 use crate::str::{
     AliasName, Binary, Decimal, FunctionName, Hexadecimal, Identifier, JetName, ModuleName,
     SymbolName, WitnessName,
