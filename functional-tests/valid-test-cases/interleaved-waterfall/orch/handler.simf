@@ -1,3 +1,5 @@
+#![compiler_version("0.6.0-rc.0")]
+
 use auth::verify::is_valid;
 use db::store::get_record;
 use types::def::UserId;

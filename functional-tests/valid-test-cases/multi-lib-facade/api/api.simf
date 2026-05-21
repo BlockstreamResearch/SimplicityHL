@@ -1,3 +1,5 @@
+#![compiler_version("0.6.0-rc.0")]
+
 pub use crypto::crypto::mock_hash;
 pub use math::math::MathInt;
 pub use math::math::add_two;

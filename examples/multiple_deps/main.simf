@@ -1,3 +1,5 @@
+#![compiler_version("0.6.0-rc.0")]
+
 use merkle::build_root::{get_root, hash as and_hash};
 use base_math::simple_op::hash as or_hash;
 

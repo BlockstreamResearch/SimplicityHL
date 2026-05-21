@@ -220,15 +220,19 @@ mod tests {
 
     #[test]
     fn witness_reuse() {
-        let s = r#"fn main() {
+        let s = format!(
+            "#![compiler_version(\"{}\")]\n{}",
+            env!("CARGO_PKG_VERSION"),
+            r#"fn main() {
     assert!(jet::eq_32(witness::A, witness::A));
-}"#;
-        let parse_program = parse::Program::parse_from_str(s).expect("parsing works");
+}"#
+        );
+        let parse_program = parse::Program::parse_from_str(&s).expect("parsing works");
 
         let mut error_collector = ErrorCollector::new();
         let driver_program = driver::resolve_order::Program::from_parse(
             &parse_program,
-            Arc::from(s),
+            Arc::from(s.as_str()),
             &mut error_collector,
         )
         .expect("driver works");
@@ -241,9 +245,13 @@ mod tests {
 
     #[test]
     fn witness_type_mismatch() {
-        let s = r#"fn main() {
+        let s = format!(
+            "#![compiler_version(\"{}\")]\n{}",
+            env!("CARGO_PKG_VERSION"),
+            r#"fn main() {
     assert!(jet::is_zero_32(witness::A));
-}"#;
+}"#
+        );
 
         let witness = WitnessValues::from(HashMap::from([(
             WitnessName::from_str_unchecked("A"),
@@ -260,13 +268,17 @@ mod tests {
 
     #[test]
     fn witness_outside_main() {
-        let s = r#"fn f() -> u32 {
+        let s = format!(
+            "#![compiler_version(\"{}\")]\n{}",
+            env!("CARGO_PKG_VERSION"),
+            r#"fn f() -> u32 {
     witness::OUTPUT_OF_F
 }
 
 fn main() {
     assert!(jet::is_zero_32(f()));
-}"#;
+}"#
+        );
 
         match CompiledProgram::new(s, Arguments::default(), false) {
             Ok(_) => panic!("Witness outside main was falsely accepted"),

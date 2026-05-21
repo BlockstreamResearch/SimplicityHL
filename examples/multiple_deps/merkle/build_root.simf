@@ -1,3 +1,5 @@
+#![compiler_version("0.6.0-rc.0")]
+
 use math::simple_op::hash as temp_hash;
 
 pub fn get_root(tx1: u32, tx2: u32) -> u32 {

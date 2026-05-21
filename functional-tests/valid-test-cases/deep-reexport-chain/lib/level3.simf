@@ -1,2 +1,4 @@
+#![compiler_version("0.6.0-rc.0")]
+
 pub type CoreSmth = u32;
 pub fn core_val() -> CoreSmth { 42 }

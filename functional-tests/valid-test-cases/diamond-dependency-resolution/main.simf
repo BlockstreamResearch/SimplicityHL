@@ -1,3 +1,5 @@
+#![compiler_version("0.6.0-rc.0")]
+
 use lib::left::get_left;
 use lib::right::get_right;
 use lib::base::BaseType;

@@ -1,2 +1,4 @@
+#![compiler_version("0.6.0-rc.0")]
+
 pub type Coin = u64;
 pub fn mint(val: u64) -> Coin { val }

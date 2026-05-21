@@ -34,18 +34,121 @@ use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
 /// A program is a sequence of items.
 #[derive(Clone, Debug)]
 pub struct Program {
+    version: Option<(String, Span)>,
     items: Arc<[Item]>,
     span: Span,
 }
 
 impl Program {
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_ref().map(|(v, _)| v.as_str())
+    }
+
+    pub fn version_span(&self) -> Option<Span> {
+        self.version.as_ref().map(|(_, s)| *s)
+    }
+
     /// Access the items of the program.
     pub fn items(&self) -> &[Item] {
         &self.items
     }
+
+    /// Checks if the program's declared compiler version matches the current compiler version.
+    pub fn check_version(&self, source: &SourceFile, handler: &mut ErrorCollector) {
+        let compiler_version = env!("CARGO_PKG_VERSION");
+
+        match (self.version(), self.version_span()) {
+            (Some(v), Some(span)) => {
+                let compiler_semver = semver::Version::parse(compiler_version)
+                    .expect("CARGO_PKG_VERSION is always valid semver");
+
+                match semver::VersionReq::parse(v) {
+                    Ok(req) if req.matches(&compiler_semver) => {}
+                    Ok(req)
+                        if {
+                            let mut stable_compiler = compiler_semver.clone();
+                            stable_compiler.pre = semver::Prerelease::EMPTY;
+                            req.matches(&stable_compiler)
+                                && req.comparators.iter().all(|c| c.pre.is_empty())
+                        } => {}
+                    Ok(_) => {
+                        let req_str = v.to_string();
+                        let comp_str = compiler_version.to_string();
+
+                        let err = if req_str.starts_with('=')
+                            || req_str.chars().next().is_some_and(|c| c.is_ascii_digit())
+                        {
+                            Error::SimcVersionExactMismatch {
+                                required: req_str,
+                                current: comp_str,
+                            }
+                        } else {
+                            let bare_version_str = req_str
+                                .trim_start_matches(|c: char| !c.is_ascii_digit())
+                                .split(|c: char| c.is_whitespace() || c == ',')
+                                .next()
+                                .unwrap_or("");
+
+                            if let Ok(bare_version) = semver::Version::parse(bare_version_str) {
+                                if compiler_semver < bare_version
+                                    || (compiler_semver == bare_version
+                                        && req_str.trim_start().starts_with('>'))
+                                {
+                                    Error::SimcVersionCompilerTooOld {
+                                        required: req_str,
+                                        current: comp_str,
+                                    }
+                                } else {
+                                    Error::SimcVersionContractTooOld {
+                                        required: req_str,
+                                        current: comp_str,
+                                    }
+                                }
+                            } else {
+                                Error::SimcVersionIncompatible {
+                                    required: req_str,
+                                    current: comp_str,
+                                }
+                            }
+                        };
+                        handler.push(RichError::new(err, span).with_source(source.clone()));
+                    }
+                    Err(e) => {
+                        handler.push(
+                            RichError::new(Error::InvalidSimcVersionSyntax(e.to_string()), span)
+                                .with_source(source.clone()),
+                        );
+                    }
+                }
+            }
+            (None, _) | (_, None) => {
+                let first_item_span =
+                    self.items()
+                        .first()
+                        .map_or(Span::new(0, 0), |item| match item {
+                            Item::TypeAlias(t) => *t.as_ref(),
+                            Item::Function(f) => *f.as_ref(),
+                            Item::Module => Span::new(0, 0),
+                            Item::Use(u) => *u.span(),
+                        });
+
+                let insertion_point = Span::new(first_item_span.start, first_item_span.start);
+
+                handler.push(
+                    RichError::new(
+                        Error::MissingSimcVersion {
+                            compiler: compiler_version.to_string(),
+                        },
+                        insertion_point,
+                    )
+                    .with_source(source.clone()),
+                );
+            }
+        }
+    }
 }
 
-impl_eq_hash!(Program; items);
+impl_eq_hash!(Program; version, items);
 
 /// An item is a component of a program.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -160,7 +263,7 @@ impl<'a> arbitrary::Arbitrary<'a> for UseDecl {
 /// Aliases the specific identifier of an imported type to a new, local identifier
 pub type AliasedSymbolName = (SymbolName, Option<SymbolName>);
 
-/// Specified the items being brought into scope at the end of a `use` declaration
+/// Specifies the items being brought into scope at the end of a `use` declaration
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum UseItems {
@@ -668,6 +771,9 @@ impl ModuleAssignment {
 
 impl fmt::Display for Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(version) = &self.version() {
+            writeln!(f, "#![compiler_version(\"{}\")]\n", version)?;
+        }
         for item in self.items() {
             writeln!(f, "{item}")?;
         }
@@ -1324,6 +1430,19 @@ impl ChumskyParse for Program {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
+        // Parses: # ! [ compiler_version ( "..." ) ]
+        let compiler_version_attr = just(Token::Hash)
+            .ignore_then(just(Token::Bang))
+            .ignore_then(just(Token::LBracket))
+            .ignore_then(just(Token::Ident("compiler_version")))
+            .ignore_then(just(Token::LParen))
+            .ignore_then(select! { Token::StringLiteral(s) => s.to_string() })
+            .then_ignore(just(Token::RParen))
+            .then_ignore(just(Token::RBracket))
+            .map_with(|version, e| (version, e.span()))
+            .or_not() // Making it optional, just like we agreed!
+            .labelled("compiler version attribute");
+
         let skip_until_next_item = any()
             .then(
                 any()
@@ -1338,11 +1457,16 @@ impl ChumskyParse for Program {
             // map to empty module
             .map_with(|_, _| Item::Module);
 
-        Item::parser()
-            .recover_with(via_parser(skip_until_next_item))
-            .repeated()
-            .collect::<Vec<Item>>()
-            .map_with(|items, e| Program {
+        // Combine the attribute and the items
+        compiler_version_attr
+            .then(
+                Item::parser()
+                    .recover_with(via_parser(skip_until_next_item))
+                    .repeated()
+                    .collect::<Vec<Item>>(),
+            )
+            .map_with(|(version, items), e| Program {
+                version,
                 items: Arc::from(items),
                 span: e.span(),
             })
@@ -2215,6 +2339,7 @@ impl<'a> arbitrary::Arbitrary<'a> for Program {
 
         let items: Arc<[Item]> = items_vec.into();
         Ok(Self {
+            version: Some(("0.4.1".to_string(), Span::DUMMY)),
             items,
             span: Span::DUMMY,
         })

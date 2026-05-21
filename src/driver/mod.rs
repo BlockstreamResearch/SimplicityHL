@@ -30,6 +30,9 @@
 mod linearization;
 pub(crate) mod resolve_order;
 
+#[cfg(test)]
+mod version_tests;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -187,7 +190,7 @@ impl DependencyGraph {
         root_program: &parse::Program,
         handler: &mut ErrorCollector,
     ) -> Result<Option<Self>, String> {
-        let root_canon_source = CanonSourceFile::try_from(root_source)?;
+        let root_canon_source = CanonSourceFile::try_from(root_source.clone())?;
 
         let mut graph = Self {
             modules: vec![Module {
@@ -268,6 +271,10 @@ impl DependencyGraph {
         let source = CanonSourceFile::new(path.clone(), Arc::from(content));
 
         let ast = parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler);
+
+        if let Some(parsed) = &ast {
+            parsed.check_version(&source.clone().into(), &mut error_handler);
+        }
 
         if error_handler.has_errors() {
             handler.extend_with_handler(source, &error_handler);
@@ -406,11 +413,22 @@ pub(crate) mod tests {
         // Create all requested files
         for (path, content) in files {
             let full_path = format!("workspace/{}", path);
-            let created_file = canon(&ws.create_file(&full_path, content));
+            let injected_content = if content.trim_start().starts_with("#![compiler_version")
+                || content.contains("// NO_INJECT")
+            {
+                content.to_string()
+            } else {
+                format!(
+                    "#![compiler_version(\"{}\")]\n{}",
+                    env!("CARGO_PKG_VERSION"),
+                    content
+                )
+            };
+            let created_file = canon(&ws.create_file(&full_path, &injected_content));
 
             if path == "main.simf" {
                 root_file_path = Some(created_file);
-                root_content = content.to_string();
+                root_content = injected_content;
             }
         }
 
@@ -424,6 +442,8 @@ pub(crate) mod tests {
         let Some(main_program) = main_program_option else {
             return (None, HashMap::new(), ws, handler);
         };
+
+        main_program.check_version(&main_source, &mut handler);
 
         let graph_option =
             DependencyGraph::new(main_source, map, &main_program, &mut handler).unwrap();
