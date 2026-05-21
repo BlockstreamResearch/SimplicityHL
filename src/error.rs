@@ -11,7 +11,6 @@ use chumsky::util::MaybeRef;
 use chumsky::DefaultExpected;
 
 use itertools::Itertools;
-use simplicity::elements;
 
 use crate::lexer::Token;
 use crate::parse::MatchPattern;
@@ -150,7 +149,7 @@ impl<T> WithSource<T> for Result<T, RichError> {
 /// An error enriched with context.
 ///
 /// Records _what_ happened and _where_.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct RichError {
     /// The error that occurred.
     ///
@@ -404,7 +403,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone)]
 pub struct ErrorCollector {
     /// Collected errors.
     errors: Vec<RichError>,
@@ -472,7 +471,7 @@ impl fmt::Display for ErrorCollector {
 /// An individual error.
 ///
 /// Records _what_ happened but not where.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub enum Error {
     DependencyPathNotFound(String),
     DependencyNotADirectory(String),
@@ -495,7 +494,15 @@ pub enum Error {
     // TODO: Remove CompileError once SimplicityHL has a type system
     // The SimplicityHL compiler should never produce ill-typed Simplicity code
     // The compiler can only be this precise if it knows a type system at least as expressive as Simplicity's
-    CannotCompile(String),
+    CannotCompile {
+        source: simplicity::types::Error,
+    },
+    ParseInt {
+        source: std::num::ParseIntError,
+    },
+    ParseCrateInt {
+        source: crate::num::ParseIntError,
+    },
     JetDoesNotExist(JetName),
     InvalidCast(ResolvedType, ResolvedType),
     FileNotFound(PathBuf),
@@ -532,6 +539,7 @@ pub enum Error {
     ModuleRedefined(ModuleName),
     ArgumentMissing(WitnessName),
     ArgumentTypeMismatch(WitnessName, ResolvedType, ResolvedType),
+    UseKeywordIsNotSupported,
 }
 
 #[rustfmt::skip]
@@ -602,10 +610,11 @@ impl fmt::Display for Error {
                 f,
                 "Match arm `{pattern1}` is incompatible with arm `{pattern2}`"
             ),
-            Error::CannotCompile(description) => write!(
+            Error::CannotCompile{ .. } => write!(
                 f,
-                "Failed to compile to Simplicity: {description}"
+                "Failed to compile to Simplicity"
             ),
+            Error::ParseInt { .. } | Error::ParseCrateInt { .. } => write!(f, "Integer parsing error"),
             Error::JetDoesNotExist(name) => write!(
                 f,
                 "Jet `{name}` does not exist"
@@ -738,11 +747,24 @@ impl fmt::Display for Error {
                 f,
                 "Parameter `{name}` was declared with type `{declared}` but its assigned argument is of type `{assigned}`"
             ),
+            Error::UseKeywordIsNotSupported => write!(
+                f,
+                "The `use` keyword is not supported yet"
+            ),
         }
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::ParseInt { source } => Some(source),
+            Error::ParseCrateInt { source } => Some(source),
+            Error::CannotCompile { source } => Some(source),
+            _ => None,
+        }
+    }
+}
 
 impl Error {
     /// Update the error with the affected span.
@@ -751,27 +773,21 @@ impl Error {
     }
 }
 
-impl From<elements::hex::Error> for Error {
-    fn from(error: elements::hex::Error) -> Self {
-        Self::CannotParse(error.to_string())
-    }
-}
-
 impl From<std::num::ParseIntError> for Error {
     fn from(error: std::num::ParseIntError) -> Self {
-        Self::CannotParse(error.to_string())
+        Self::ParseInt { source: error }
     }
 }
 
 impl From<crate::num::ParseIntError> for Error {
     fn from(error: crate::num::ParseIntError) -> Self {
-        Self::CannotParse(error.to_string())
+        Self::ParseCrateInt { source: error }
     }
 }
 
 impl From<simplicity::types::Error> for Error {
     fn from(error: simplicity::types::Error) -> Self {
-        Self::CannotCompile(error.to_string())
+        Self::CannotCompile { source: error }
     }
 }
 

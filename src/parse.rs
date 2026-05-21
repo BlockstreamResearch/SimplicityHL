@@ -136,7 +136,7 @@ impl UseDecl {
     }
 }
 
-impl_eq_hash!(UseDecl; visibility, path, drp_name, items);
+impl_eq_hash!(UseDecl; visibility, path, items);
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for UseDecl {
@@ -2469,12 +2469,12 @@ mod test {
     #[test]
     fn test_reject_redefined_builtin_type() {
         let ty = TypeAlias::parse_from_str("type Ctx8 = u32")
-            .expect_err("Redifining built-in alias should be rejected");
+            .expect_err("Redefining built-in alias should be rejected");
 
-        assert_eq!(
-            ty.error(),
-            &Error::RedefinedAliasAsBuiltin(AliasName::from_str_unchecked("Ctx8"))
-        );
+        assert!(ty
+            .error()
+            .to_string()
+            .contains("Type alias `Ctx8` is already exists as built-in alias"));
     }
 
     #[test]

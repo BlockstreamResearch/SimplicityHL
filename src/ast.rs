@@ -896,7 +896,7 @@ impl AbstractSyntaxTree for Item {
                 Function::analyze(function, ty, scope).map(Self::Function)
             }
             parse::Item::Use(use_decl) => Err(RichError::new(
-                Error::CannotCompile("The `use` keyword is not supported yet.".to_string()),
+                Error::UseKeywordIsNotSupported,
                 *use_decl.span(),
             )),
             parse::Item::Module => Ok(Self::Module),
