@@ -607,11 +607,11 @@ Using the notation of BIP-0341, it returns the SHA256 hash of c[33: 33 + 32m]."#
 - The result of [`output_surjection_proofs_hash`] (32 bytes).
 - The result of [`input_utxos_hash`] (32 bytes)."#,
         // Time locks
-        Elements::CheckLockDistance => r#"**Deprecated; do not use.** Assert that the value returned by [`tx_lock_distance`] is greater than or equal to the given value.
+        Elements::BrokenDoNotUseCheckLockDistance => r#"**Deprecated; do not use.** Assert that the value returned by [`tx_lock_distance`] is greater than or equal to the given value.
 
 ## Panics
 The assertion fails."#,
-        Elements::CheckLockDuration => r#"**Deprecated; do not use.** Assert that the value returned by [`tx_lock_duration`] is greater than or equal to the given value.
+        Elements::BrokenDoNotUseCheckLockDuration => r#"**Deprecated; do not use.** Assert that the value returned by [`tx_lock_duration`] is greater than or equal to the given value.
 
 ## Panics
 The assertion fails"#,
@@ -624,8 +624,8 @@ The assertion fails."#,
 ## Panics
 The assertion fails."#,
         Elements::TxIsFinal => "Check if the sequence numbers of all transaction inputs are at their maximum value.",
-        Elements::TxLockDistance => "**Deprecated; do not use.** If [`version`] returns 2 or greater, then return the greatest valid [`Distance`] value of any transaction input. Return zeroes otherwise.",
-        Elements::TxLockDuration => "**Deprecated; do not use.** If [`version`] returns 2 or greater, then return the greatest valid [`Duration`] value of any transaction input. Return zeroes otherwise.",
+        Elements::BrokenDoNotUseTxLockDistance => "**Deprecated; do not use.** If [`version`] returns 2 or greater, then return the greatest valid [`Distance`] value of any transaction input. Return zeroes otherwise.",
+        Elements::BrokenDoNotUseTxLockDuration => "**Deprecated; do not use.** If [`version`] returns 2 or greater, then return the greatest valid [`Duration`] value of any transaction input. Return zeroes otherwise.",
         Elements::TxLockHeight => "If [`tx_is_final`] returns false, then try to parse the transaction's lock time as a [`Height`] value. Return zeroes otherwise.",
         Elements::TxLockTime   => "If [`tx_is_final`] returns false, then try to parse the transaction's lock time as a [`Time`] value. Return zeroes otherwise.",
         // Issuance
@@ -794,10 +794,10 @@ Return zero for any asset without fees."#,
     fn is_deprecated(&self) -> bool {
         matches!(
             self,
-            Elements::CheckLockDistance
-                | Elements::CheckLockDuration
-                | Elements::TxLockDistance
-                | Elements::TxLockDuration
+            Elements::BrokenDoNotUseCheckLockDistance
+                | Elements::BrokenDoNotUseCheckLockDuration
+                | Elements::BrokenDoNotUseTxLockDistance
+                | Elements::BrokenDoNotUseTxLockDuration
                 | Elements::CheckSigVerify
                 | Elements::Verify
         )
@@ -991,7 +991,7 @@ const SIGNATURE_HASH_MODES: [Elements; 35] = [
 ];
 #[rustfmt::skip]
 const TIME_LOCKS: [Elements; 9] = [
-    Elements::CheckLockDistance, Elements::CheckLockDuration, Elements::CheckLockHeight, Elements::CheckLockTime, Elements::TxIsFinal, Elements::TxLockDistance, Elements::TxLockDuration, Elements::TxLockHeight, Elements::TxLockTime
+    Elements::BrokenDoNotUseCheckLockDistance, Elements::BrokenDoNotUseCheckLockDuration, Elements::CheckLockHeight, Elements::CheckLockTime, Elements::TxIsFinal, Elements::BrokenDoNotUseTxLockDistance, Elements::BrokenDoNotUseTxLockDuration, Elements::TxLockHeight, Elements::TxLockTime
 ];
 #[rustfmt::skip]
 const ISSUANCE: [Elements; 9] = [

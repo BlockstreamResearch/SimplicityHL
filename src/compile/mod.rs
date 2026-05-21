@@ -26,7 +26,7 @@ use crate::value::StructuralValue;
 use crate::witness::Arguments;
 use crate::Value;
 
-type ProgNode<'brand> = Arc<named::ConstructNode<'brand, Elements>>;
+type ProgNode<'brand> = Arc<named::ConstructNode<'brand>>;
 
 /// Each SimplicityHL expression expects an _input value_.
 /// A SimplicityHL expression is translated into a Simplicity expression
@@ -263,7 +263,7 @@ impl Program {
         &self,
         arguments: Arguments,
         include_debug_symbols: bool,
-    ) -> Result<Arc<named::CommitNode<Elements>>, RichError> {
+    ) -> Result<Arc<named::CommitNode>, RichError> {
         types::Context::with_context(|ctx| {
             let mut scope = Scope::new(
                 ctx,
@@ -379,7 +379,7 @@ impl Call {
 
         match self.name() {
             CallName::Jet(name) => {
-                let jet = ProgNode::jet(scope.ctx(), *name);
+                let jet = ProgNode::jet(scope.ctx(), name);
                 scope.with_debug_symbol(args, &jet, self)
             }
             CallName::UnwrapLeft(..) => {
@@ -410,7 +410,7 @@ impl Call {
                 args.comp(&body).with_span(self)
             }
             CallName::Assert => {
-                let jet = ProgNode::jet(scope.ctx(), Elements::Verify);
+                let jet = ProgNode::jet(scope.ctx(), &Elements::Verify);
                 scope.with_debug_symbol(args, &jet, self)
             }
             CallName::Panic => {
