@@ -39,7 +39,7 @@ use chumsky::container::Container;
 use crate::error::{Error, ErrorCollector, RichError, Span};
 use crate::parse::{self, ParseFromStrWithErrors};
 use crate::resolution::DependencyMap;
-use crate::source::{CanonPath, CanonSourceFile, SourceFile};
+use crate::source::{CanonPath, CanonSourceFile};
 
 pub use crate::driver::resolve_order::{FileScoped, Program, SymbolTable};
 
@@ -133,30 +133,25 @@ impl DependencyGraph {
     ///
     /// # Errors
     ///
-    /// This function will return an `Err(String)` only for critical internal compiler errors
-    /// (e.g., if a provided `SourceFile` is unexpectedly missing its underlying file path).
+    /// This function will return an `Err(String)` only for critical internal compiler errors.
     pub fn new(
-        root_source: SourceFile,
+        root_source: CanonSourceFile,
         dependency_map: Arc<DependencyMap>,
         root_program: &parse::Program,
         handler: &mut ErrorCollector,
     ) -> Result<Option<Self>, String> {
-        let root_canon_source = CanonSourceFile::try_from(root_source)?;
-
         let mut graph = Self {
             modules: vec![Module {
-                source: root_canon_source.clone(),
+                source: root_source.clone(),
                 parsed_program: root_program.clone(),
             }],
             dependency_map,
             lookup: HashMap::new(),
-            paths: vec![root_canon_source.name().clone()],
+            paths: vec![root_source.name().clone()],
             dependencies: HashMap::new(),
         };
 
-        graph
-            .lookup
-            .insert(root_canon_source.name().clone(), MAIN_MODULE);
+        graph.lookup.insert(root_source.name().clone(), MAIN_MODULE);
         graph.dependencies.insert(MAIN_MODULE, Vec::new());
 
         let mut queue = VecDeque::new();
@@ -366,17 +361,16 @@ pub(crate) mod tests {
 
         let root_p = root_file_path.expect("main.simf must be defined in file list");
         let main_canon_source = CanonSourceFile::new(root_p, Arc::from(root_content));
-        let main_source = SourceFile::from(main_canon_source);
 
         let main_program_option =
-            parse::Program::parse_from_str_with_errors(main_source.clone(), &mut handler);
+            parse::Program::parse_from_str_with_errors(main_canon_source.clone(), &mut handler);
 
         let Some(main_program) = main_program_option else {
             return (None, HashMap::new(), ws, handler);
         };
 
         let graph_option =
-            DependencyGraph::new(main_source, map, &main_program, &mut handler).unwrap();
+            DependencyGraph::new(main_canon_source, map, &main_program, &mut handler).unwrap();
 
         let mut file_ids = HashMap::new();
 

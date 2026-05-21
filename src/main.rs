@@ -3,9 +3,8 @@ use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
 use simplicityhl::{
-    resolution::DependencyMapBuilder,
-    source::{CanonPath, SourceFile},
-    AbiMeta, CompiledProgram,
+    resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
+    CompiledProgram,
 };
 use std::path::Path;
 use std::{env, fmt};
@@ -169,7 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let source = SourceFile::new(main_path.as_path(), std::sync::Arc::from(main_text));
+    let source = CanonSourceFile::new(main_path.clone(), std::sync::Arc::from(main_text));
     let compiled =
         match CompiledProgram::new_with_dep(source, &dependencies, args_opt, include_debug_symbols)
         {
