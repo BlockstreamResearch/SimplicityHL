@@ -28,6 +28,7 @@ fn slow_input(program_text: &str) -> bool {
 fn do_test(data: &[u8]) -> libfuzzer_sys::Corpus {
     use arbitrary::Arbitrary;
     use libfuzzer_sys::Corpus;
+    use simplicityhl::ast::ElementsJetHinter;
     use simplicityhl::{ArbitraryOfType, Arguments};
 
     let mut u = arbitrary::Unstructured::new(data);
@@ -39,7 +40,10 @@ fn do_test(data: &[u8]) -> libfuzzer_sys::Corpus {
     if slow_input(&program_text) {
         return Corpus::Reject;
     }
-    let template = match simplicityhl::TemplateProgram::new(program_text) {
+    let template = match simplicityhl::TemplateProgram::new(
+        program_text,
+        Box::new(ElementsJetHinter::new()),
+    ) {
         Ok(x) => x,
         Err(..) => return Corpus::Keep,
     };

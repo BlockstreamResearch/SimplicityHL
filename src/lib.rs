@@ -51,10 +51,11 @@ pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 /// The template of a SimplicityHL program.
 ///
 /// A template has parameterized values that need to be supplied with arguments.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct TemplateProgram {
     simfony: ast::Program,
     file: Arc<str>,
+    jet_hinter: Box<dyn ast::JetHinter>,
 }
 
 impl TemplateProgram {
@@ -66,6 +67,7 @@ impl TemplateProgram {
     pub fn new_with_dep(
         source: CanonSourceFile,
         dependency_map: &DependencyMap,
+        jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
         let mut error_handler = ErrorCollector::new();
 
@@ -88,10 +90,12 @@ impl TemplateProgram {
             .ok_or_else(|| error_handler.to_string())?;
 
         // 3. AST Analysis
-        let ast_program = ast::Program::analyze(&driver_program).with_source(source.clone())?;
+        let ast_program = ast::Program::analyze(&driver_program, jet_hinter.clone_box())
+            .with_source(source.clone())?;
         Ok(Self {
             simfony: ast_program,
             file: source.content(),
+            jet_hinter,
         })
     }
 
@@ -100,7 +104,10 @@ impl TemplateProgram {
     /// ## Errors
     ///
     /// The string is not a valid SimplicityHL program.
-    pub fn new<Str: Into<Arc<str>>>(s: Str) -> Result<Self, String> {
+    pub fn new<Str: Into<Arc<str>>>(
+        s: Str,
+        jet_hinter: Box<dyn ast::JetHinter>,
+    ) -> Result<Self, String> {
         let file = s.into();
         let source = SourceFile::anonymous(file.clone());
         let mut error_handler = ErrorCollector::new();
@@ -113,10 +120,12 @@ impl TemplateProgram {
         };
 
         if let Some(program) = driver_program {
-            let ast_program = ast::Program::analyze(&program).with_content(Arc::clone(&file))?;
+            let ast_program = ast::Program::analyze(&program, jet_hinter.clone_box())
+                .with_content(Arc::clone(&file))?;
             Ok(Self {
                 simfony: ast_program,
                 file,
+                jet_hinter,
             })
         } else {
             Err(ErrorCollector::to_string(&error_handler))?
@@ -150,7 +159,11 @@ impl TemplateProgram {
 
         let commit = self
             .simfony
-            .compile(arguments, include_debug_symbols)
+            .compile(
+                arguments,
+                include_debug_symbols,
+                self.jet_hinter.clone_box(),
+            )
             .with_content(Arc::clone(&self.file))?;
 
         Ok(CompiledProgram {
@@ -190,8 +203,9 @@ impl CompiledProgram {
         dependency_map: &DependencyMap,
         arguments: Arguments,
         include_debug_symbols: bool,
+        jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        TemplateProgram::new_with_dep(source, dependency_map)
+        TemplateProgram::new_with_dep(source, dependency_map, jet_hinter.clone_box())
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -205,8 +219,9 @@ impl CompiledProgram {
         s: Str,
         arguments: Arguments,
         include_debug_symbols: bool,
+        jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        TemplateProgram::new(s)
+        TemplateProgram::new(s, jet_hinter.clone_box())
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -290,8 +305,9 @@ impl SatisfiedProgram {
         arguments: Arguments,
         witness_values: WitnessValues,
         include_debug_symbols: bool,
+        jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        let compiled = CompiledProgram::new(s, arguments, include_debug_symbols)?;
+        let compiled = CompiledProgram::new(s, arguments, include_debug_symbols, jet_hinter)?;
         compiled.satisfy(witness_values)
     }
 
@@ -396,6 +412,7 @@ pub trait ArbitraryOfType: Sized {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::ast::ElementsJetHinter;
     use crate::parse::ParseFromStr;
     use crate::resolution::tests::canon;
     use crate::resolution::DependencyMapBuilder;
@@ -429,7 +446,11 @@ pub(crate) mod tests {
                 Arc::from(program_text),
             );
 
-            let program = match TemplateProgram::new_with_dep(source, dependency_map) {
+            let program = match TemplateProgram::new_with_dep(
+                source,
+                dependency_map,
+                Box::new(ElementsJetHinter::new()),
+            ) {
                 Ok(x) => x,
                 Err(error) => panic!("{error}"),
             };
@@ -443,7 +464,10 @@ pub(crate) mod tests {
         }
 
         pub fn template_text(program_text: Cow<str>) -> Self {
-            let program = match TemplateProgram::new(program_text.as_ref()) {
+            let program = match TemplateProgram::new(
+                program_text.as_ref(),
+                Box::new(ElementsJetHinter::new()),
+            ) {
                 Ok(x) => x,
                 Err(error) => panic!("{error}"),
             };
@@ -743,7 +767,7 @@ pub(crate) mod tests {
     #[test]
     fn test_anonymous_source_compiles_without_dependencies() {
         let code = "fn main() { assert!(true); }";
-        let program = TemplateProgram::new(code);
+        let program = TemplateProgram::new(code, Box::new(ElementsJetHinter::new()));
         assert!(
             program.is_ok(),
             "TemplateProgram::new should successfully compile anonymous source files without requiring canonical paths"
@@ -949,6 +973,7 @@ fn main() {
             Arguments::default(),
             WitnessValues::default(),
             false,
+            Box::new(ElementsJetHinter::new()),
         ) {
             Ok(_) => panic!("Accepted faulty program"),
             Err(error) => {
@@ -1155,6 +1180,7 @@ mod error_tests {
 
     use super::*;
 
+    use crate::ast::ElementsJetHinter;
     use crate::resolution::tests::canon;
     use crate::resolution::DependencyMapBuilder;
     use crate::source::CanonPath;
@@ -1192,8 +1218,12 @@ mod error_tests {
 
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
 
-        let err = TemplateProgram::new_with_dep(source_file(&main_path), &dependencies)
-            .expect_err("dependency body has a type error");
+        let err = TemplateProgram::new_with_dep(
+            source_file(&main_path),
+            &dependencies,
+            Box::new(ElementsJetHinter::new()),
+        )
+        .expect_err("dependency body has a type error");
         let dependency_source = canon(&bad_path).as_path().display().to_string();
 
         assert!(
@@ -1218,8 +1248,12 @@ mod error_tests {
         ws.create_file("workspace/lib/base.simf", "pub fn one() -> u32 { 1 }\n");
 
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
-        let _err = TemplateProgram::new_with_dep(source_file(&main_path), &dependencies)
-            .expect_err("omitted-context dependencies");
+        let _err = TemplateProgram::new_with_dep(
+            source_file(&main_path),
+            &dependencies,
+            Box::new(ElementsJetHinter::new()),
+        )
+        .expect_err("omitted-context dependencies");
     }
 
     #[test]
@@ -1233,8 +1267,12 @@ mod error_tests {
         );
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
 
-        let err = TemplateProgram::new_with_dep(source_file(&main_path), &dependencies)
-            .expect_err("missing imported module should fail");
+        let err = TemplateProgram::new_with_dep(
+            source_file(&main_path),
+            &dependencies,
+            Box::new(ElementsJetHinter::new()),
+        )
+        .expect_err("missing imported module should fail");
 
         assert!(
             err.contains("missing.simf"),
