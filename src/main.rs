@@ -2,6 +2,7 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
+use simplicityhl::ast::ElementsJetHinter;
 use simplicityhl::{
     resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
     CompiledProgram,
@@ -169,15 +170,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let source = CanonSourceFile::new(main_path.clone(), std::sync::Arc::from(main_text));
-    let compiled =
-        match CompiledProgram::new_with_dep(source, &dependencies, args_opt, include_debug_symbols)
-        {
-            Ok(program) => program,
-            Err(e) => {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
-        };
+    let compiled = match CompiledProgram::new_with_dep(
+        source,
+        &dependencies,
+        args_opt,
+        include_debug_symbols,
+        Box::new(ElementsJetHinter::new()),
+    ) {
+        Ok(program) => program,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
 
     #[cfg(feature = "serde")]
     let witness_opt = matches

@@ -213,6 +213,7 @@ impl crate::ArbitraryOfType for Arguments {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::ElementsJetHinter;
     use crate::error::ErrorCollector;
     use crate::parse::ParseFromStr;
     use crate::value::ValueConstructible;
@@ -232,7 +233,9 @@ mod tests {
             &mut error_collector,
         )
         .expect("driver works");
-        match ast::Program::analyze(&driver_program).map_err(Error::from) {
+        match ast::Program::analyze(&driver_program, Box::new(ElementsJetHinter::new()))
+            .map_err(Error::from)
+        {
             Ok(_) => panic!("Witness reuse was falsely accepted"),
             Err(Error::WitnessReused(..)) => {}
             Err(error) => panic!("Unexpected error: {error}"),
@@ -249,7 +252,13 @@ mod tests {
             WitnessName::from_str_unchecked("A"),
             Value::u16(42),
         )]));
-        match SatisfiedProgram::new(s, Arguments::default(), witness, false) {
+        match SatisfiedProgram::new(
+            s,
+            Arguments::default(),
+            witness,
+            false,
+            Box::new(ElementsJetHinter::new()),
+        ) {
             Ok(_) => panic!("Ill-typed witness assignment was falsely accepted"),
             Err(error) => assert_eq!(
                 "Witness `A` was declared with type `u32` but its assigned value is of type `u16`",
@@ -268,7 +277,12 @@ fn main() {
     assert!(jet::is_zero_32(f()));
 }"#;
 
-        match CompiledProgram::new(s, Arguments::default(), false) {
+        match CompiledProgram::new(
+            s,
+            Arguments::default(),
+            false,
+            Box::new(ElementsJetHinter::new()),
+        ) {
             Ok(_) => panic!("Witness outside main was falsely accepted"),
             Err(error) => {
                 assert!(error

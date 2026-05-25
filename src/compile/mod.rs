@@ -5,19 +5,17 @@ mod builtins;
 use std::sync::Arc;
 
 use either::Either;
-use simplicity::jet::Elements;
 use simplicity::node::{CoreConstructible as _, JetConstructible as _};
 use simplicity::{types, Cmr, FailEntropy};
 
 use self::builtins::array_fold;
 use crate::array::{BTreeSlice, Partition};
 use crate::ast::{
-    Call, CallName, Expression, ExpressionInner, Match, Program, SingleExpression,
+    Call, CallName, Expression, ExpressionInner, JetHinter, Match, Program, SingleExpression,
     SingleExpressionInner, Statement,
 };
 use crate::debug::CallTracker;
 use crate::error::{Error, RichError, Span, WithSpan};
-use crate::jet::JetHL;
 use crate::named::{self, CoreExt, PairBuilder};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::pattern::{BasePattern, Pattern};
@@ -39,7 +37,7 @@ type ProgNode<'brand> = Arc<named::ConstructNode<'brand>>;
 /// Each (nested) block expression introduces a new scope.
 /// Bindings from inner scopes overwrite bindings from outer scopes.
 /// Bindings live as long as their scope.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Scope<'brand> {
     /// For each scope, the set of assigned variables.
     ///
@@ -73,6 +71,7 @@ struct Scope<'brand> {
     /// Values for parameters inside the SimplicityHL program.
     arguments: Arguments,
     include_debug_symbols: bool,
+    jet_hinter: Box<dyn JetHinter>,
 }
 
 impl<'brand> Scope<'brand> {
@@ -89,6 +88,7 @@ impl<'brand> Scope<'brand> {
         call_tracker: Arc<CallTracker>,
         arguments: Arguments,
         include_debug_symbols: bool,
+        jet_hinter: Box<dyn JetHinter>,
     ) -> Self {
         Self {
             variables: vec![vec![Pattern::Ignore]],
@@ -96,6 +96,7 @@ impl<'brand> Scope<'brand> {
             call_tracker,
             arguments,
             include_debug_symbols,
+            jet_hinter,
         }
     }
 
@@ -107,6 +108,7 @@ impl<'brand> Scope<'brand> {
             call_tracker: Arc::clone(&self.call_tracker),
             arguments: self.arguments.clone(),
             include_debug_symbols: self.include_debug_symbols,
+            jet_hinter: self.jet_hinter.clone_box(),
         }
     }
 
@@ -264,6 +266,7 @@ impl Program {
         &self,
         arguments: Arguments,
         include_debug_symbols: bool,
+        jet_hinter: Box<dyn JetHinter>,
     ) -> Result<Arc<named::CommitNode>, RichError> {
         types::Context::with_context(|ctx| {
             let mut scope = Scope::new(
@@ -271,6 +274,7 @@ impl Program {
                 Arc::clone(self.call_tracker()),
                 arguments,
                 include_debug_symbols,
+                jet_hinter,
             );
 
             let main = self.main();
@@ -380,7 +384,7 @@ impl Call {
 
         match self.name() {
             CallName::Jet(name) => {
-                let jet = ProgNode::jet(scope.ctx(), name);
+                let jet = ProgNode::jet(scope.ctx(), name.as_jet());
                 scope.with_debug_symbol(args, &jet, self)
             }
             CallName::UnwrapLeft(..) => {
@@ -411,7 +415,7 @@ impl Call {
                 args.comp(&body).with_span(self)
             }
             CallName::Assert => {
-                let jet = ProgNode::jet(scope.ctx(), &*Elements::verify());
+                let jet = ProgNode::jet(scope.ctx(), scope.jet_hinter.construct_verify().as_jet());
                 scope.with_debug_symbol(args, &jet, self)
             }
             CallName::Panic => {
