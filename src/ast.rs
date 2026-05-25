@@ -728,7 +728,7 @@ impl Scope {
         let resolved_type = self
             .aliases
             .get(&global_id)
-            .ok_or_else(|| Error::UndefinedAlias(name.clone()))?;
+            .ok_or_else(|| Error::UndefinedAlias { name: name.clone() })?;
 
         // 3. Fetch the file scope for visibility checking.
         let file_scope = self
@@ -772,7 +772,7 @@ impl Scope {
     pub fn insert_alias(&mut self, name: AliasName, ty: AliasedType) -> Result<(), Error> {
         let plug = (name.clone(), self.file_id);
         if self.aliases.contains_key(&plug) {
-            return Err(Error::RedefinedAlias(name));
+            return Err(Error::RedefinedAlias { name });
         }
 
         let _ = self.aliases.insert(plug, self.resolve(&ty)?);
@@ -810,7 +810,7 @@ impl Scope {
         }
 
         match self.witnesses.entry(name.clone()) {
-            Entry::Occupied(_) => Err(Error::WitnessReused(name)),
+            Entry::Occupied(_) => Err(Error::WitnessReused { name }),
             Entry::Vacant(entry) => {
                 entry.insert(ty);
                 Ok(())
@@ -844,7 +844,7 @@ impl Scope {
         let func_name_id = (name.clone(), self.file_id);
 
         if self.functions.contains_key(&func_name_id) {
-            return Err(Error::FunctionRedefined(name));
+            return Err(Error::FunctionRedefined { name });
         }
 
         let _ = self.functions.insert(func_name_id, function);
@@ -880,7 +880,7 @@ impl Scope {
         let function = self
             .functions
             .get(&global_id)
-            .ok_or_else(|| Error::FunctionUndefined(name.clone()))?;
+            .ok_or_else(|| Error::FunctionUndefined { name: name.clone() })?;
 
         // TODO: Consider changing it to a better error handler with a source file.
         let file_scope = self
@@ -946,7 +946,10 @@ impl Program {
 
         let main = iter.next().ok_or(Error::MainRequired).with_span(from)?;
         if iter.next().is_some() {
-            return Err(Error::FunctionRedefined(FunctionName::main())).with_span(from);
+            return Err(Error::FunctionRedefined {
+                name: FunctionName::main(),
+            })
+            .with_span(from);
         }
         Ok(Self {
             main,
@@ -1166,7 +1169,7 @@ impl AbstractSyntaxTree for SingleExpression {
             parse::SingleExpressionInner::Decimal(decimal) => {
                 let ty = ty
                     .as_integer()
-                    .ok_or(Error::ExpressionUnexpectedType(ty.clone()))
+                    .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
                     .with_span(from)?;
                 UIntValue::parse_decimal(decimal, ty)
                     .with_span(from)
@@ -1176,7 +1179,7 @@ impl AbstractSyntaxTree for SingleExpression {
             parse::SingleExpressionInner::Binary(bits) => {
                 let ty = ty
                     .as_integer()
-                    .ok_or(Error::ExpressionUnexpectedType(ty.clone()))
+                    .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
                     .with_span(from)?;
                 let value = UIntValue::parse_binary(bits, ty).with_span(from)?;
                 SingleExpressionInner::Constant(Value::from(value))
@@ -1200,7 +1203,9 @@ impl AbstractSyntaxTree for SingleExpression {
             parse::SingleExpressionInner::Variable(identifier) => {
                 let bound_ty = scope
                     .get_variable(identifier)
-                    .ok_or(Error::UndefinedVariable(identifier.clone()))
+                    .ok_or(Error::UndefinedVariable {
+                        identifier: identifier.clone(),
+                    })
                     .with_span(from)?;
                 if ty != bound_ty {
                     return Err(Error::ExpressionTypeMismatch {
@@ -1220,10 +1225,10 @@ impl AbstractSyntaxTree for SingleExpression {
             parse::SingleExpressionInner::Tuple(tuple) => {
                 let types = ty
                     .as_tuple()
-                    .ok_or(Error::ExpressionUnexpectedType(ty.clone()))
+                    .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
                     .with_span(from)?;
                 if tuple.len() != types.len() {
-                    return Err(Error::ExpressionUnexpectedType(ty.clone())).with_span(from);
+                    return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }).with_span(from);
                 }
                 tuple
                     .iter()
@@ -1235,10 +1240,10 @@ impl AbstractSyntaxTree for SingleExpression {
             parse::SingleExpressionInner::Array(array) => {
                 let (el_ty, size) = ty
                     .as_array()
-                    .ok_or(Error::ExpressionUnexpectedType(ty.clone()))
+                    .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
                     .with_span(from)?;
                 if array.len() != size {
-                    return Err(Error::ExpressionUnexpectedType(ty.clone())).with_span(from);
+                    return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }).with_span(from);
                 }
                 array
                     .iter()
@@ -1249,10 +1254,10 @@ impl AbstractSyntaxTree for SingleExpression {
             parse::SingleExpressionInner::List(list) => {
                 let (el_ty, bound) = ty
                     .as_list()
-                    .ok_or(Error::ExpressionUnexpectedType(ty.clone()))
+                    .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
                     .with_span(from)?;
                 if bound.get() <= list.len() {
-                    return Err(Error::ExpressionUnexpectedType(ty.clone())).with_span(from);
+                    return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }).with_span(from);
                 }
                 list.iter()
                     .map(|e| Expression::analyze(e, el_ty, scope))
@@ -1262,7 +1267,7 @@ impl AbstractSyntaxTree for SingleExpression {
             parse::SingleExpressionInner::Either(either) => {
                 let (ty_l, ty_r) = ty
                     .as_either()
-                    .ok_or(Error::ExpressionUnexpectedType(ty.clone()))
+                    .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
                     .with_span(from)?;
                 match either {
                     Either::Left(parse_l) => Expression::analyze(parse_l, ty_l, scope)
@@ -1277,7 +1282,7 @@ impl AbstractSyntaxTree for SingleExpression {
             parse::SingleExpressionInner::Option(maybe_parse) => {
                 let ty = ty
                     .as_option()
-                    .ok_or(Error::ExpressionUnexpectedType(ty.clone()))
+                    .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
                     .with_span(from)?;
                 match maybe_parse {
                     Some(parse) => {
@@ -1356,13 +1361,13 @@ impl AbstractSyntaxTree for Call {
                     .iter()
                     .map(AliasedType::resolve_builtin)
                     .collect::<Result<Vec<ResolvedType>, AliasName>>()
-                    .map_err(Error::UndefinedAlias)
+                    .map_err(|alias| Error::UndefinedAlias { name: alias })
                     .with_span(from)?;
                 check_argument_types(from.args(), &args_tys).with_span(from)?;
                 let out_ty = jet
                     .target_type()
                     .resolve_builtin()
-                    .map_err(Error::UndefinedAlias)
+                    .map_err(|alias| Error::UndefinedAlias { name: alias })
                     .with_span(from)?;
                 check_output_type(&out_ty, ty).with_span(from)?;
                 scope.track_call(from, TrackedCallName::Jet);
@@ -1532,7 +1537,7 @@ impl AbstractSyntaxTree for CallName {
         match from.name() {
             parse::CallName::Jet(name) => match scope.jet_hinter.parse_jet(name.as_inner()) {
                 Some(jet) if !jet.is_disabled() => Ok(Self::Jet(jet)),
-                _ => Err(Error::JetDoesNotExist(name.clone())).with_span(from),
+                _ => Err(Error::JetDoesNotExist { name: name.clone() }).with_span(from),
             },
             parse::CallName::UnwrapLeft(right_ty) => scope
                 .resolve(right_ty)
@@ -1563,7 +1568,7 @@ impl AbstractSyntaxTree for CallName {
                 //   fn f(element: E, accumulator: A) -> A
                 if function.params().len() != 2 || function.params()[1].ty() != function.body().ty()
                 {
-                    Err(Error::FunctionNotFoldable(name.clone())).with_span(from)
+                    Err(Error::FunctionNotFoldable { name: name.clone() }).with_span(from)
                 } else {
                     Ok(Self::ArrayFold(function, *size))
                 }
@@ -1574,7 +1579,7 @@ impl AbstractSyntaxTree for CallName {
                 //   fn f(element: E, accumulator: A) -> A
                 if function.params().len() != 2 || function.params()[1].ty() != function.body().ty()
                 {
-                    Err(Error::FunctionNotFoldable(name.clone())).with_span(from)
+                    Err(Error::FunctionNotFoldable { name: name.clone() }).with_span(from)
                 } else {
                     Ok(Self::Fold(function, *bound))
                 }
@@ -1586,12 +1591,13 @@ impl AbstractSyntaxTree for CallName {
                 // where
                 //   N is a power of two
                 if function.params().len() != 3 {
-                    return Err(Error::FunctionNotLoopable(name.clone())).with_span(from);
+                    return Err(Error::FunctionNotLoopable { name: name.clone() }).with_span(from);
                 }
                 match function.body().ty().as_either() {
                     Some((_, out_r)) if out_r == function.params().first().unwrap().ty() => {}
                     _ => {
-                        return Err(Error::FunctionNotLoopable(name.clone())).with_span(from);
+                        return Err(Error::FunctionNotLoopable { name: name.clone() })
+                            .with_span(from);
                     }
                 }
                 // Disable loops for u32 or higher since no one will want to run
@@ -1605,7 +1611,7 @@ impl AbstractSyntaxTree for CallName {
                         | UIntType::U8
                         | UIntType::U16),
                     ) => Ok(Self::ForWhile(function, int_ty.bit_width())),
-                    _ => Err(Error::FunctionNotLoopable(name.clone())).with_span(from),
+                    _ => Err(Error::FunctionNotLoopable { name: name.clone() }).with_span(from),
                 }
             }
         }
@@ -1686,7 +1692,9 @@ impl AbstractSyntaxTree for ModuleAssignment {
         let ty_expr = scope.resolve(from.ty()).with_span(from)?;
         let expression = Expression::analyze(from.expression(), &ty_expr, scope)?;
         let value = Value::from_const_expr(&expression)
-            .ok_or(Error::ExpressionUnexpectedType(ty_expr.clone()))
+            .ok_or(Error::ExpressionUnexpectedType {
+                ty: ty_expr.clone(),
+            })
             .with_span(from.expression())?;
 
         Ok(Self {

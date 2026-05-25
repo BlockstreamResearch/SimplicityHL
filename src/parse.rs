@@ -1755,7 +1755,9 @@ impl ChumskyParse for TypeAlias {
                 };
 
                 if known_type.is_some() {
-                    emit.emit(Error::RedefinedAliasAsBuiltin(name.clone()).with_span(e.span()));
+                    emit.emit(
+                        Error::RedefinedAliasAsBuiltin { name: name.clone() }.with_span(e.span()),
+                    );
                 }
                 name
             })

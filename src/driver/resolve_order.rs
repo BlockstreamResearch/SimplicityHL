@@ -363,7 +363,9 @@ impl DependencyGraph {
         // 5. Check for collisions using `namespace` fields
         if namespace.registry.direct_targets.contains_key(&local_id) {
             return Err(RichError::new(
-                Error::DuplicateAlias(local_symbol.to_string()),
+                Error::DuplicateAlias {
+                    name: local_symbol.to_string(),
+                },
                 span,
             ));
         }
@@ -420,7 +422,7 @@ fn register_type_alias(
 
     if tracker.memo.contains(&local_id) {
         return Err(RichError::new(
-            Error::RedefinedAlias(name.clone()),
+            Error::RedefinedAlias { name: name.clone() },
             *item.span(),
         ));
     }
@@ -446,7 +448,7 @@ fn register_function(
 
     if tracker.memo.contains(&local_id) {
         return Err(RichError::new(
-            Error::FunctionRedefined(name.clone()),
+            Error::FunctionRedefined { name: name.clone() },
             *item.span(),
         ));
     }

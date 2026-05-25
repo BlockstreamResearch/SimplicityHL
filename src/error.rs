@@ -533,7 +533,9 @@ pub enum Error {
     ParseCrateInt {
         source: crate::num::ParseIntError,
     },
-    JetDoesNotExist(JetName),
+    JetDoesNotExist {
+        name: JetName,
+    },
     InvalidCast {
         source: ResolvedType,
         target: ResolvedType,
@@ -563,37 +565,69 @@ pub enum Error {
     MainOutOfEntryFile,
     MainCannotBePublic,
     MainCannotBeAlias,
-    FunctionRedefined(FunctionName),
-    FunctionUndefined(FunctionName),
+    FunctionRedefined {
+        name: FunctionName,
+    },
+    FunctionUndefined {
+        name: FunctionName,
+    },
     InvalidNumberOfArguments {
         expected: usize,
         found: usize,
     },
-    FunctionNotFoldable(FunctionName),
-    FunctionNotLoopable(FunctionName),
-    ExpressionUnexpectedType(ResolvedType),
+    FunctionNotFoldable {
+        name: FunctionName,
+    },
+    FunctionNotLoopable {
+        name: FunctionName,
+    },
+    ExpressionUnexpectedType {
+        ty: ResolvedType,
+    },
     ExpressionTypeMismatch {
         expected: ResolvedType,
         found: ResolvedType,
     },
     ExpressionNotConstant,
-    IntegerOutOfBounds(UIntType),
-    UndefinedVariable(Identifier),
-    RedefinedAlias(AliasName),
-    RedefinedAliasAsBuiltin(AliasName),
-    UndefinedAlias(AliasName),
-    DuplicateAlias(String),
-    VariableReuseInPattern(Identifier),
-    WitnessReused(WitnessName),
+    IntegerOutOfBounds {
+        ty: UIntType,
+    },
+    UndefinedVariable {
+        identifier: Identifier,
+    },
+    RedefinedAlias {
+        name: AliasName,
+    },
+    RedefinedAliasAsBuiltin {
+        name: AliasName,
+    },
+    UndefinedAlias {
+        name: AliasName,
+    },
+    DuplicateAlias {
+        name: String,
+    },
+    VariableReuseInPattern {
+        identifier: Identifier,
+    },
+    WitnessReused {
+        name: WitnessName,
+    },
     WitnessTypeMismatch {
         name: WitnessName,
         declared: ResolvedType,
         assigned: ResolvedType,
     },
-    WitnessReassigned(WitnessName),
+    WitnessReassigned {
+        name: WitnessName,
+    },
     WitnessOutsideMain,
-    ModuleRedefined(ModuleName),
-    ArgumentMissing(WitnessName),
+    ModuleRedefined {
+        name: ModuleName,
+    },
+    ArgumentMissing {
+        name: WitnessName,
+    },
     ArgumentTypeMismatch {
         name: WitnessName,
         declared: ResolvedType,
@@ -690,7 +724,7 @@ impl fmt::Display for Error {
                 "Failed to compile to Simplicity"
             ),
             Error::ParseInt { .. } | Error::ParseCrateInt { .. } => write!(f, "Integer parsing error"),
-            Error::JetDoesNotExist(name) => write!(
+            Error::JetDoesNotExist { name } => write!(
                 f,
                 "Jet `{name}` does not exist"
             ),
@@ -722,11 +756,11 @@ impl fmt::Display for Error {
                 f,
                 "Main function cannot be alias",
             ),
-            Error::FunctionRedefined(name) => write!(
+            Error::FunctionRedefined { name } => write!(
                 f,
                 "Function `{name}` was defined multiple times"
             ),
-            Error::FunctionUndefined(name) => write!(
+            Error::FunctionUndefined { name } => write!(
                 f,
                 "Function `{name}` was called but not defined"
             ),
@@ -746,15 +780,15 @@ impl fmt::Display for Error {
                 f,
                 "Expected {expected} arguments, found {found} arguments"
             ),
-            Error::FunctionNotFoldable(name) => write!(
+            Error::FunctionNotFoldable { name } => write!(
                 f,
                 "Expected a signature like `fn {name}(element: E, accumulator: A) -> A` for a fold"
             ),
-            Error::FunctionNotLoopable(name) => write!(
+            Error::FunctionNotLoopable { name } => write!(
                 f,
                 "Expected a signature like `fn {name}(accumulator: A, context: C, counter u{{1,2,4,8,16}}) -> Either<B, A>` for a for-while loop"
             ),
-            Error::ExpressionUnexpectedType(ty) => write!(
+            Error::ExpressionUnexpectedType { ty } => write!(
                 f,
                 "Expected expression of type `{ty}`; found something else"
             ),
@@ -766,35 +800,35 @@ impl fmt::Display for Error {
                 f,
                 "Expression cannot be evaluated at compile time"
             ),
-            Error::IntegerOutOfBounds(ty) => write!(
+            Error::IntegerOutOfBounds { ty } => write!(
                 f,
                 "Value is out of bounds for type `{ty}`"
             ),
-            Error::UndefinedVariable(identifier) => write!(
+            Error::UndefinedVariable { identifier } => write!(
                 f,
                 "Variable `{identifier}` is not defined"
             ),
-            Error::RedefinedAlias(identifier) => write!(
+            Error::RedefinedAlias { name } => write!(
                 f,
-                "Type alias `{identifier}` was defined multiple times"
+                "Type alias `{name}` was defined multiple times"
             ),
-            Error::RedefinedAliasAsBuiltin(identifier) => write!(
+            Error::RedefinedAliasAsBuiltin { name } => write!(
                 f,
-                "Type alias `{identifier}` is already exists as built-in alias"
+                "Type alias `{name}` is already exists as built-in alias"
             ),
-            Error::UndefinedAlias(identifier) => write!(
+            Error::UndefinedAlias { name } => write!(
                 f,
-                "Type alias `{identifier}` is not defined"
+                "Type alias `{name}` is not defined"
             ),
-            Error::DuplicateAlias(name) => write!(
+            Error::DuplicateAlias { name } => write!(
                 f,
                 "The alias `{name}` was defined multiple times"
             ),
-            Error::VariableReuseInPattern(identifier) => write!(
+            Error::VariableReuseInPattern { identifier } => write!(
                 f,
                 "Variable `{identifier}` is used twice in the pattern"
             ),
-            Error::WitnessReused(name) => write!(
+            Error::WitnessReused { name } => write!(
                 f,
                 "Witness `{name}` has been used before somewhere in the program"
             ),
@@ -802,7 +836,7 @@ impl fmt::Display for Error {
                 f,
                 "Witness `{name}` was declared with type `{declared}` but its assigned value is of type `{assigned}`"
             ),
-            Error::WitnessReassigned(name) => write!(
+            Error::WitnessReassigned { name } => write!(
                 f,
                 "Witness `{name}` has already been assigned a value"
             ),
@@ -810,11 +844,11 @@ impl fmt::Display for Error {
                 f,
                 "Witness expressions are not allowed outside the `main` function"
             ),
-            Error::ModuleRedefined(name) => write!(
+            Error::ModuleRedefined { name } => write!(
                 f,
                 "Module `{name}` is defined twice"
             ),
-            Error::ArgumentMissing(name) => write!(
+            Error::ArgumentMissing { name } => write!(
                 f,
                 "Parameter `{name}` is missing an argument"
             ),
