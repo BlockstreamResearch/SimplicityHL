@@ -479,9 +479,16 @@ pub enum Error {
     DependencyNotADirectory {
         path: PathBuf,
     },
-    ReservedDependencyKeyword(String),
-    DuplicateDependencyAlias(String, String),
-    InvalidDependencyIdentifier(String),
+    ReservedDependencyKeyword {
+        keyword: String,
+    },
+    DuplicateDependencyAlias {
+        alias: String,
+        context: String,
+    },
+    InvalidDependencyIdentifier {
+        alias: String,
+    },
     Internal(String),
     UnknownLibrary(String),
     ArraySizeNonZero(usize),
@@ -558,9 +565,18 @@ impl fmt::Display for Error {
                 f,
                 "Path must be a directory: {}", path.display()
             ),
-            Error::ReservedDependencyKeyword(kw) => write!(f, "The '{}' keyword is reserved and cannot be manually mapped. Use the builder's context definitions instead.", kw),
-            Error::DuplicateDependencyAlias(alias, context) => write!(f, "Duplicate dependency mapping: alias '{}' is defined multiple times for context '{}'", alias, context),
-            Error::InvalidDependencyIdentifier(alias) => write!(f, "Invalid dependency alias '{}': must be a valid identifier and not a reserved keyword", alias),
+            Error::ReservedDependencyKeyword { keyword } => write!(
+                f,
+                "The '{keyword}' keyword is reserved and cannot be manually mapped. Use the builder's context definitions instead."
+            ),
+            Error::DuplicateDependencyAlias { alias, context } => write!(
+                f,
+                "Duplicate dependency mapping: alias '{alias}' is defined multiple times for context '{context}'"
+            ),
+            Error::InvalidDependencyIdentifier { alias } => write!(
+                f,
+                "Invalid dependency alias '{alias}': must be a valid identifier and not a reserved keyword"
+            ),
             Error::Internal(err) => write!(
                 f,
                 "INTERNAL ERROR: {err}"

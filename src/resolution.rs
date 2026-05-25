@@ -119,19 +119,23 @@ impl DependencyMapBuilder {
 
             if !is_valid_dependency_identifier(&dep.drp_name) {
                 if dep.drp_name == CRATE_STR {
-                    return Err(Error::ReservedDependencyKeyword(dep.drp_name));
+                    return Err(Error::ReservedDependencyKeyword {
+                        keyword: dep.drp_name,
+                    });
                 }
-                return Err(Error::InvalidDependencyIdentifier(dep.drp_name));
+                return Err(Error::InvalidDependencyIdentifier {
+                    alias: dep.drp_name,
+                });
             }
 
             // Reject duplicates: same context and same alias
             if remappings.iter().any(|r: &Remapping| {
                 r.context_prefix == dep.context_prefix && r.drp_name == dep.drp_name
             }) {
-                return Err(Error::DuplicateDependencyAlias(
-                    dep.drp_name.clone(),
-                    dep.context_prefix.as_path().display().to_string(),
-                ));
+                return Err(Error::DuplicateDependencyAlias {
+                    alias: dep.drp_name.clone(),
+                    context: dep.context_prefix.as_path().display().to_string(),
+                });
             }
 
             crate_roots.push(dep.target.clone());
@@ -345,7 +349,7 @@ pub(crate) mod tests {
 
         assert!(matches!(
             result.unwrap_err(),
-            Error::ReservedDependencyKeyword(_)
+            Error::ReservedDependencyKeyword { .. }
         ));
     }
 
@@ -579,7 +583,7 @@ pub(crate) mod tests {
                 .add_dependency(valid_dir.clone(), bad_alias.to_string(), valid_dir.clone())
                 .build();
             assert!(
-                matches!(res.unwrap_err(), Error::InvalidDependencyIdentifier(_)),
+                matches!(res.unwrap_err(), Error::InvalidDependencyIdentifier { .. }),
                 "Builder should reject alias: '{}'",
                 bad_alias
             );
@@ -599,9 +603,9 @@ pub(crate) mod tests {
                 .build();
             let err = res.unwrap_err();
             if kw == CRATE_STR {
-                assert!(matches!(err, Error::ReservedDependencyKeyword(_)));
+                assert!(matches!(err, Error::ReservedDependencyKeyword { .. }));
             } else {
-                assert!(matches!(err, Error::InvalidDependencyIdentifier(_)));
+                assert!(matches!(err, Error::InvalidDependencyIdentifier { .. }));
             }
         }
     }
@@ -620,7 +624,7 @@ pub(crate) mod tests {
 
         assert!(matches!(
             res.unwrap_err(),
-            Error::DuplicateDependencyAlias(..)
+            Error::DuplicateDependencyAlias { .. }
         ));
     }
 
