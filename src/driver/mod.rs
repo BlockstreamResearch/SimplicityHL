@@ -40,6 +40,7 @@ use crate::error::{Error, ErrorCollector, RichError, Span};
 use crate::parse::{self, ParseFromStrWithErrors};
 use crate::resolution::DependencyMap;
 use crate::source::{CanonPath, CanonSourceFile};
+use crate::UnstableFeatureManager;
 
 pub use crate::driver::resolve_order::{FileScoped, Program, SymbolTable};
 
@@ -139,6 +140,7 @@ impl DependencyGraph {
         dependency_map: Arc<DependencyMap>,
         root_program: &parse::Program,
         handler: &mut ErrorCollector,
+        unstable_manager: &UnstableFeatureManager,
     ) -> Result<Option<Self>, String> {
         let mut graph = Self {
             modules: vec![Module {
@@ -187,6 +189,7 @@ impl DependencyGraph {
                 &importer_source,
                 handler,
                 &mut queue,
+                unstable_manager,
             );
         }
 
@@ -204,6 +207,7 @@ impl DependencyGraph {
         importer_source: &CanonSourceFile,
         span: Span,
         handler: &mut ErrorCollector,
+        unstable_manager: &UnstableFeatureManager,
     ) -> Option<Module> {
         let Ok(content) = std::fs::read_to_string(path.as_path()) else {
             let err = RichError::new(
@@ -222,6 +226,10 @@ impl DependencyGraph {
         let source = CanonSourceFile::new(path.clone(), Arc::from(content));
 
         let ast = parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler);
+
+        if let Some(ref p) = ast {
+            unstable_manager.check_program(p, &mut error_handler);
+        }
 
         if error_handler.has_errors() {
             handler.extend_with_handler(source, &error_handler);
@@ -260,6 +268,7 @@ impl DependencyGraph {
 
     /// PHASE 2 OF GRAPH CONSTRUCTION: Loads, parses, and registers new dependencies.
     /// Note: This is a specialized helper function designed exclusively for the `DependencyGraph::new()` constructor.
+    #[allow(clippy::too_many_arguments)]
     fn load_and_parse_dependencies(
         &mut self,
         curr_id: usize,
@@ -268,6 +277,7 @@ impl DependencyGraph {
         importer_source: &CanonSourceFile,
         handler: &mut ErrorCollector,
         queue: &mut VecDeque<usize>,
+        unstable_manager: &UnstableFeatureManager,
     ) {
         for (path, import_span) in valid_imports {
             if inalid_imports.contains(&path) {
@@ -282,9 +292,13 @@ impl DependencyGraph {
                 continue;
             }
 
-            let Some(module) =
-                Self::parse_and_get_program(&path, importer_source, import_span, handler)
-            else {
+            let Some(module) = Self::parse_and_get_program(
+                &path,
+                importer_source,
+                import_span,
+                handler,
+                unstable_manager,
+            ) else {
                 inalid_imports.push(path);
                 continue;
             };
@@ -307,6 +321,7 @@ pub(crate) mod tests {
     use crate::resolution::tests::canon;
     use crate::resolution::DependencyMapBuilder;
     use crate::test_utils::TempWorkspace;
+    use crate::unstable::UnstableFeature;
 
     /// Initializes a raw graph environment for testing, explicitly allowing for and capturing failure states.
     ///
@@ -330,6 +345,7 @@ pub(crate) mod tests {
     /// 4. `ErrorCollector`: The handler containing any logged errors, useful fo
     pub(crate) fn setup_graph_raw(
         files: Vec<(&str, &str)>,
+        features: impl IntoIterator<Item = UnstableFeature>,
     ) -> (
         Option<DependencyGraph>,
         HashMap<String, usize>,
@@ -366,16 +382,31 @@ pub(crate) mod tests {
 
         let root_p = root_file_path.expect("main.simf must be defined in file list");
         let main_canon_source = CanonSourceFile::new(root_p, Arc::from(root_content));
+        let main_source = main_canon_source.clone();
+
+        let unstable_manager = UnstableFeatureManager::new(features);
 
         let main_program_option =
-            parse::Program::parse_from_str_with_errors(main_canon_source.clone(), &mut handler);
+            parse::Program::parse_from_str_with_errors(main_source.clone(), &mut handler);
+
+        if let Some(ref p) = main_program_option {
+            let mut unstable_errors = ErrorCollector::new();
+            unstable_manager.check_program(p, &mut unstable_errors);
+            handler.extend_with_handler(main_source.clone(), &unstable_errors);
+        }
 
         let Some(main_program) = main_program_option else {
             return (None, HashMap::new(), ws, handler);
         };
 
-        let graph_option =
-            DependencyGraph::new(main_canon_source, map, &main_program, &mut handler).unwrap();
+        let graph_option = DependencyGraph::new(
+            main_canon_source,
+            map,
+            &main_program,
+            &mut handler,
+            &unstable_manager,
+        )
+        .unwrap();
 
         let mut file_ids = HashMap::new();
 
@@ -418,8 +449,9 @@ pub(crate) mod tests {
     /// to standard error if the parser or graph builder encounters any issues.
     pub(crate) fn setup_graph(
         files: Vec<(&str, &str)>,
+        features: impl IntoIterator<Item = UnstableFeature>,
     ) -> (DependencyGraph, HashMap<String, usize>, TempWorkspace) {
-        let (graph_option, file_ids, ws, handler) = setup_graph_raw(files);
+        let (graph_option, file_ids, ws, handler) = setup_graph_raw(files, features);
 
         let Some(graph) = graph_option else {
             panic!(
@@ -437,10 +469,17 @@ pub(crate) mod tests {
         // root.simf -> "use lib::math::some_func;"
         // libs/lib/math.simf -> ""
 
-        let (graph, ids, _ws) = setup_graph(vec![
-            ("main.simf", "use lib::math::some_func;"),
-            ("libs/lib/math.simf", ""),
-        ]);
+        let (graph, ids, _ws) = setup_graph(
+            vec![
+                ("main.simf", "use lib::math::some_func;"),
+                ("libs/lib/math.simf", ""),
+            ],
+            [
+                UnstableFeature::UseKeyword,
+                UnstableFeature::CrateKeyword,
+                UnstableFeature::AsKeyword,
+            ],
+        );
 
         assert_eq!(graph.modules.len(), 2, "Should have Root and Math module");
 
@@ -464,12 +503,19 @@ pub(crate) mod tests {
         // B -> imports Common
         // Expected: Common loaded ONLY ONCE.
 
-        let (graph, ids, _ws) = setup_graph(vec![
-            ("main.simf", "use lib::A::foo; use lib::B::bar;"),
-            ("libs/lib/A.simf", "use crate::Common::dummy1;"),
-            ("libs/lib/B.simf", "use crate::Common::dummy2;"),
-            ("libs/lib/Common.simf", ""),
-        ]);
+        let (graph, ids, _ws) = setup_graph(
+            vec![
+                ("main.simf", "use lib::A::foo; use lib::B::bar;"),
+                ("libs/lib/A.simf", "use crate::Common::dummy1;"),
+                ("libs/lib/B.simf", "use crate::Common::dummy2;"),
+                ("libs/lib/Common.simf", ""),
+            ],
+            [
+                UnstableFeature::UseKeyword,
+                UnstableFeature::CrateKeyword,
+                UnstableFeature::AsKeyword,
+            ],
+        );
 
         // Check strict deduplication (Unique modules count)
         assert_eq!(
@@ -509,11 +555,18 @@ pub(crate) mod tests {
         // A -> imports B
         // B -> imports A
 
-        let (graph, ids, _ws) = setup_graph(vec![
-            ("main.simf", "use lib::A::entry;"),
-            ("libs/lib/A.simf", "use crate::B::func;"),
-            ("libs/lib/B.simf", "use crate::A::func;"),
-        ]);
+        let (graph, ids, _ws) = setup_graph(
+            vec![
+                ("main.simf", "use lib::A::entry;"),
+                ("libs/lib/A.simf", "use crate::B::func;"),
+                ("libs/lib/B.simf", "use crate::A::func;"),
+            ],
+            [
+                UnstableFeature::UseKeyword,
+                UnstableFeature::CrateKeyword,
+                UnstableFeature::AsKeyword,
+            ],
+        );
 
         let a_id = ids["A"];
         let b_id = ids["B"];
@@ -540,8 +593,14 @@ pub(crate) mod tests {
         // Setup: root imports from "unknown", which is not in our dependency map.
         // We use `setup_graph_raw` because we expect graph generation to fail and
         // emit an error, rather than panicking the standard test helper.
-        let (graph_option, _ids, _ws, handler) =
-            setup_graph_raw(vec![("main.simf", "use unknown::library::item;")]);
+        let (graph_option, _ids, _ws, handler) = setup_graph_raw(
+            vec![("main.simf", "use unknown::library::item;")],
+            [
+                UnstableFeature::UseKeyword,
+                UnstableFeature::CrateKeyword,
+                UnstableFeature::AsKeyword,
+            ],
+        );
 
         assert!(
             graph_option.is_none(),
@@ -559,11 +618,18 @@ pub(crate) mod tests {
         // Goal: Verify that a simple chain (main -> a -> b) correctly pushes items
         // into the vectors and builds the adjacency list in BFS order.
 
-        let (graph, ids, _ws) = setup_graph(vec![
-            ("main.simf", "use lib::A::mock_item;"),
-            ("libs/lib/A.simf", "use crate::B::mock_item;"),
-            ("libs/lib/B.simf", ""),
-        ]);
+        let (graph, ids, _ws) = setup_graph(
+            vec![
+                ("main.simf", "use lib::A::mock_item;"),
+                ("libs/lib/A.simf", "use crate::B::mock_item;"),
+                ("libs/lib/B.simf", ""),
+            ],
+            [
+                UnstableFeature::UseKeyword,
+                UnstableFeature::CrateKeyword,
+                UnstableFeature::AsKeyword,
+            ],
+        );
 
         // Assert: Size checks
         assert_eq!(graph.modules.len(), 3);
@@ -596,5 +662,40 @@ pub(crate) mod tests {
             .get(&b_id)
             .map_or(true, |deps| deps.is_empty());
         assert!(b_has_no_deps, "B depends on nothing");
+    }
+
+    #[test]
+    fn test_unstable_feature_use_keyword_disabled_in_dependencies() {
+        // We use setup_graph_raw because it intentionally bypasses the early-exit in
+        // TemplateProgram::new_with_dep, allowing us to test how the graph builder
+        // deeply checks for unstable feature errors in loaded dependency files.
+        let (graph_option, _ids, _ws, handler) = setup_graph_raw(
+            vec![
+                ("main.simf", "use lib::A::foo;\nfn main() {}"),
+                ("libs/lib/A.simf", "use crate::B::bar;\npub fn foo() {}"),
+                ("libs/lib/B.simf", "pub fn bar() {}"),
+            ],
+            [], // No unstable features enabled!
+        );
+
+        assert!(
+            graph_option.is_none(),
+            "Graph generation should fail due to unstable feature errors"
+        );
+
+        let errors = handler.to_string();
+
+        // Assert that both main.simf and A.simf reported unstable feature errors
+        assert!(
+            errors.contains("main.simf"),
+            "Should report error in main.simf"
+        );
+        assert!(
+            errors.contains("A.simf"),
+            "Should report error in dependency A.simf"
+        );
+
+        // Three occurrences of the error message total (1 for main.simf `use`, 2 for A.simf `use` and `crate`)
+        assert_eq!(errors.matches("feature is not enabled").count(), 3);
     }
 }

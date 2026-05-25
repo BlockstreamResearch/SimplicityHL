@@ -1754,7 +1754,8 @@ mod alias_scope_regression_tests {
     use crate::error::ErrorCollector;
 
     fn analyze_multifile(files: Vec<(&str, &str)>) -> Result<(), String> {
-        let (graph, _ids, _dir) = setup_graph(files);
+        let (graph, _ids, _dir) =
+            setup_graph(files, [crate::unstable::UnstableFeature::UseKeyword]);
 
         let mut error_handler = ErrorCollector::new();
         let driver_program = graph
