@@ -473,8 +473,12 @@ impl fmt::Display for ErrorCollector {
 /// Records _what_ happened but not where.
 #[derive(Debug, Clone)]
 pub enum Error {
-    DependencyPathNotFound(String),
-    DependencyNotADirectory(String),
+    DependencyPathNotFound {
+        path: PathBuf,
+    },
+    DependencyNotADirectory {
+        path: PathBuf,
+    },
     ReservedDependencyKeyword(String),
     DuplicateDependencyAlias(String, String),
     InvalidDependencyIdentifier(String),
@@ -546,8 +550,14 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::DependencyPathNotFound(path) => write!(f, "Path not found: {}", path),
-            Error::DependencyNotADirectory(path) => write!(f, "Path must be a directory: {}", path),
+            Error::DependencyPathNotFound { path } => write!(
+                f,
+                "Path not found: {}", path.display()
+            ),
+            Error::DependencyNotADirectory { path } => write!(
+                f,
+                "Path must be a directory: {}", path.display()
+            ),
             Error::ReservedDependencyKeyword(kw) => write!(f, "The '{}' keyword is reserved and cannot be manually mapped. Use the builder's context definitions instead.", kw),
             Error::DuplicateDependencyAlias(alias, context) => write!(f, "Duplicate dependency mapping: alias '{}' is defined multiple times for context '{}'", alias, context),
             Error::InvalidDependencyIdentifier(alias) => write!(f, "Invalid dependency alias '{}': must be a valid identifier and not a reserved keyword", alias),

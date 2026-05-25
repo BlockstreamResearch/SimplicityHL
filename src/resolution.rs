@@ -84,37 +84,37 @@ impl DependencyMapBuilder {
         // will always return `Some()` for files under the entry root.
         let root = self.entry_root;
         if !root.as_path().exists() {
-            return Err(Error::DependencyPathNotFound(
-                root.as_path().display().to_string(),
-            ));
+            return Err(Error::DependencyPathNotFound {
+                path: root.as_path().into(),
+            });
         }
         if !root.as_path().is_dir() {
-            return Err(Error::DependencyNotADirectory(
-                root.as_path().display().to_string(),
-            ));
+            return Err(Error::DependencyNotADirectory {
+                path: root.as_path().into(),
+            });
         }
         crate_roots.push(root);
 
         for dep in self.deps {
             if !dep.context_prefix.as_path().exists() {
-                return Err(Error::DependencyPathNotFound(
-                    dep.context_prefix.as_path().display().to_string(),
-                ));
+                return Err(Error::DependencyPathNotFound {
+                    path: dep.context_prefix.as_path().into(),
+                });
             }
             if !dep.context_prefix.as_path().is_dir() {
-                return Err(Error::DependencyNotADirectory(
-                    dep.context_prefix.as_path().display().to_string(),
-                ));
+                return Err(Error::DependencyNotADirectory {
+                    path: dep.context_prefix.as_path().into(),
+                });
             }
             if !dep.target.as_path().exists() {
-                return Err(Error::DependencyPathNotFound(
-                    dep.target.as_path().display().to_string(),
-                ));
+                return Err(Error::DependencyPathNotFound {
+                    path: dep.target.as_path().into(),
+                });
             }
             if !dep.target.as_path().is_dir() {
-                return Err(Error::DependencyNotADirectory(
-                    dep.target.as_path().display().to_string(),
-                ));
+                return Err(Error::DependencyNotADirectory {
+                    path: dep.target.as_path().into(),
+                });
             }
 
             if !is_valid_dependency_identifier(&dep.drp_name) {
@@ -532,7 +532,7 @@ pub(crate) mod tests {
         let res1 = DependencyMapBuilder::new(file_path.clone()).build();
         assert!(matches!(
             res1.unwrap_err(),
-            Error::DependencyNotADirectory(_)
+            Error::DependencyNotADirectory { .. }
         ));
 
         let res2 = DependencyMapBuilder::new(valid_dir.clone())
@@ -540,7 +540,7 @@ pub(crate) mod tests {
             .build();
         assert!(matches!(
             res2.unwrap_err(),
-            Error::DependencyNotADirectory(_)
+            Error::DependencyNotADirectory { .. }
         ));
 
         let res3 = DependencyMapBuilder::new(valid_dir.clone())
@@ -548,7 +548,7 @@ pub(crate) mod tests {
             .build();
         assert!(matches!(
             res3.unwrap_err(),
-            Error::DependencyNotADirectory(_)
+            Error::DependencyNotADirectory { .. }
         ));
     }
 
@@ -561,7 +561,10 @@ pub(crate) mod tests {
         let res = DependencyMapBuilder::new(valid_dir.clone())
             .add_dependency(valid_dir.clone(), "alias".to_string(), fake_path)
             .build();
-        assert!(matches!(res.unwrap_err(), Error::DependencyPathNotFound(_)));
+        assert!(matches!(
+            res.unwrap_err(),
+            Error::DependencyPathNotFound { .. }
+        ));
     }
 
     #[test]
