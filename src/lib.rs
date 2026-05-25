@@ -71,6 +71,20 @@ impl TemplateProgram {
         dependency_map: &DependencyMap,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
+        Self::with_unstable_and_dep(source, dependency_map, &UnstableFeatureManager::default(), jet_hinter)
+    }
+
+    /// Parse the template of a SimplicityHL program with explicit unstable features enabled.
+    ///
+    /// ## Errors
+    ///
+    /// The string is not a valid SimplicityHL program.
+    pub fn with_unstable_and_dep(
+        source: CanonSourceFile,
+        dependency_map: &DependencyMap,
+        unstable_manager: &UnstableFeatureManager,
+        jet_hinter: Box<dyn ast::JetHinter>,
+    ) -> Result<Self, String> {
         let mut error_handler = ErrorCollector::new();
 
         // 1. Parse root file
@@ -78,12 +92,18 @@ impl TemplateProgram {
             parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler)
                 .ok_or_else(|| error_handler.to_string())?;
 
-        // 2. Create the driver program
+        // 2. Check unstable features and record errors with precise spans
+        let mut unstable_errors = ErrorCollector::new();
+        unstable_manager.check_program(&parsed_program, &mut unstable_errors);
+        error_handler.extend_with_handler(source.clone(), &unstable_errors);
+
+        // 3. Create the driver program
         let graph = DependencyGraph::new(
             source.clone(),
             Arc::from(dependency_map.clone()),
             &parsed_program,
             &mut error_handler,
+            // unstable_manager,
         )?
         .ok_or_else(|| error_handler.to_string())?;
 
@@ -91,7 +111,7 @@ impl TemplateProgram {
             .linearize_and_build(&mut error_handler)?
             .ok_or_else(|| error_handler.to_string())?;
 
-        // 3. AST Analysis
+        // 4. AST Analysis
         let ast_program = ast::Program::analyze(&driver_program, jet_hinter.clone_box())
             .with_source(source.clone())?;
         Ok(Self {
@@ -110,28 +130,42 @@ impl TemplateProgram {
         s: Str,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
+        Self::with_unstable(s, &UnstableFeatureManager::default(), jet_hinter)
+    }
+
+    /// Parse the template of a SimplicityHL program with explicit unstable features enabled.
+    ///
+    /// ## Errors
+    ///
+    /// The string is not a valid SimplicityHL program.
+    pub fn with_unstable<Str: Into<Arc<str>>>(
+        s: Str,
+        unstable_manager: &UnstableFeatureManager,
+        jet_hinter: Box<dyn ast::JetHinter>,
+    ) -> Result<Self, String> {
         let file = s.into();
         let source = SourceFile::anonymous(file.clone());
         let mut error_handler = ErrorCollector::new();
-        let parse_program = parse::Program::parse_from_str_with_errors(source, &mut error_handler);
 
-        let driver_program = if let Some(parse_program) = parse_program {
-            driver::Program::from_parse(&parse_program, file.clone(), &mut error_handler)
-        } else {
-            None
-        };
+        let parsed_program =
+            parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler)
+                .ok_or_else(|| error_handler.to_string())?;
 
-        if let Some(program) = driver_program {
-            let ast_program = ast::Program::analyze(&program, jet_hinter.clone_box())
+        let mut unstable_errors = ErrorCollector::new();
+        unstable_manager.check_program(&parsed_program, &mut unstable_errors);
+        error_handler.extend_with_handler(source.clone(), &unstable_errors);
+
+        let driver_program =
+            driver::Program::from_parse(&parsed_program, file.clone(), &mut error_handler)
+                .ok_or_else(|| error_handler.to_string())?;
+
+        let ast_program = ast::Program::analyze(&driver_program, jet_hinter.clone_box())
                 .with_content(Arc::clone(&file))?;
-            Ok(Self {
-                simfony: ast_program,
-                file,
+        Ok(Self {
+            simfony: ast_program,
+            file,
                 jet_hinter,
-            })
-        } else {
-            Err(ErrorCollector::to_string(&error_handler))?
-        }
+        })
     }
 
     /// Access the parameters of the program.
@@ -207,7 +241,26 @@ impl CompiledProgram {
         include_debug_symbols: bool,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        TemplateProgram::new_with_dep(source, dependency_map, jet_hinter.clone_box())
+        Self::with_unstable_and_dep(
+            source,
+            dependency_map,
+            &UnstableFeatureManager::default(),
+            arguments,
+            include_debug_symbols,
+            jet_hinter,
+        )
+    }
+
+    /// Parse and compile a SimplicityHL program with explicit unstable features enabled.
+    pub fn with_unstable_and_dep(
+        source: CanonSourceFile,
+        dependency_map: &DependencyMap,
+        unstable_manager: &UnstableFeatureManager,
+        arguments: Arguments,
+        include_debug_symbols: bool,
+        jet_hinter: Box<dyn ast::JetHinter>,
+    ) -> Result<Self, String> {
+        TemplateProgram::with_unstable_and_dep(source, dependency_map, unstable_manager, jet_hinter.clone_box())
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -223,7 +276,24 @@ impl CompiledProgram {
         include_debug_symbols: bool,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        TemplateProgram::new(s, jet_hinter.clone_box())
+        Self::with_unstable(
+            s,
+            &UnstableFeatureManager::default(),
+            arguments,
+            include_debug_symbols,
+            jet_hinter
+        )
+    }
+
+    /// Parse and compile a SimplicityHL program with explicit unstable features enabled.
+    pub fn with_unstable<Str: Into<Arc<str>>>(
+        s: Str,
+        unstable_manager: &UnstableFeatureManager,
+        arguments: Arguments,
+        include_debug_symbols: bool,
+        jet_hinter: Box<dyn ast::JetHinter>,
+    ) -> Result<Self, String> {
+        TemplateProgram::with_unstable(s, unstable_manager, jet_hinter.clone_box())
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -309,7 +379,27 @@ impl SatisfiedProgram {
         include_debug_symbols: bool,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        let compiled = CompiledProgram::new(s, arguments, include_debug_symbols, jet_hinter)?;
+        Self::with_unstable(
+            s,
+            &UnstableFeatureManager::default(),
+            arguments,
+            witness_values,
+            include_debug_symbols,
+            jet_hinter,
+        )
+    }
+
+    /// Parse, compile and satisfy a SimplicityHL program with explicit unstable features enabled.
+    pub fn with_unstable<Str: Into<Arc<str>>>(
+        s: Str,
+        unstable_manager: &UnstableFeatureManager,
+        arguments: Arguments,
+        witness_values: WitnessValues,
+        include_debug_symbols: bool,
+        jet_hinter: Box<dyn ast::JetHinter>,
+    ) -> Result<Self, String> {
+        let compiled =
+            CompiledProgram::with_unstable(s, unstable_manager, arguments, include_debug_symbols, jet_hinter)?;
         compiled.satisfy(witness_values)
     }
 
