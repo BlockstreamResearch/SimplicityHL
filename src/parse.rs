@@ -121,10 +121,12 @@ impl UseDecl {
     /// Returns a `RichError` if the use declaration path is completely empty.
     pub fn drp_name(&self) -> Result<&str, RichError> {
         let parts = self.path();
-        parts
-            .first()
-            .copied()
-            .ok_or_else(|| Error::CannotParse("Empty use path".to_string()).with_span(self.span))
+        parts.first().copied().ok_or_else(|| {
+            Error::CannotParse {
+                msg: "Empty use path".to_string(),
+            }
+            .with_span(self.span)
+        })
     }
 
     pub fn items(&self) -> &UseItems {
@@ -1188,7 +1190,12 @@ where
         // TODO: we should use information about open delimiter
         .validate(move |((open_span, content), close_token), _, emit| {
             if close_token.is_none() {
-                emit.emit(Error::Grammar(format!("Unclosed delimiter {open}")).with_span(open_span))
+                emit.emit(
+                    Error::Grammar {
+                        msg: format!("Unclosed delimiter {open}"),
+                    }
+                    .with_span(open_span),
+                )
             }
             content
         })
@@ -1287,13 +1294,15 @@ impl ChumskyParse for AliasedType {
             let list = just(Token::Ident("List"))
                 .ignore_then(delimited_with_recovery(
                     ty.then_ignore(parse_token_with_recovery(Token::Comma))
-                        .then(num.clone().validate(|num, e, emit| {
+                        .then(num.clone().validate(|num, e, emit| -> NonZeroPow2Usize {
                             match NonZeroPow2Usize::from_str(num.as_inner()) {
                                 Ok(number) => number,
                                 Err(err) => {
                                     emit.emit(
-                                        Error::Grammar(format!("Cannot parse list bound: {err}"))
-                                            .with_span(e.span()),
+                                        Error::Grammar {
+                                            msg: format!("Cannot parse list bound: {err}"),
+                                        }
+                                        .with_span(e.span()),
                                     );
                                     // fallback to default value
                                     NonZeroPow2Usize::TWO
@@ -1645,14 +1654,16 @@ impl ChumskyParse for CallName {
                     Ok(num) => match NonZeroPow2Usize::new(num) {
                         Some(val) => val,
                         None => {
-                            emit.emit(Error::ListBoundPow2(num).with_span(e.span()));
+                            emit.emit(Error::ListBoundPow2 { bound: num }.with_span(e.span()));
                             NonZeroPow2Usize::TWO
                         }
                     },
                     Err(_) => {
                         emit.emit(
-                            Error::CannotParse(format!("Invalid number: {}", bound_str))
-                                .with_span(e.span()),
+                            Error::CannotParse {
+                                msg: format!("Invalid number: {}", bound_str),
+                            }
+                            .with_span(e.span()),
                         );
                         NonZeroPow2Usize::TWO
                     }
@@ -1670,14 +1681,16 @@ impl ChumskyParse for CallName {
             .validate(|(func, size_str), e, emit| {
                 let size = match size_str.as_inner().parse::<usize>() {
                     Ok(0) => {
-                        emit.emit(Error::ArraySizeNonZero(0).with_span(e.span()));
+                        emit.emit(Error::ArraySizeNonZero { size: 0 }.with_span(e.span()));
                         NonZeroUsize::new(1).unwrap()
                     }
                     Ok(n) => NonZeroUsize::new(n).unwrap(),
                     Err(_) => {
                         emit.emit(
-                            Error::CannotParse(format!("Invalid number: {}", size_str))
-                                .with_span(e.span()),
+                            Error::CannotParse {
+                                msg: format!("Invalid number: {}", size_str),
+                            }
+                            .with_span(e.span()),
                         );
                         NonZeroUsize::new(1).unwrap()
                     }
@@ -1959,9 +1972,10 @@ impl MatchArm {
 
                 if !is_block && comma.is_none() {
                     emitter.emit(
-                        Error::Grammar(
-                            "Missing ',' after a match arm that isn't block expression".to_string(),
-                        )
+                        Error::Grammar {
+                            msg: "Missing ',' after a match arm that isn't block expression"
+                                .to_string(),
+                        }
                         .with_span(e.span()),
                     );
                 }
@@ -2028,8 +2042,11 @@ impl Match {
 
                         (p1, p2) => {
                             emit.emit(
-                                Error::IncompatibleMatchArms(p1.clone(), p2.clone())
-                                    .with_span(e.span()),
+                                Error::IncompatibleMatchArms {
+                                    first: p1.clone(),
+                                    second: p2.clone(),
+                                }
+                                .with_span(e.span()),
                             );
                             (first, second)
                         }

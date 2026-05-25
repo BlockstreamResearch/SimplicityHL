@@ -139,10 +139,14 @@ impl UIntValue {
     /// Create an integer from a `binary` string and type.
     pub fn parse_binary(binary: &Binary, ty: UIntType) -> Result<Self, Error> {
         let s = binary.as_inner();
-        let bit_len = Pow2Usize::new(s.len()).ok_or(Error::BitStringPow2(s.len()))?;
-        let bit_ty = UIntType::from_bit_width(bit_len).ok_or(Error::BitStringPow2(s.len()))?;
+        let bit_len = Pow2Usize::new(s.len()).ok_or(Error::BitStringPow2 { len: s.len() })?;
+        let bit_ty =
+            UIntType::from_bit_width(bit_len).ok_or(Error::BitStringPow2 { len: s.len() })?;
         if ty != bit_ty {
-            return Err(Error::ExpressionTypeMismatch(ty.into(), bit_ty.into()));
+            return Err(Error::ExpressionTypeMismatch {
+                expected: ty.into(),
+                found: bit_ty.into(),
+            });
         }
 
         let byte_len = bit_len.get().div_ceil(8);

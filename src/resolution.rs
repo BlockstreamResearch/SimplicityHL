@@ -209,7 +209,10 @@ impl DependencyMap {
             }
         }
 
-        Err(Error::UnknownLibrary(drp_name.to_string())).with_span(*use_decl.span())
+        Err(Error::UnknownLibrary {
+            name: drp_name.to_string(),
+        })
+        .with_span(*use_decl.span())
     }
 
     fn resolve_external_path(
@@ -224,14 +227,20 @@ impl DependencyMap {
         let resolved =
             Self::build_and_verify_path(&remapping.target, &parts[1..]).map_err(|failed_path| {
                 RichError::new(
-                    Error::ExternalFileNotFound(drp_name.to_string(), failed_path),
+                    Error::ExternalFileNotFound {
+                        lib: drp_name.to_string(),
+                        filename: failed_path,
+                    },
                     *use_decl.span(),
                 )
             })?;
 
         if !resolved.starts_with(&remapping.target) {
             return Err(RichError::new(
-                Error::ExternalFileNotFound(drp_name.to_string(), resolved.as_path().to_path_buf()),
+                Error::ExternalFileNotFound {
+                    lib: drp_name.to_string(),
+                    filename: resolved.as_path().to_path_buf(),
+                },
                 *use_decl.span(),
             ));
         }
@@ -250,20 +259,25 @@ impl DependencyMap {
     ) -> Result<CanonPath, RichError> {
         let root = self
             .get_package_root(current_file)
-            .ok_or_else(|| {
-                Error::Internal(
-                    "The 'crate' root path was not configured by the compiler.".to_string(),
-                )
+            .ok_or_else(|| Error::Internal {
+                msg: "The 'crate' root path was not configured by the compiler.".to_string(),
             })
             .map_err(|e| RichError::new(e, *use_decl.span()))?;
 
         let resolved = Self::build_and_verify_path(root, &parts[1..]).map_err(|failed_path| {
-            RichError::new(Error::FileNotFound(failed_path), *use_decl.span())
+            RichError::new(
+                Error::FileNotFound {
+                    filename: failed_path,
+                },
+                *use_decl.span(),
+            )
         })?;
 
         if !resolved.starts_with(root) {
             return Err(RichError::new(
-                Error::FileNotFound(resolved.as_path().to_path_buf()),
+                Error::FileNotFound {
+                    filename: resolved.as_path().to_path_buf(),
+                },
                 *use_decl.span(),
             ));
         }
@@ -283,9 +297,9 @@ impl DependencyMap {
 
         if let (Some(curr), Some(res)) = (current_crate, resolved_crate) {
             if curr == res {
-                return Err(Error::LocalFileImportedAsExternal(
-                    resolved.as_path().to_path_buf(),
-                ))
+                return Err(Error::LocalFileImportedAsExternal {
+                    path: resolved.as_path().to_path_buf(),
+                })
                 .with_span(*use_decl.span());
             }
         }
@@ -401,7 +415,7 @@ pub(crate) mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err().error(),
-            Error::UnknownLibrary(..)
+            Error::UnknownLibrary { .. }
         ));
     }
 
@@ -459,7 +473,7 @@ pub(crate) mod tests {
 
         assert!(matches!(
             result.unwrap_err().error(),
-            Error::LocalFileImportedAsExternal(..)
+            Error::LocalFileImportedAsExternal { .. }
         ));
     }
 
@@ -500,7 +514,7 @@ pub(crate) mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err().error(),
-            Error::Internal(msg) if msg.contains("The 'crate' root path was not configured")
+            Error::Internal{msg} if msg.contains("The 'crate' root path was not configured")
         ));
     }
 

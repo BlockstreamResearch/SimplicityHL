@@ -735,11 +735,11 @@ impl Scope {
             .aliases_table
             .local_scopes()
             .get(self.file_id)
-            .ok_or_else(|| {
-                Error::Internal(format!(
+            .ok_or_else(|| Error::Internal {
+                msg: format!(
                     "file_id {} not found inside current Scope aliases",
                     self.file_id
-                ))
+                ),
             })?;
 
         // 4. Verify local scope visibility.
@@ -747,7 +747,9 @@ impl Scope {
             // We clone here because types usually need to be owned in AST resolution
             Ok(resolved_type.clone())
         } else {
-            Err(Error::PrivateItem(name.as_inner().to_string()))
+            Err(Error::PrivateItem {
+                name: name.as_inner().to_string(),
+            })
         }
     }
 
@@ -785,7 +787,10 @@ impl Scope {
     pub fn insert_parameter(&mut self, name: WitnessName, ty: ResolvedType) -> Result<(), Error> {
         match self.parameters.entry(name.clone()) {
             Entry::Occupied(entry) if entry.get() == &ty => Ok(()),
-            Entry::Occupied(entry) => Err(Error::ExpressionTypeMismatch(entry.get().clone(), ty)),
+            Entry::Occupied(entry) => Err(Error::ExpressionTypeMismatch {
+                expected: entry.get().clone(),
+                found: ty,
+            }),
             Entry::Vacant(entry) => {
                 entry.insert(ty);
                 Ok(())
@@ -882,11 +887,11 @@ impl Scope {
             .functions_table
             .local_scopes()
             .get(self.file_id)
-            .ok_or_else(|| {
-                Error::Internal(format!(
+            .ok_or_else(|| Error::Internal {
+                msg: format!(
                     "file_id {} not found inside current Scope files",
                     self.file_id
-                ))
+                ),
             })?;
 
         // 3. Verify local scope visibility.
@@ -894,7 +899,9 @@ impl Scope {
         if file_scope.contains(name) {
             Ok(function)
         } else {
-            Err(Error::PrivateItem(name.as_inner().to_string()))
+            Err(Error::PrivateItem {
+                name: name.as_inner().to_string(),
+            })
         }
     }
 
@@ -1123,10 +1130,10 @@ impl AbstractSyntaxTree for Expression {
                         .map(Arc::new)
                         .map(Some),
                     None if ty.is_unit() => Ok(None),
-                    None => Err(Error::ExpressionTypeMismatch(
-                        ty.clone(),
-                        ResolvedType::unit(),
-                    ))
+                    None => Err(Error::ExpressionTypeMismatch {
+                        expected: ty.clone(),
+                        found: ResolvedType::unit(),
+                    })
                     .with_span(from),
                 }?;
                 scope.pop_scope();
@@ -1148,10 +1155,10 @@ impl AbstractSyntaxTree for SingleExpression {
         let inner = match from.inner() {
             parse::SingleExpressionInner::Boolean(bit) => {
                 if !ty.is_boolean() {
-                    return Err(Error::ExpressionTypeMismatch(
-                        ty.clone(),
-                        ResolvedType::boolean(),
-                    ))
+                    return Err(Error::ExpressionTypeMismatch {
+                        expected: ty.clone(),
+                        found: ResolvedType::boolean(),
+                    })
                     .with_span(from);
                 }
                 SingleExpressionInner::Constant(Value::from(*bit))
@@ -1196,8 +1203,11 @@ impl AbstractSyntaxTree for SingleExpression {
                     .ok_or(Error::UndefinedVariable(identifier.clone()))
                     .with_span(from)?;
                 if ty != bound_ty {
-                    return Err(Error::ExpressionTypeMismatch(ty.clone(), bound_ty.clone()))
-                        .with_span(from);
+                    return Err(Error::ExpressionTypeMismatch {
+                        expected: ty.clone(),
+                        found: bound_ty.clone(),
+                    })
+                    .with_span(from);
                 }
                 scope.insert_variable(identifier.clone(), ty.clone());
                 SingleExpressionInner::Variable(identifier.clone())
@@ -1304,10 +1314,10 @@ impl AbstractSyntaxTree for Call {
             if parse_args.len() == expected_tys.len() {
                 Ok(())
             } else {
-                Err(Error::InvalidNumberOfArguments(
-                    expected_tys.len(),
-                    parse_args.len(),
-                ))
+                Err(Error::InvalidNumberOfArguments {
+                    expected: expected_tys.len(),
+                    found: parse_args.len(),
+                })
             }
         }
 
@@ -1318,10 +1328,10 @@ impl AbstractSyntaxTree for Call {
             if observed_ty == expected_ty {
                 Ok(())
             } else {
-                Err(Error::ExpressionTypeMismatch(
-                    expected_ty.clone(),
-                    observed_ty.clone(),
-                ))
+                Err(Error::ExpressionTypeMismatch {
+                    expected: expected_ty.clone(),
+                    found: observed_ty.clone(),
+                })
             }
         }
 
@@ -1412,7 +1422,11 @@ impl AbstractSyntaxTree for Call {
             }
             CallName::TypeCast(source) => {
                 if StructuralType::from(&source) != StructuralType::from(ty) {
-                    return Err(Error::InvalidCast(source, ty.clone())).with_span(from);
+                    return Err(Error::InvalidCast {
+                        source,
+                        target: ty.clone(),
+                    })
+                    .with_span(from);
                 }
 
                 let args_tys = [source];

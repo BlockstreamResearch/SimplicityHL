@@ -203,7 +203,9 @@ impl RichError {
     /// a problem on the parsing side.
     pub fn parsing_error(reason: &str) -> Self {
         Self {
-            error: Box::new(Error::CannotParse(reason.to_string())),
+            error: Box::new(Error::CannotParse {
+                msg: reason.to_string(),
+            }),
             span: Span::new(0, 0),
             source: None,
         }
@@ -321,9 +323,9 @@ where
 {
     fn merge(self, other: Self) -> Self {
         match (self.error.as_ref(), other.error.as_ref()) {
-            (Error::Grammar(_), Error::Grammar(_)) => other,
-            (Error::Grammar(_), _) => other,
-            (_, Error::Grammar(_)) => self,
+            (Error::Grammar { .. }, Error::Grammar { .. }) => other,
+            (Error::Grammar { .. }, _) => other,
+            (_, Error::Grammar { .. }) => self,
             _ => other,
         }
     }
@@ -489,19 +491,36 @@ pub enum Error {
     InvalidDependencyIdentifier {
         alias: String,
     },
-    Internal(String),
-    UnknownLibrary(String),
-    ArraySizeNonZero(usize),
-    ListBoundPow2(usize),
-    BitStringPow2(usize),
-    CannotParse(String),
-    Grammar(String),
+    Internal {
+        msg: String,
+    },
+    UnknownLibrary {
+        name: String,
+    },
+    ArraySizeNonZero {
+        size: usize,
+    },
+    ListBoundPow2 {
+        bound: usize,
+    },
+    BitStringPow2 {
+        len: usize,
+    },
+    CannotParse {
+        msg: String,
+    },
+    Grammar {
+        msg: String,
+    },
     Syntax {
         expected: Vec<String>,
         label: Option<String>,
         found: Option<String>,
     },
-    IncompatibleMatchArms(MatchPattern, MatchPattern),
+    IncompatibleMatchArms {
+        first: MatchPattern,
+        second: MatchPattern,
+    },
     // TODO: Remove CompileError once SimplicityHL has a type system
     // The SimplicityHL compiler should never produce ill-typed Simplicity code
     // The compiler can only be this precise if it knows a type system at least as expressive as Simplicity's
@@ -515,13 +534,29 @@ pub enum Error {
         source: crate::num::ParseIntError,
     },
     JetDoesNotExist(JetName),
-    InvalidCast(ResolvedType, ResolvedType),
-    FileNotFound(PathBuf),
-    ExternalFileNotFound(String, PathBuf),
-    LocalFileImportedAsExternal(PathBuf),
-    RedefinedItem(String),
-    UnresolvedItem(String),
-    PrivateItem(String),
+    InvalidCast {
+        source: ResolvedType,
+        target: ResolvedType,
+    },
+    FileNotFound {
+        filename: PathBuf,
+    },
+    ExternalFileNotFound {
+        lib: String,
+        filename: PathBuf,
+    },
+    LocalFileImportedAsExternal {
+        path: PathBuf,
+    },
+    RedefinedItem {
+        name: String,
+    },
+    UnresolvedItem {
+        name: String,
+    },
+    PrivateItem {
+        name: String,
+    },
     MainNoInputs,
     MainNoOutput,
     MainRequired,
@@ -530,11 +565,17 @@ pub enum Error {
     MainCannotBeAlias,
     FunctionRedefined(FunctionName),
     FunctionUndefined(FunctionName),
-    InvalidNumberOfArguments(usize, usize),
+    InvalidNumberOfArguments {
+        expected: usize,
+        found: usize,
+    },
     FunctionNotFoldable(FunctionName),
     FunctionNotLoopable(FunctionName),
     ExpressionUnexpectedType(ResolvedType),
-    ExpressionTypeMismatch(ResolvedType, ResolvedType),
+    ExpressionTypeMismatch {
+        expected: ResolvedType,
+        found: ResolvedType,
+    },
     ExpressionNotConstant,
     IntegerOutOfBounds(UIntType),
     UndefinedVariable(Identifier),
@@ -544,12 +585,20 @@ pub enum Error {
     DuplicateAlias(String),
     VariableReuseInPattern(Identifier),
     WitnessReused(WitnessName),
-    WitnessTypeMismatch(WitnessName, ResolvedType, ResolvedType),
+    WitnessTypeMismatch {
+        name: WitnessName,
+        declared: ResolvedType,
+        assigned: ResolvedType,
+    },
     WitnessReassigned(WitnessName),
     WitnessOutsideMain,
     ModuleRedefined(ModuleName),
     ArgumentMissing(WitnessName),
-    ArgumentTypeMismatch(WitnessName, ResolvedType, ResolvedType),
+    ArgumentTypeMismatch {
+        name: WitnessName,
+        declared: ResolvedType,
+        assigned: ResolvedType,
+    },
     UseKeywordIsNotSupported,
 }
 
@@ -577,43 +626,43 @@ impl fmt::Display for Error {
                 f,
                 "Invalid dependency alias '{alias}': must be a valid identifier and not a reserved keyword"
             ),
-            Error::Internal(err) => write!(
+            Error::Internal { msg } => write!(
                 f,
-                "INTERNAL ERROR: {err}"
+                "INTERNAL ERROR: {msg}"
             ),
-            Error::UnknownLibrary(name) => write!(
+            Error::UnknownLibrary { name } => write!(
                 f,
                 "Unknown module or library '{name}'"
             ),
-            Error::ArraySizeNonZero(size) => write!(
+            Error::ArraySizeNonZero { size } => write!(
                 f,
                 "Expected a non-negative integer as array size, found {size}"
             ),
-            Error::ListBoundPow2(bound) => write!(
+            Error::ListBoundPow2 { bound } => write!(
                 f,
                 "Expected a power of two greater than one (2, 4, 8, 16, 32, ...) as list bound, found {bound}"
             ),
-            Error::BitStringPow2(len) => write!(
+            Error::BitStringPow2 { len } => write!(
                 f,
                 "Expected a valid bit string length (1, 2, 4, 8, 16, 32, 64, 128, 256), found {len}"
             ),
-            Error::CannotParse(description) => write!(
+            Error::CannotParse{ msg } => write!(
                 f,
-                "Cannot parse: {description}"
+                "Cannot parse: {msg}"
             ),
-            Error::Grammar(description) => write!(
+            Error::Grammar{ msg } => write!(
                 f,
-                "Grammar error: {description}"
+                "Grammar error: {msg}"
             ),
-            Error::FileNotFound(path) => write!(
+            Error::FileNotFound { filename: path } => write!(
                 f,
                 "Local file `{}` not found", path.to_string_lossy()
             ),
-            Error::ExternalFileNotFound(lib, path) => write!(
+            Error::ExternalFileNotFound { lib, filename: path } => write!(
                 f,
                 "File `{}` not found in external library `{}`", path.to_string_lossy(), lib
             ),
-            Error::LocalFileImportedAsExternal(path) => write!(
+            Error::LocalFileImportedAsExternal { path } => write!(
                 f,
                 "File `{}` is part of the local project and must be imported using the `crate::` prefix", path.to_string_lossy()
             ),
@@ -632,9 +681,9 @@ impl fmt::Display for Error {
                     }
                 }
             }
-            Error::IncompatibleMatchArms(pattern1, pattern2) => write!(
+            Error::IncompatibleMatchArms { first, second} => write!(
                 f,
-                "Match arm `{pattern1}` is incompatible with arm `{pattern2}`"
+                "Match arm `{first}` is incompatible with arm `{second}`"
             ),
             Error::CannotCompile{ .. } => write!(
                 f,
@@ -645,7 +694,7 @@ impl fmt::Display for Error {
                 f,
                 "Jet `{name}` does not exist"
             ),
-            Error::InvalidCast(source, target) => write!(
+            Error::InvalidCast { source, target } => write!(
                 f,
                 "Cannot cast values of type `{source}` as values of type `{target}`"
             ),
@@ -681,19 +730,19 @@ impl fmt::Display for Error {
                 f,
                 "Function `{name}` was called but not defined"
             ),
-            Error::RedefinedItem(name) => write!(
+            Error::RedefinedItem { name } => write!(
                 f,
                 "Item `{name}` was defined multiple times"
             ),
-            Error::UnresolvedItem(name) => write!(
+            Error::UnresolvedItem { name } => write!(
                 f,
                 "Item `{name}` could not be found"
             ),
-            Error::PrivateItem(name) => write!(
+            Error::PrivateItem { name } => write!(
                 f,
                 "Item `{name}` is private"
             ),
-            Error::InvalidNumberOfArguments(expected, found) => write!(
+            Error::InvalidNumberOfArguments { expected, found } => write!(
                 f,
                 "Expected {expected} arguments, found {found} arguments"
             ),
@@ -709,7 +758,7 @@ impl fmt::Display for Error {
                 f,
                 "Expected expression of type `{ty}`; found something else"
             ),
-            Error::ExpressionTypeMismatch(expected, found) => write!(
+            Error::ExpressionTypeMismatch { expected, found } => write!(
                 f,
                 "Expected expression of type `{expected}`, found type `{found}`"
             ),
@@ -749,7 +798,7 @@ impl fmt::Display for Error {
                 f,
                 "Witness `{name}` has been used before somewhere in the program"
             ),
-            Error::WitnessTypeMismatch(name, declared, assigned) => write!(
+            Error::WitnessTypeMismatch { name, declared, assigned } => write!(
                 f,
                 "Witness `{name}` was declared with type `{declared}` but its assigned value is of type `{assigned}`"
             ),
@@ -769,7 +818,7 @@ impl fmt::Display for Error {
                 f,
                 "Parameter `{name}` is missing an argument"
             ),
-            Error::ArgumentTypeMismatch(name, declared, assigned) => write!(
+            Error::ArgumentTypeMismatch { name, declared, assigned } => write!(
                 f,
                 "Parameter `{name}` was declared with type `{declared}` but its assigned argument is of type `{assigned}`"
             ),
@@ -829,7 +878,7 @@ let x: u32 = Left(
 
     #[test]
     fn display_single_line() {
-        let error = Error::ListBoundPow2(5)
+        let error = Error::ListBoundPow2 { bound: 5 }
             .with_span(Span::new(13, 19))
             .with_content(Arc::from(CONTENT));
         let expected = r#"
@@ -841,9 +890,9 @@ let x: u32 = Left(
 
     #[test]
     fn display_multi_line() {
-        let error = Error::CannotParse(
-            "Expected value of type `u32`, got `Either<Either<_, u32>, _>`".to_string(),
-        )
+        let error = Error::CannotParse {
+            msg: "Expected value of type `u32`, got `Either<Either<_, u32>, _>`".to_string(),
+        }
         .with_span(Span::new(41, CONTENT.len()))
         .with_content(Arc::from(CONTENT));
         let expected = r#"
@@ -857,9 +906,11 @@ let x: u32 = Left(
 
     #[test]
     fn display_entire_file() {
-        let error = Error::CannotParse("This span covers the entire file".to_string())
-            .with_span(Span::from(CONTENT))
-            .with_content(Arc::from(CONTENT));
+        let error = Error::CannotParse {
+            msg: "This span covers the entire file".to_string(),
+        }
+        .with_span(Span::from(CONTENT))
+        .with_content(Arc::from(CONTENT));
         let expected = r#"
   |
 1 | let a1: List<u32, 5> = None;
@@ -872,21 +923,27 @@ let x: u32 = Left(
 
     #[test]
     fn display_no_file() {
-        let error = Error::CannotParse("This error has no file".to_string())
-            .with_span(Span::from(EMPTY_FILE));
+        let error = Error::CannotParse {
+            msg: "This error has no file".to_string(),
+        }
+        .with_span(Span::from(EMPTY_FILE));
         let expected = "Cannot parse: This error has no file";
         assert_eq!(&expected, &error.to_string());
 
-        let error =
-            Error::CannotParse("This error has no file".to_string()).with_span(Span::new(5, 10));
+        let error = Error::CannotParse {
+            msg: "This error has no file".to_string(),
+        }
+        .with_span(Span::new(5, 10));
         assert_eq!(&expected, &error.to_string());
     }
 
     #[test]
     fn display_empty_file() {
-        let error = Error::CannotParse("This error has an empty file".to_string())
-            .with_span(Span::from(EMPTY_FILE))
-            .with_content(Arc::from(EMPTY_FILE));
+        let error = Error::CannotParse {
+            msg: "This error has an empty file".to_string(),
+        }
+        .with_span(Span::from(EMPTY_FILE))
+        .with_content(Arc::from(EMPTY_FILE));
         let expected = "Cannot parse: This error has an empty file";
         assert_eq!(&expected, &error.to_string());
     }
@@ -894,9 +951,11 @@ let x: u32 = Left(
     #[test]
     fn display_with_utf16_chars() {
         let file = "/*😀*/ let a: u8 = 65536;";
-        let error = Error::CannotParse("number too large to fit in target type".to_string())
-            .with_span(Span::new(21, 26))
-            .with_content(Arc::from(file));
+        let error = Error::CannotParse {
+            msg: "number too large to fit in target type".to_string(),
+        }
+        .with_span(Span::new(21, 26))
+        .with_content(Arc::from(file));
 
         let expected = r#"
   |
@@ -913,9 +972,11 @@ let a: u8 = 65536;
 let x: u32 = Left(
     Right(0)
 );"#;
-        let error = Error::CannotParse("This span covers the entire file".to_string())
-            .with_span(Span::from(file))
-            .with_content(Arc::from(file));
+        let error = Error::CannotParse {
+            msg: "This span covers the entire file".to_string(),
+        }
+        .with_span(Span::from(file))
+        .with_content(Arc::from(file));
 
         let expected = r#"
   |
@@ -932,9 +993,11 @@ let x: u32 = Left(
     #[test]
     fn display_with_unicode_separator() {
         let file = "let a: u8 = 65536;\u{2028}let b: u8 = 0;";
-        let error = Error::CannotParse("number too large to fit in target type".to_string())
-            .with_span(Span::new(12, 17))
-            .with_content(Arc::from(file));
+        let error = Error::CannotParse {
+            msg: "number too large to fit in target type".to_string(),
+        }
+        .with_span(Span::new(12, 17))
+        .with_content(Arc::from(file));
 
         let expected = r#"
   |
@@ -947,9 +1010,11 @@ let x: u32 = Left(
     #[test]
     fn display_span_as_point() {
         let file = "fn main()";
-        let error = Error::Grammar("Error span at (0,0)".to_string())
-            .with_span(Span::new(0, 0))
-            .with_content(Arc::from(file));
+        let error = Error::Grammar {
+            msg: "Error span at (0,0)".to_string(),
+        }
+        .with_span(Span::new(0, 0))
+        .with_content(Arc::from(file));
 
         let expected = r#"
   |
@@ -961,9 +1026,11 @@ let x: u32 = Left(
     #[test]
     fn display_span_as_point_on_trailing_empty_line() {
         let file = "fn main(){\n    let a:\n";
-        let error = Error::CannotParse("eof".to_string())
-            .with_span(Span::new(file.len(), file.len()))
-            .with_content(Arc::from(file));
+        let error = Error::CannotParse {
+            msg: "eof".to_string(),
+        }
+        .with_span(Span::new(file.len(), file.len()))
+        .with_content(Arc::from(file));
 
         let expected = r#"
   |
@@ -977,7 +1044,7 @@ let x: u32 = Left(
     #[test]
     fn display_single_line_with_file() {
         let source = SourceFile::new(std::path::Path::new("src/main.simf"), Arc::from(CONTENT));
-        let error = Error::ListBoundPow2(5)
+        let error = Error::ListBoundPow2 { bound: 5 }
             .with_span(Span::new(13, 19))
             .with_source(source);
 
@@ -992,9 +1059,9 @@ let x: u32 = Left(
     #[test]
     fn display_multi_line_with_file() {
         let source = SourceFile::new(std::path::Path::new("lib/parser.simf"), Arc::from(CONTENT));
-        let error = Error::CannotParse(
-            "Expected value of type `u32`, got `Either<Either<_, u32>, _>`".to_string(),
-        )
+        let error = Error::CannotParse {
+            msg: "Expected value of type `u32`, got `Either<Either<_, u32>, _>`".to_string(),
+        }
         .with_span(Span::new(41, CONTENT.len()))
         .with_source(source);
 
@@ -1014,9 +1081,11 @@ let x: u32 = Left(
             std::path::Path::new("tests/integration.simf"),
             Arc::from(CONTENT),
         );
-        let error = Error::CannotParse("This span covers the entire file".to_string())
-            .with_span(Span::from(CONTENT))
-            .with_source(source);
+        let error = Error::CannotParse {
+            msg: "This span covers the entire file".to_string(),
+        }
+        .with_span(Span::from(CONTENT))
+        .with_source(source);
 
         let expected = r#"
  --> tests/integration.simf:1:1

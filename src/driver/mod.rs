@@ -206,8 +206,13 @@ impl DependencyGraph {
         handler: &mut ErrorCollector,
     ) -> Option<Module> {
         let Ok(content) = std::fs::read_to_string(path.as_path()) else {
-            let err = RichError::new(Error::FileNotFound(PathBuf::from(path.as_path())), span)
-                .with_source(importer_source.clone());
+            let err = RichError::new(
+                Error::FileNotFound {
+                    filename: PathBuf::from(path.as_path()),
+                },
+                span,
+            )
+            .with_source(importer_source.clone());
 
             handler.push(err);
             return None;
