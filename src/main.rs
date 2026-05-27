@@ -38,6 +38,22 @@ impl fmt::Display for Output {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let max_len = simplicityhl::UnstableFeature::all()
+        .iter()
+        .map(|f| f.to_string().len())
+        .max()
+        .unwrap_or(0);
+
+    let mut unstable_help = String::from("Enable unstable features. Available features:\n");
+    for feature in simplicityhl::UnstableFeature::all() {
+        unstable_help.push_str(&format!(
+            "  {name:<width$} {desc}\n",
+            name = feature.to_string(),
+            width = max_len + 2,
+            desc = feature.description()
+        ));
+    }
+
     let command = {
         Command::new(env!("CARGO_BIN_NAME"))
             .about(
@@ -101,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .short('Z')
                     .value_name("FEATURE")
                     .action(ArgAction::Append)
-                    .help("Enable unstable features (e.g., -Z use-keyword -Z other-feature)"),
+                    .help(unstable_help),
             )
     };
 
