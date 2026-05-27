@@ -5,7 +5,7 @@ use clap::{Arg, ArgAction, Command};
 use simplicityhl::ast::ElementsJetHinter;
 use simplicityhl::{
     resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
-    CompiledProgram,
+    CompiledProgram, UnstableFeatureManager,
 };
 use std::path::Path;
 use std::{env, fmt};
@@ -95,6 +95,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .action(ArgAction::SetTrue)
                     .help("Additional ABI .simf contract types"),
             )
+            .arg(
+                Arg::new("unstable_features")
+                    .long("unstable-feature")
+                    .short('Z')
+                    .value_name("FEATURE")
+                    .action(ArgAction::Append)
+                    .help("Enable unstable features (e.g., -Z use-keyword -Z other-feature)"),
+            )
     };
 
     let matches = command.get_matches();
@@ -105,6 +113,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let include_debug_symbols = matches.get_flag("debug");
     let output_json = matches.get_flag("json");
     let abi_param = matches.get_flag("abi");
+
+    // Parse unstable features
+    let unstable_manager = if let Some(features) = matches.get_many::<String>("unstable_features") {
+        UnstableFeatureManager::from_feature_names(features.map(|s| s.as_str())).unwrap_or_else(
+            |e| {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            },
+        )
+    } else {
+        UnstableFeatureManager::default()
+    };
 
     #[cfg(feature = "serde")]
     let args_opt: simplicityhl::Arguments = match matches.get_one::<String>("args_file") {
@@ -170,9 +190,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let source = CanonSourceFile::new(main_path.clone(), std::sync::Arc::from(main_text));
-    let compiled = match CompiledProgram::new_with_dep(
+    let compiled = match CompiledProgram::with_unstable_and_dep(
         source,
         &dependencies,
+        &unstable_manager,
         args_opt,
         include_debug_symbols,
         Box::new(ElementsJetHinter::new()),
