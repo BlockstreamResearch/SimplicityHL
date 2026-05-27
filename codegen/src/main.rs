@@ -35,7 +35,7 @@ fn write_jet<W: io::Write>(jet: Elements, w: &mut W) -> io::Result<()> {
     writeln!(w, "///")?;
     writeln!(w, "/// {} mWU _(milli weight units)_", jet.cost())?;
     write!(w, "pub fn {jet}(")?;
-    let parameters = simplicityhl::jet::source_type(jet);
+    let parameters = simplicityhl::jet::elements::source_type(jet);
     for (i, ty) in parameters.iter().enumerate() {
         let identifier = (b'a' + i as u8) as char;
         if i == parameters.len() - 1 {
@@ -44,10 +44,14 @@ fn write_jet<W: io::Write>(jet: Elements, w: &mut W) -> io::Result<()> {
             write!(w, "{identifier}: {ty}, ")?;
         }
     }
-    let target = simplicityhl::jet::target_type(jet);
+    let target = simplicityhl::jet::elements::target_type(jet);
     match target.is_unit() {
         true => writeln!(w, ") {{")?,
-        false => writeln!(w, ") -> {} {{", simplicityhl::jet::target_type(jet))?,
+        false => writeln!(
+            w,
+            ") -> {} {{",
+            simplicityhl::jet::elements::target_type(jet)
+        )?,
     }
 
     writeln!(w, "    todo!()")?;
@@ -104,12 +108,12 @@ fn generate_docs(output_path: PathBuf) -> Result<(), Box<dyn std::error::Error>>
                     haskell_name: format!("{:?}", jet),
                     simplicityhl_name: jet.to_string(),
                     section: section_name.clone(),
-                    input_type: simplicityhl::jet::source_type(jet)
+                    input_type: simplicityhl::jet::elements::source_type(jet)
                         .iter()
                         .map(|ty| ty.to_string())
                         .collect::<Vec<_>>()
                         .join(", "),
-                    output_type: simplicityhl::jet::target_type(jet).to_string(),
+                    output_type: simplicityhl::jet::elements::target_type(jet).to_string(),
                     description: jet.documentation().to_string(),
                     deprecated: jet.is_deprecated(),
                 })

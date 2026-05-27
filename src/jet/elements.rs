@@ -1,39 +1,11 @@
-use crate::num::NonZeroPow2Usize;
+use crate::jet::JetHL;
 use crate::types::BuiltinAlias::*;
 use crate::types::UIntType::*;
 use crate::types::*;
 
-use simplicity::jet::DynJet;
-use simplicity::jet::Elements;
-use simplicity::jet::Jet;
+use super::*;
 
-pub trait JetHL: DynJet + Jet + std::fmt::Debug + Send + Sync + 'static {
-    fn source_type(&self) -> Vec<AliasedType>;
-    fn target_type(&self) -> AliasedType;
-    fn is_disabled(&self) -> bool;
-    fn clone_box(&self) -> Box<dyn JetHL>;
-    fn as_jet(&self) -> &dyn Jet;
-}
-
-impl Clone for Box<dyn JetHL> {
-    fn clone(&self) -> Self {
-        (**self).clone_box()
-    }
-}
-
-impl PartialEq for Box<dyn JetHL> {
-    fn eq(&self, other: &Self) -> bool {
-        (**self).dyn_eq(other.as_jet())
-    }
-}
-
-impl Eq for Box<dyn JetHL> {}
-
-impl std::hash::Hash for Box<dyn JetHL> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        (**self).dyn_hash(state)
-    }
-}
+use simplicity::jet::{Elements, Jet};
 
 impl JetHL for Elements {
     fn source_type(&self) -> Vec<AliasedType> {
@@ -55,30 +27,6 @@ impl JetHL for Elements {
     fn as_jet(&self) -> &dyn Jet {
         self
     }
-}
-
-fn tuple<A: Into<AliasedType>, I: IntoIterator<Item = A>>(elements: I) -> AliasedType {
-    AliasedType::tuple(elements.into_iter().map(A::into))
-}
-
-fn array<A: Into<AliasedType>>(element: A, size: usize) -> AliasedType {
-    AliasedType::array(element.into(), size)
-}
-
-fn list<A: Into<AliasedType>>(element: A, bound: usize) -> AliasedType {
-    AliasedType::list(element.into(), NonZeroPow2Usize::new(bound).unwrap())
-}
-
-fn bool() -> AliasedType {
-    AliasedType::boolean()
-}
-
-fn either<A: Into<AliasedType>, B: Into<AliasedType>>(left: A, right: B) -> AliasedType {
-    AliasedType::either(left.into(), right.into())
-}
-
-fn option<A: Into<AliasedType>>(inner: A) -> AliasedType {
-    AliasedType::option(inner.into())
 }
 
 pub fn source_type(jet: Elements) -> Vec<AliasedType> {
@@ -1090,7 +1038,7 @@ pub fn target_type(jet: Elements) -> AliasedType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use simplicity::jet::Jet;
+    use simplicity::jet::{Elements, Jet};
 
     #[test]
     fn compatible_source_type() {
