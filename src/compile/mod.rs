@@ -320,7 +320,9 @@ impl SingleExpression {
             }
             SingleExpressionInner::Variable(identifier) => scope
                 .get(&BasePattern::Identifier(identifier.clone()))
-                .ok_or(Error::UndefinedVariable(identifier.clone()))
+                .ok_or(Error::UndefinedVariable {
+                    identifier: identifier.clone(),
+                })
                 .with_span(self)?,
             SingleExpressionInner::Expression(expr) => expr.compile(scope)?,
             SingleExpressionInner::Tuple(elements) | SingleExpressionInner::Array(elements) => {

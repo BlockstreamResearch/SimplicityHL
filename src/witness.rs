@@ -118,11 +118,11 @@ impl WitnessValues {
             };
             let assigned_ty = self.0[name].ty();
             if assigned_ty != declared_ty {
-                return Err(Error::WitnessTypeMismatch(
-                    name.clone(),
-                    declared_ty.clone(),
-                    assigned_ty.clone(),
-                ));
+                return Err(Error::WitnessTypeMismatch {
+                    name: name.clone(),
+                    declared: declared_ty.clone(),
+                    assigned: assigned_ty.clone(),
+                });
             }
         }
 
@@ -135,7 +135,7 @@ impl ParseFromStr for ResolvedType {
         let aliased = AliasedType::parse_from_str(s)?;
         aliased
             .resolve_builtin()
-            .map_err(Error::UndefinedAlias)
+            .map_err(|name| Error::UndefinedAlias { name })
             .with_span(s)
             .with_content(s)
     }
@@ -175,15 +175,15 @@ impl Arguments {
     /// Arguments without a corresponding parameter are ignored.
     pub fn is_consistent(&self, parameters: &Parameters) -> Result<(), Error> {
         for (name, parameter_ty) in parameters.iter() {
-            let argument = self
-                .get(name)
-                .ok_or_else(|| Error::ArgumentMissing(name.shallow_clone()))?;
+            let argument = self.get(name).ok_or_else(|| Error::ArgumentMissing {
+                name: name.shallow_clone(),
+            })?;
             if !argument.is_of_type(parameter_ty) {
-                return Err(Error::ArgumentTypeMismatch(
-                    name.clone(),
-                    parameter_ty.clone(),
-                    argument.ty().clone(),
-                ));
+                return Err(Error::ArgumentTypeMismatch {
+                    name: name.clone(),
+                    declared: parameter_ty.clone(),
+                    assigned: argument.ty().clone(),
+                });
             }
         }
 
@@ -237,7 +237,7 @@ mod tests {
             .map_err(Error::from)
         {
             Ok(_) => panic!("Witness reuse was falsely accepted"),
-            Err(Error::WitnessReused(..)) => {}
+            Err(Error::WitnessReused { .. }) => {}
             Err(error) => panic!("Unexpected error: {error}"),
         }
     }

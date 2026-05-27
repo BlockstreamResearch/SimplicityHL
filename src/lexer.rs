@@ -247,7 +247,9 @@ pub fn lex<'src>(input: &'src str) -> (Option<Tokens<'src>>, Vec<crate::error::R
             .iter()
             .map(|err| {
                 crate::error::RichError::new(
-                    crate::error::Error::CannotParse(err.reason().to_string()),
+                    crate::error::Error::CannotParse {
+                        msg: err.reason().to_string(),
+                    },
                     (*err.span()).into(),
                 )
             })

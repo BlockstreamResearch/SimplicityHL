@@ -92,7 +92,7 @@ impl UIntValue {
     pub const fn u1(value: u8) -> Result<Self, Error> {
         match value {
             0 | 1 => Ok(Self::U1(value)),
-            _ => Err(Error::IntegerOutOfBounds(UIntType::U1)),
+            _ => Err(Error::IntegerOutOfBounds { ty: UIntType::U1 }),
         }
     }
 
@@ -104,7 +104,7 @@ impl UIntValue {
     pub const fn u2(value: u8) -> Result<Self, Error> {
         match value {
             0..=3 => Ok(Self::U2(value)),
-            _ => Err(Error::IntegerOutOfBounds(UIntType::U2)),
+            _ => Err(Error::IntegerOutOfBounds { ty: UIntType::U2 }),
         }
     }
 
@@ -116,7 +116,7 @@ impl UIntValue {
     pub const fn u4(value: u8) -> Result<Self, Error> {
         match value {
             0..=15 => Ok(Self::U4(value)),
-            _ => Err(Error::IntegerOutOfBounds(UIntType::U4)),
+            _ => Err(Error::IntegerOutOfBounds { ty: UIntType::U4 }),
         }
     }
 
@@ -139,10 +139,14 @@ impl UIntValue {
     /// Create an integer from a `binary` string and type.
     pub fn parse_binary(binary: &Binary, ty: UIntType) -> Result<Self, Error> {
         let s = binary.as_inner();
-        let bit_len = Pow2Usize::new(s.len()).ok_or(Error::BitStringPow2(s.len()))?;
-        let bit_ty = UIntType::from_bit_width(bit_len).ok_or(Error::BitStringPow2(s.len()))?;
+        let bit_len = Pow2Usize::new(s.len()).ok_or(Error::BitStringPow2 { len: s.len() })?;
+        let bit_ty =
+            UIntType::from_bit_width(bit_len).ok_or(Error::BitStringPow2 { len: s.len() })?;
         if ty != bit_ty {
-            return Err(Error::ExpressionTypeMismatch(ty.into(), bit_ty.into()));
+            return Err(Error::ExpressionTypeMismatch {
+                expected: ty.into(),
+                found: bit_ty.into(),
+            });
         }
 
         let byte_len = bit_len.get().div_ceil(8);
@@ -628,11 +632,11 @@ impl Value {
         let expected_byte_len = match ty.as_inner() {
             TypeInner::UInt(int) => int.byte_width(),
             TypeInner::Array(inner, len) if inner.as_integer() == Some(UIntType::U8) => *len,
-            _ => return Err(Error::ExpressionUnexpectedType(ty.clone())),
+            _ => return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }),
         };
         let s = hexadecimal.as_inner();
         if s.len() % 2 != 0 || s.len() != expected_byte_len * 2 {
-            return Err(Error::ExpressionUnexpectedType(ty.clone()));
+            return Err(Error::ExpressionUnexpectedType { ty: ty.clone() });
         }
         let bytes = Vec::<u8>::from_hex(s).expect("valid chars and valid length");
         let ret = match ty.as_inner() {
@@ -786,7 +790,7 @@ impl Value {
         let parse_expr = parse::Expression::parse_from_str(s)?;
         let ast_expr = ast::Expression::analyze_const(&parse_expr, ty)?;
         Self::from_const_expr(&ast_expr)
-            .ok_or(Error::ExpressionUnexpectedType(ty.clone()))
+            .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
             .with_span(s)
     }
 }

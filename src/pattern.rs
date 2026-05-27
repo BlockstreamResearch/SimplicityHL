@@ -52,7 +52,11 @@ impl Pattern {
         while let Some((pattern, ty)) = stack.pop() {
             match (pattern, ty.as_inner()) {
                 (Pattern::Identifier(i), _) => match output.entry(i.clone()) {
-                    Entry::Occupied(..) => return Err(Error::VariableReuseInPattern(i.clone())),
+                    Entry::Occupied(..) => {
+                        return Err(Error::VariableReuseInPattern {
+                            identifier: i.clone(),
+                        })
+                    }
                     Entry::Vacant(entry) => {
                         entry.insert(ty.clone());
                     }
@@ -64,7 +68,7 @@ impl Pattern {
                 (Pattern::Array(pats), TypeInner::Array(ty, size)) if pats.len() == *size => {
                     stack.extend(pats.iter().zip(std::iter::repeat(ty.as_ref())));
                 }
-                _ => return Err(Error::ExpressionUnexpectedType(ty.clone())),
+                _ => return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }),
             }
         }
         Ok(output)

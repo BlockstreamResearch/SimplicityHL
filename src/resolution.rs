@@ -84,54 +84,58 @@ impl DependencyMapBuilder {
         // will always return `Some()` for files under the entry root.
         let root = self.entry_root;
         if !root.as_path().exists() {
-            return Err(Error::DependencyPathNotFound(
-                root.as_path().display().to_string(),
-            ));
+            return Err(Error::DependencyPathNotFound {
+                path: root.as_path().into(),
+            });
         }
         if !root.as_path().is_dir() {
-            return Err(Error::DependencyNotADirectory(
-                root.as_path().display().to_string(),
-            ));
+            return Err(Error::DependencyNotADirectory {
+                path: root.as_path().into(),
+            });
         }
         crate_roots.push(root);
 
         for dep in self.deps {
             if !dep.context_prefix.as_path().exists() {
-                return Err(Error::DependencyPathNotFound(
-                    dep.context_prefix.as_path().display().to_string(),
-                ));
+                return Err(Error::DependencyPathNotFound {
+                    path: dep.context_prefix.as_path().into(),
+                });
             }
             if !dep.context_prefix.as_path().is_dir() {
-                return Err(Error::DependencyNotADirectory(
-                    dep.context_prefix.as_path().display().to_string(),
-                ));
+                return Err(Error::DependencyNotADirectory {
+                    path: dep.context_prefix.as_path().into(),
+                });
             }
             if !dep.target.as_path().exists() {
-                return Err(Error::DependencyPathNotFound(
-                    dep.target.as_path().display().to_string(),
-                ));
+                return Err(Error::DependencyPathNotFound {
+                    path: dep.target.as_path().into(),
+                });
             }
             if !dep.target.as_path().is_dir() {
-                return Err(Error::DependencyNotADirectory(
-                    dep.target.as_path().display().to_string(),
-                ));
+                return Err(Error::DependencyNotADirectory {
+                    path: dep.target.as_path().into(),
+                });
             }
 
             if !is_valid_dependency_identifier(&dep.drp_name) {
                 if dep.drp_name == CRATE_STR {
-                    return Err(Error::ReservedDependencyKeyword(dep.drp_name));
+                    return Err(Error::ReservedDependencyKeyword {
+                        keyword: dep.drp_name,
+                    });
                 }
-                return Err(Error::InvalidDependencyIdentifier(dep.drp_name));
+                return Err(Error::InvalidDependencyIdentifier {
+                    alias: dep.drp_name,
+                });
             }
 
             // Reject duplicates: same context and same alias
             if remappings.iter().any(|r: &Remapping| {
                 r.context_prefix == dep.context_prefix && r.drp_name == dep.drp_name
             }) {
-                return Err(Error::DuplicateDependencyAlias(
-                    dep.drp_name.clone(),
-                    dep.context_prefix.as_path().display().to_string(),
-                ));
+                return Err(Error::DuplicateDependencyAlias {
+                    alias: dep.drp_name.clone(),
+                    context: dep.context_prefix.as_path().display().to_string(),
+                });
             }
 
             crate_roots.push(dep.target.clone());
@@ -205,7 +209,10 @@ impl DependencyMap {
             }
         }
 
-        Err(Error::UnknownLibrary(drp_name.to_string())).with_span(*use_decl.span())
+        Err(Error::UnknownLibrary {
+            name: drp_name.to_string(),
+        })
+        .with_span(*use_decl.span())
     }
 
     fn resolve_external_path(
@@ -220,14 +227,20 @@ impl DependencyMap {
         let resolved =
             Self::build_and_verify_path(&remapping.target, &parts[1..]).map_err(|failed_path| {
                 RichError::new(
-                    Error::ExternalFileNotFound(drp_name.to_string(), failed_path),
+                    Error::ExternalFileNotFound {
+                        lib: drp_name.to_string(),
+                        filename: failed_path,
+                    },
                     *use_decl.span(),
                 )
             })?;
 
         if !resolved.starts_with(&remapping.target) {
             return Err(RichError::new(
-                Error::ExternalFileNotFound(drp_name.to_string(), resolved.as_path().to_path_buf()),
+                Error::ExternalFileNotFound {
+                    lib: drp_name.to_string(),
+                    filename: resolved.as_path().to_path_buf(),
+                },
                 *use_decl.span(),
             ));
         }
@@ -246,20 +259,25 @@ impl DependencyMap {
     ) -> Result<CanonPath, RichError> {
         let root = self
             .get_package_root(current_file)
-            .ok_or_else(|| {
-                Error::Internal(
-                    "The 'crate' root path was not configured by the compiler.".to_string(),
-                )
+            .ok_or_else(|| Error::Internal {
+                msg: "The 'crate' root path was not configured by the compiler.".to_string(),
             })
             .map_err(|e| RichError::new(e, *use_decl.span()))?;
 
         let resolved = Self::build_and_verify_path(root, &parts[1..]).map_err(|failed_path| {
-            RichError::new(Error::FileNotFound(failed_path), *use_decl.span())
+            RichError::new(
+                Error::FileNotFound {
+                    filename: failed_path,
+                },
+                *use_decl.span(),
+            )
         })?;
 
         if !resolved.starts_with(root) {
             return Err(RichError::new(
-                Error::FileNotFound(resolved.as_path().to_path_buf()),
+                Error::FileNotFound {
+                    filename: resolved.as_path().to_path_buf(),
+                },
                 *use_decl.span(),
             ));
         }
@@ -279,9 +297,9 @@ impl DependencyMap {
 
         if let (Some(curr), Some(res)) = (current_crate, resolved_crate) {
             if curr == res {
-                return Err(Error::LocalFileImportedAsExternal(
-                    resolved.as_path().to_path_buf(),
-                ))
+                return Err(Error::LocalFileImportedAsExternal {
+                    path: resolved.as_path().to_path_buf(),
+                })
                 .with_span(*use_decl.span());
             }
         }
@@ -345,7 +363,7 @@ pub(crate) mod tests {
 
         assert!(matches!(
             result.unwrap_err(),
-            Error::ReservedDependencyKeyword(_)
+            Error::ReservedDependencyKeyword { .. }
         ));
     }
 
@@ -397,7 +415,7 @@ pub(crate) mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err().error(),
-            Error::UnknownLibrary(..)
+            Error::UnknownLibrary { .. }
         ));
     }
 
@@ -455,7 +473,7 @@ pub(crate) mod tests {
 
         assert!(matches!(
             result.unwrap_err().error(),
-            Error::LocalFileImportedAsExternal(..)
+            Error::LocalFileImportedAsExternal { .. }
         ));
     }
 
@@ -496,7 +514,7 @@ pub(crate) mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err().error(),
-            Error::Internal(msg) if msg.contains("The 'crate' root path was not configured")
+            Error::Internal{msg} if msg.contains("The 'crate' root path was not configured")
         ));
     }
 
@@ -532,7 +550,7 @@ pub(crate) mod tests {
         let res1 = DependencyMapBuilder::new(file_path.clone()).build();
         assert!(matches!(
             res1.unwrap_err(),
-            Error::DependencyNotADirectory(_)
+            Error::DependencyNotADirectory { .. }
         ));
 
         let res2 = DependencyMapBuilder::new(valid_dir.clone())
@@ -540,7 +558,7 @@ pub(crate) mod tests {
             .build();
         assert!(matches!(
             res2.unwrap_err(),
-            Error::DependencyNotADirectory(_)
+            Error::DependencyNotADirectory { .. }
         ));
 
         let res3 = DependencyMapBuilder::new(valid_dir.clone())
@@ -548,7 +566,7 @@ pub(crate) mod tests {
             .build();
         assert!(matches!(
             res3.unwrap_err(),
-            Error::DependencyNotADirectory(_)
+            Error::DependencyNotADirectory { .. }
         ));
     }
 
@@ -561,7 +579,10 @@ pub(crate) mod tests {
         let res = DependencyMapBuilder::new(valid_dir.clone())
             .add_dependency(valid_dir.clone(), "alias".to_string(), fake_path)
             .build();
-        assert!(matches!(res.unwrap_err(), Error::DependencyPathNotFound(_)));
+        assert!(matches!(
+            res.unwrap_err(),
+            Error::DependencyPathNotFound { .. }
+        ));
     }
 
     #[test]
@@ -576,7 +597,7 @@ pub(crate) mod tests {
                 .add_dependency(valid_dir.clone(), bad_alias.to_string(), valid_dir.clone())
                 .build();
             assert!(
-                matches!(res.unwrap_err(), Error::InvalidDependencyIdentifier(_)),
+                matches!(res.unwrap_err(), Error::InvalidDependencyIdentifier { .. }),
                 "Builder should reject alias: '{}'",
                 bad_alias
             );
@@ -596,9 +617,9 @@ pub(crate) mod tests {
                 .build();
             let err = res.unwrap_err();
             if kw == CRATE_STR {
-                assert!(matches!(err, Error::ReservedDependencyKeyword(_)));
+                assert!(matches!(err, Error::ReservedDependencyKeyword { .. }));
             } else {
-                assert!(matches!(err, Error::InvalidDependencyIdentifier(_)));
+                assert!(matches!(err, Error::InvalidDependencyIdentifier { .. }));
             }
         }
     }
@@ -617,7 +638,7 @@ pub(crate) mod tests {
 
         assert!(matches!(
             res.unwrap_err(),
-            Error::DuplicateDependencyAlias(..)
+            Error::DuplicateDependencyAlias { .. }
         ));
     }
 

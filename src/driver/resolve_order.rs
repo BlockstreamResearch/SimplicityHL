@@ -41,8 +41,13 @@ impl Program {
         for item in parsed.items() {
             if let parse::Item::Use(use_decl) = item {
                 handler.push(
-                    RichError::new(Error::UnknownLibrary(use_decl.str_path()), *use_decl.span())
-                        .with_content(content.clone()),
+                    RichError::new(
+                        Error::UnknownLibrary {
+                            name: use_decl.str_path(),
+                        },
+                        *use_decl.span(),
+                    )
+                    .with_content(content.clone()),
                 );
                 continue;
             }
@@ -259,8 +264,8 @@ impl DependencyGraph {
             (Ok(()), _) | (_, Ok(())) => Ok(()),
 
             (Err(err_alias), Err(err_func)) => {
-                let alias_is_missing = matches!(err_alias.error(), Error::UnresolvedItem(_));
-                let func_is_missing = matches!(err_func.error(), Error::UnresolvedItem(_));
+                let alias_is_missing = matches!(err_alias.error(), Error::UnresolvedItem { .. });
+                let func_is_missing = matches!(err_func.error(), Error::UnresolvedItem { .. });
 
                 if !alias_is_missing || func_is_missing {
                     // If it's missing everywhere, OR if the function is missing
@@ -315,13 +320,26 @@ impl DependencyGraph {
         let orig_id = (target_name.clone(), ind);
 
         // 2. Verify Existence using T
-        let visibility: &Visibility = namespace.resolutions[ind]
-            .get(&target_name)
-            .ok_or_else(|| RichError::new(Error::UnresolvedItem(name.to_string()), span))?;
+        let visibility: &Visibility =
+            namespace.resolutions[ind]
+                .get(&target_name)
+                .ok_or_else(|| {
+                    RichError::new(
+                        Error::UnresolvedItem {
+                            name: name.to_string(),
+                        },
+                        span,
+                    )
+                })?;
 
         // 3. Verify Visibility
         if matches!(visibility, parse::Visibility::Private) {
-            return Err(RichError::new(Error::PrivateItem(name.to_string()), span));
+            return Err(RichError::new(
+                Error::PrivateItem {
+                    name: name.to_string(),
+                },
+                span,
+            ));
         }
 
         // 4. Determine the local name and ID up front
@@ -345,14 +363,18 @@ impl DependencyGraph {
         // 5. Check for collisions using `namespace` fields
         if namespace.registry.direct_targets.contains_key(&local_id) {
             return Err(RichError::new(
-                Error::DuplicateAlias(local_symbol.to_string()),
+                Error::DuplicateAlias {
+                    name: local_symbol.to_string(),
+                },
                 span,
             ));
         }
 
         if namespace.memo.contains(&local_id) {
             return Err(RichError::new(
-                Error::RedefinedItem(local_symbol.to_string()),
+                Error::RedefinedItem {
+                    name: local_symbol.to_string(),
+                },
                 span,
             ));
         }
@@ -400,7 +422,7 @@ fn register_type_alias(
 
     if tracker.memo.contains(&local_id) {
         return Err(RichError::new(
-            Error::RedefinedAlias(name.clone()),
+            Error::RedefinedAlias { name: name.clone() },
             *item.span(),
         ));
     }
@@ -426,7 +448,7 @@ fn register_function(
 
     if tracker.memo.contains(&local_id) {
         return Err(RichError::new(
-            Error::FunctionRedefined(name.clone()),
+            Error::FunctionRedefined { name: name.clone() },
             *item.span(),
         ));
     }
