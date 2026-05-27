@@ -6,7 +6,7 @@ use simplicity::{Ihr, RedeemNode, Value as SimValue};
 use crate::array::Unfolder;
 use crate::debug::{DebugSymbols, TrackedCallName};
 use crate::either::Either;
-use crate::jet::JetHL;
+use crate::jet::{source_type, target_type};
 use crate::str::AliasName;
 use crate::types::AliasedType;
 use crate::value::StructuralValue;
@@ -212,7 +212,7 @@ impl<'a> DefaultTracker<'a> {
         match output.clone() {
             NodeOutput::Success(mut output_frame) => {
                 let target_ty = &node.arrow().target;
-                let jet_target_ty = resolve_jet_type(&jet.target_type());
+                let jet_target_ty = resolve_jet_type(&target_type(&jet));
 
                 let output_value = SimValue::from_padded_bits(&mut output_frame, target_ty)
                     .expect("output from bit machine is always well-formed");
@@ -319,7 +319,7 @@ impl ExecTracker for DefaultTracker<'_> {
 
 /// Parses jet input arguments from the bit machine's read frame.
 fn parse_jet_arguments(jet: Elements, input_frame: &mut FrameIter) -> Result<Vec<Value>, String> {
-    let source_types = jet.source_type();
+    let source_types = source_type(&jet);
     if source_types.is_empty() {
         return Ok(vec![]);
     }

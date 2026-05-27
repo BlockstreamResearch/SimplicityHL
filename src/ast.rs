@@ -5,12 +5,12 @@ use std::sync::Arc;
 
 use either::Either;
 use miniscript::iter::{Tree, TreeLike};
-use simplicity::jet::{Elements, Jet};
+use simplicity::jet::{Core, Elements, Jet};
 
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
 use crate::driver::{FileScoped, SymbolTable, MAIN_MODULE, MAIN_STR};
 use crate::error::{Error, RichError, Span, WithSpan};
-use crate::jet::JetHL;
+use crate::jet::{source_type, target_type, JetHL};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::parse::MatchPattern;
 use crate::pattern::Pattern;
@@ -557,30 +557,37 @@ pub trait JetHinter: std::fmt::Debug + Send + Sync {
     fn clone_box(&self) -> Box<dyn JetHinter>;
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ElementsJetHinter;
+macro_rules! impl_jet_hinter {
+    ($struct_name:ident, $jet_type:ident) => {
+        #[derive(Clone, Debug, Default)]
+        pub struct $struct_name;
 
-impl ElementsJetHinter {
-    pub fn new() -> Self {
-        Self
-    }
+        impl $struct_name {
+            pub fn new() -> Self {
+                Self
+            }
+        }
+
+        impl JetHinter for $struct_name {
+            fn parse_jet(&self, name: &str) -> Option<Box<dyn JetHL>> {
+                $jet_type::parse(name)
+                    .ok()
+                    .map(|jet| -> Box<dyn JetHL> { Box::new(jet) })
+            }
+
+            fn construct_verify(&self) -> Box<dyn JetHL> {
+                Box::new($jet_type::Verify)
+            }
+
+            fn clone_box(&self) -> Box<dyn JetHinter> {
+                Box::new(Self)
+            }
+        }
+    };
 }
 
-impl JetHinter for ElementsJetHinter {
-    fn parse_jet(&self, name: &str) -> Option<Box<dyn JetHL>> {
-        Elements::parse(name)
-            .ok()
-            .map(|jet| -> Box<dyn JetHL> { Box::new(jet) })
-    }
-
-    fn construct_verify(&self) -> Box<dyn JetHL> {
-        Box::new(Elements::Verify)
-    }
-
-    fn clone_box(&self) -> Box<dyn JetHinter> {
-        Box::new(Self)
-    }
-}
+impl_jet_hinter!(ElementsJetHinter, Elements);
+impl_jet_hinter!(CoreJetHinter, Core);
 
 /// Scope for generating the abstract syntax tree.
 ///
@@ -1356,16 +1363,14 @@ impl AbstractSyntaxTree for Call {
         let name = CallName::analyze(from, ty, scope)?;
         let args = match name.clone() {
             CallName::Jet(jet) => {
-                let args_tys = jet
-                    .source_type()
+                let args_tys = source_type(&*jet)
                     .iter()
                     .map(AliasedType::resolve_builtin)
                     .collect::<Result<Vec<ResolvedType>, AliasName>>()
                     .map_err(|alias| Error::UndefinedAlias { name: alias })
                     .with_span(from)?;
                 check_argument_types(from.args(), &args_tys).with_span(from)?;
-                let out_ty = jet
-                    .target_type()
+                let out_ty = target_type(&*jet)
                     .resolve_builtin()
                     .map_err(|alias| Error::UndefinedAlias { name: alias })
                     .with_span(from)?;
