@@ -21,6 +21,7 @@ pub enum Token<'src> {
     Mod,
     Const,
     Match,
+    Enum,
     Crate,
 
     // Control symbols
@@ -80,6 +81,7 @@ impl<'src> fmt::Display for Token<'src> {
             Token::Mod => write!(f, "mod"),
             Token::Const => write!(f, "const"),
             Token::Match => write!(f, "match"),
+            Token::Enum => write!(f, "enum"),
             Token::Crate => write!(f, "{}", CRATE_STR),
 
             Token::Arrow => write!(f, "->"),
@@ -156,6 +158,7 @@ pub fn lexer<'src>(
         "mod" => Token::Mod,
         "const" => Token::Const,
         "match" => Token::Match,
+        "enum" => Token::Enum,
         CRATE_STR => Token::Crate,
         "true" => Token::Bool(true),
         "false" => Token::Bool(false),
@@ -259,7 +262,8 @@ pub fn lex<'src>(input: &'src str) -> (Option<Tokens<'src>>, Vec<crate::error::R
 
 /// A list of all reserved keywords.
 pub const KEYWORDS: &[&str] = &[
-    "pub", "use", "as", "fn", "let", "type", "mod", "const", "match", CRATE_STR, "true", "false",
+    "pub", "use", "as", "fn", "let", "type", "mod", "const", "match", "enum", CRATE_STR, "true",
+    "false",
 ];
 
 /// Checks whether a given string is a keyword.
@@ -360,6 +364,42 @@ mod tests {
         assert_eq!(errors[1].to_string(), "Unclosed block comment");
 
         assert_eq!(tokens, Some(vec![Token::BlockComment]));
+    }
+
+    #[test]
+    fn test_enum_keyword() {
+        let (tokens, errors) = lex("enum");
+        assert!(errors.is_empty());
+        assert_eq!(tokens, Some(vec![Token::Enum]));
+    }
+
+    #[test]
+    fn test_enum_not_substring() {
+        let (tokens, errors) = lex("enumerate");
+        assert!(errors.is_empty());
+        assert_eq!(tokens, Some(vec![Token::Ident("enumerate")]));
+    }
+
+    #[test]
+    fn test_enum_in_context() {
+        let (tokens, errors) = lex("enum Path { Inherit = 1, ColdSpend = 2 }");
+        assert!(errors.is_empty());
+        assert_eq!(
+            tokens,
+            Some(vec![
+                Token::Enum,
+                Token::Ident("Path"),
+                Token::LBrace,
+                Token::Ident("Inherit"),
+                Token::Eq,
+                Token::DecLiteral(Decimal::from_str_unchecked("1")),
+                Token::Comma,
+                Token::Ident("ColdSpend"),
+                Token::Eq,
+                Token::DecLiteral(Decimal::from_str_unchecked("2")),
+                Token::RBrace,
+            ])
+        );
     }
 
     #[test]

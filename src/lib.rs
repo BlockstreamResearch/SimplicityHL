@@ -261,10 +261,17 @@ impl CompiledProgram {
             .is_consistent(&self.witness_types)
             .map_err(|e| e.to_string())?;
 
-        let mut simplicity_redeem = named::populate_witnesses(&self.simplicity, witness_values)?;
-        if let Some(env) = env {
-            simplicity_redeem = simplicity_redeem.prune(env).map_err(|e| e.to_string())?;
-        }
+        let (witness_values, zero_filled) = witness_values.fill_missing(&self.witness_types);
+        let simplicity_redeem = named::populate_witnesses(&self.simplicity, witness_values)?;
+        let simplicity_redeem = if let Some(env) = env {
+            let pruned = simplicity_redeem.prune(env).map_err(|e| e.to_string())?;
+            if !zero_filled.is_empty() {
+                named::check_surviving_witnesses(&self.simplicity, &pruned, &zero_filled)?;
+            }
+            pruned
+        } else {
+            simplicity_redeem
+        };
         Ok(SatisfiedProgram {
             simplicity: simplicity_redeem,
             debug_symbols: self.debug_symbols.clone(),
@@ -828,6 +835,179 @@ pub(crate) mod tests {
         TestCase::program_file("./examples/hash_loop.simf")
             .with_witness_values(WitnessValues::default())
             .assert_run_success();
+    }
+
+    #[test]
+    fn enum_match_2_variants() {
+        use crate::str::WitnessName;
+        use crate::value::ValueConstructible;
+        use std::collections::HashMap;
+
+        let src = r#"
+            enum Path { A = 1, B = 2 }
+            fn main() {
+                match witness::PATH {
+                    Path::A => assert!(jet::eq_32(0, 0)),
+                    Path::B => assert!(jet::eq_32(0, 0)),
+                }
+            }
+        "#;
+        // Select variant A via its u8 discriminant.
+        let mut map: HashMap<WitnessName, Value> = HashMap::new();
+        map.insert(WitnessName::from_str_unchecked("PATH"), Value::u8(1));
+        TestCase::program_text(Cow::Borrowed(src))
+            .with_witness_values(WitnessValues::from(map))
+            .assert_run_success();
+    }
+
+    #[test]
+    fn enum_match_3_variants() {
+        use crate::str::WitnessName;
+        use crate::value::ValueConstructible;
+        use std::collections::HashMap;
+
+        let src = r#"
+            enum Path { A = 0, B = 2, C = 5 }
+            fn main() {
+                match witness::PATH {
+                    Path::A => assert!(jet::eq_32(0, 0)),
+                    Path::B => assert!(jet::eq_32(0, 0)),
+                    Path::C => assert!(jet::eq_32(0, 0)),
+                }
+            }
+        "#;
+        // Select variant C via its u8 discriminant.
+        let mut map: HashMap<WitnessName, Value> = HashMap::new();
+        map.insert(WitnessName::from_str_unchecked("PATH"), Value::u8(5));
+        TestCase::program_text(Cow::Borrowed(src))
+            .with_witness_values(WitnessValues::from(map))
+            .assert_run_success();
+    }
+
+    #[test]
+    fn enum_match_function_return() {
+        use crate::str::WitnessName;
+        use crate::value::ValueConstructible;
+        use std::collections::HashMap;
+
+        let src = r#"
+            enum Dir { Left = 1, Right = 2 }
+            fn wrap(d: Dir) -> Dir { d }
+            fn main() {
+                match wrap(witness::D) {
+                    Dir::Left => assert!(jet::eq_32(0, 0)),
+                    Dir::Right => assert!(jet::eq_32(0, 0)),
+                }
+            }
+        "#;
+        let mut map: HashMap<WitnessName, Value> = HashMap::new();
+        map.insert(WitnessName::from_str_unchecked("D"), Value::u8(1));
+        TestCase::program_text(Cow::Borrowed(src))
+            .with_witness_values(WitnessValues::from(map))
+            .assert_run_success();
+    }
+
+    #[test]
+    fn enum_match_invalid_discriminant_fails() {
+        use crate::str::WitnessName;
+        use crate::value::ValueConstructible;
+        use std::collections::HashMap;
+
+        let src = r#"
+            enum Path { A = 1, B = 2, C = 3 }
+            fn main() {
+                match witness::PATH {
+                    Path::A => assert!(jet::eq_32(0, 0)),
+                    Path::B => assert!(jet::eq_32(0, 0)),
+                    Path::C => assert!(jet::eq_32(0, 0)),
+                }
+            }
+        "#;
+        // Discriminant 0 is not declared in the enum; the script must fail.
+        for bad in [0u8, 4, 99, 255] {
+            let mut map: HashMap<WitnessName, Value> = HashMap::new();
+            map.insert(WitnessName::from_str_unchecked("PATH"), Value::u8(bad));
+            let result = TestCase::program_text(Cow::Borrowed(src))
+                .with_witness_values(WitnessValues::from(map))
+                .run();
+            assert!(
+                result.is_err(),
+                "discriminant {bad} is not declared; execution should fail but succeeded"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_witness_on_live_branch_errors() {
+        use crate::str::WitnessName;
+        use crate::value::ValueConstructible;
+        use std::collections::HashMap;
+
+        let src = r#"
+enum Branch { A = 1, B = 2 }
+fn main() {
+    match witness::SELECTOR {
+        Branch::A => assert!(jet::is_zero_32(witness::A)),
+        Branch::B => assert!(jet::is_zero_32(witness::B)),
+    }
+}
+"#;
+        let env = crate::dummy_env::dummy();
+
+        // SELECTOR = 1 (Branch::A) → branch A taken; B is missing but pruned → satisfy OK
+        {
+            let mut map: HashMap<WitnessName, Value> = HashMap::new();
+            map.insert(WitnessName::from_str_unchecked("SELECTOR"), Value::u8(1));
+            map.insert(WitnessName::from_str_unchecked("A"), Value::u32(0));
+            let compiled = CompiledProgram::new(
+                src,
+                Arguments::default(),
+                false,
+                Box::new(ElementsJetHinter::new()),
+            )
+            .unwrap();
+            compiled
+                .satisfy_with_env(WitnessValues::from(map), Some(&env))
+                .expect("B is on a pruned branch; satisfy should succeed");
+        }
+
+        // SELECTOR = 2 (Branch::B) → branch B taken; A is missing but pruned → satisfy OK
+        {
+            let mut map: HashMap<WitnessName, Value> = HashMap::new();
+            map.insert(WitnessName::from_str_unchecked("SELECTOR"), Value::u8(2));
+            map.insert(WitnessName::from_str_unchecked("B"), Value::u32(0));
+            let compiled = CompiledProgram::new(
+                src,
+                Arguments::default(),
+                false,
+                Box::new(ElementsJetHinter::new()),
+            )
+            .unwrap();
+            compiled
+                .satisfy_with_env(WitnessValues::from(map), Some(&env))
+                .expect("A is on a pruned branch; satisfy should succeed");
+        }
+
+        // SELECTOR = 2 (Branch::B) → branch B taken; B is missing and live → satisfy errors
+        {
+            let mut map: HashMap<WitnessName, Value> = HashMap::new();
+            map.insert(WitnessName::from_str_unchecked("SELECTOR"), Value::u8(2));
+            // B is intentionally not provided
+            let compiled = CompiledProgram::new(
+                src,
+                Arguments::default(),
+                false,
+                Box::new(ElementsJetHinter::new()),
+            )
+            .unwrap();
+            let err = compiled
+                .satisfy_with_env(WitnessValues::from(map), Some(&env))
+                .expect_err("B is on the executed branch and missing; satisfy should fail");
+            assert!(
+                err.contains('B'),
+                "error message should mention witness B, got: {err}"
+            );
+        }
     }
 
     #[test]

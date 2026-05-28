@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use simplicity::dag::{InternalSharing, PostOrderIterItem};
@@ -241,6 +242,67 @@ pub fn populate_witnesses(
 
     let mut populator = Populator { values };
     node.convert::<InternalSharing, _, _>(&mut populator)
+}
+
+/// Walk the `commit` tree and the `pruned` redeem tree in parallel, checking that
+/// no zero-filled witness (tracked in `zero_filled`) appears on a non-pruned branch.
+///
+/// Pruned branches are indicated by `Fail` nodes in the pruned tree. When a `Case`
+/// node is pruned to `AssertL` or `AssertR`, only the surviving child is recursed into.
+pub fn check_surviving_witnesses<S: std::hash::BuildHasher>(
+    commit: &CommitNode,
+    pruned: &Arc<node::RedeemNode>,
+    zero_filled: &HashSet<WitnessName, S>,
+) -> Result<(), String> {
+    match (commit.inner(), pruned.inner()) {
+        // Pruned branch or unreachable fail node — no witnesses to check
+        (_, Inner::Fail(_)) | (Inner::Fail(_), _) => Ok(()),
+        // Witness node on a live branch — error if it was zero-filled
+        (Inner::Witness(name), Inner::Witness(_)) => {
+            if zero_filled.contains(name) {
+                Err(format!(
+                    "Witness `{name}` is used on the executed branch but has no assigned value"
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        // Leaf nodes with no witness children
+        (Inner::Iden, _) | (Inner::Unit, _) | (Inner::Jet(_), _) | (Inner::Word(_), _) => Ok(()),
+        // Single-child nodes — recurse into the child
+        (Inner::InjL(cc), Inner::InjL(cp))
+        | (Inner::InjR(cc), Inner::InjR(cp))
+        | (Inner::Take(cc), Inner::Take(cp))
+        | (Inner::Drop(cc), Inner::Drop(cp)) => check_surviving_witnesses(cc, cp, zero_filled),
+        // Assert nodes — one live child, one CMR; recurse into the live child
+        (Inner::AssertL(cc, _), Inner::AssertL(cp, _))
+        | (Inner::AssertR(_, cc), Inner::AssertR(_, cp)) => {
+            check_surviving_witnesses(cc, cp, zero_filled)
+        }
+        // Two-child nodes — recurse into both
+        (Inner::Comp(cl, cr), Inner::Comp(pl, pr)) | (Inner::Pair(cl, cr), Inner::Pair(pl, pr)) => {
+            check_surviving_witnesses(cl, pl, zero_filled)?;
+            check_surviving_witnesses(cr, pr, zero_filled)
+        }
+        // Case: both branches live
+        (Inner::Case(cl, cr), Inner::Case(pl, pr)) => {
+            check_surviving_witnesses(cl, pl, zero_filled)?;
+            check_surviving_witnesses(cr, pr, zero_filled)
+        }
+        // Case pruned to AssertL: only left branch survived
+        (Inner::Case(cl, _), Inner::AssertL(pl, _)) => {
+            check_surviving_witnesses(cl, pl, zero_filled)
+        }
+        // Case pruned to AssertR: only right branch survived
+        (Inner::Case(_, cr), Inner::AssertR(_, pr)) => {
+            check_surviving_witnesses(cr, pr, zero_filled)
+        }
+        // Disconnect — not used in SimplicityHL; handle defensively
+        (Inner::Disconnect(cc, _), Inner::Disconnect(cp, _)) => {
+            check_surviving_witnesses(cc, cp, zero_filled)
+        }
+        _ => unreachable!("unexpected structural mismatch between commit and pruned trees"),
+    }
 }
 
 // This awkward construction is required by rust-simplicity to implement WitnessConstructible

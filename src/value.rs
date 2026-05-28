@@ -648,6 +648,34 @@ impl Value {
         };
         Ok(ret)
     }
+
+    /// Create a zero value of the given type.
+    ///
+    /// For integers, this is 0. For sum types, this is `Left(zero)`. For options, this is `None`.
+    /// For tuples and arrays, each element is zero. For lists, this is the empty list.
+    pub fn zero(ty: &ResolvedType) -> Self {
+        match ty.as_inner() {
+            TypeInner::Boolean => Self::from(false),
+            TypeInner::UInt(uint_ty) => match uint_ty {
+                UIntType::U1 => Self::u1(0),
+                UIntType::U2 => Self::u2(0),
+                UIntType::U4 => Self::u4(0),
+                UIntType::U8 => Self::u8(0),
+                UIntType::U16 => Self::u16(0),
+                UIntType::U32 => Self::u32(0),
+                UIntType::U64 => Self::u64(0),
+                UIntType::U128 => Self::u128(0),
+                UIntType::U256 => Self::u256(U256::from_byte_array([0u8; 32])),
+            },
+            TypeInner::Either(left, right) => Self::left(Self::zero(left), (**right).clone()),
+            TypeInner::Option(inner) => Self::none((**inner).clone()),
+            TypeInner::Tuple(elements) => Self::tuple(elements.iter().map(|e| Self::zero(e))),
+            TypeInner::Array(el_ty, size) => {
+                Self::array((0..*size).map(|_| Self::zero(el_ty)), (**el_ty).clone())
+            }
+            TypeInner::List(el_ty, bound) => Self::list([], (**el_ty).clone(), *bound),
+        }
+    }
 }
 
 impl Value {

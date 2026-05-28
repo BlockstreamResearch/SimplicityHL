@@ -67,6 +67,12 @@ impl Program {
                     }
                 }
 
+                parse::Item::EnumDeclaration(decl) => {
+                    if let Err(err) = register_enum_alias(decl, &mut aliases, MAIN_MODULE) {
+                        handler.push(err.with_content(content.clone()));
+                        continue;
+                    }
+                }
                 // Safe to skip: `Use` items are handled earlier in the loop, and `Module` currently has no functionality.
                 parse::Item::Module | parse::Item::Use(_) => continue,
             }
@@ -237,6 +243,12 @@ impl DependencyGraph {
                         }
                     }
 
+                    parse::Item::EnumDeclaration(decl) => {
+                        if let Err(err) = register_enum_alias(decl, &mut aliases, source_id) {
+                            handler.push(err.with_source(source.clone()));
+                            continue;
+                        }
+                    }
                     // Safe to skip: `Use` items are handled earlier in the loop, and `Module` currently has no functionality.
                     parse::Item::Module | parse::Item::Use(_) => continue,
                 }
@@ -429,6 +441,28 @@ fn register_type_alias(
 
     tracker.memo.insert(local_id);
     tracker.resolutions[source_id].insert(name.clone(), item.visibility().clone());
+    Ok(())
+}
+
+fn register_enum_alias(
+    item: &mut parse::EnumDeclaration,
+    tracker: &mut NamespaceTracker<AliasName>,
+    source_id: usize,
+) -> Result<(), RichError> {
+    item.set_file_id(source_id);
+
+    let name = item.name().clone();
+    let local_id = (name.clone(), source_id);
+
+    if tracker.memo.contains(&local_id) {
+        return Err(RichError::new(
+            Error::RedefinedAlias { name },
+            *item.as_ref(),
+        ));
+    }
+
+    tracker.memo.insert(local_id);
+    tracker.resolutions[source_id].insert(name, item.visibility().clone());
     Ok(())
 }
 
