@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::driver::{DependencyGraph, MAIN_MODULE, MAIN_STR};
 use crate::error::{Error, ErrorCollector, RichError, Span};
+use crate::error::WithSpan;
 use crate::impl_eq_hash;
 use crate::parse::{self, AliasedSymbolName, Function, TypeAlias, Visibility};
 use crate::str::{AliasName, FunctionName, SymbolName};
@@ -320,26 +321,19 @@ impl DependencyGraph {
         let orig_id = (target_name.clone(), ind);
 
         // 2. Verify Existence using T
-        let visibility: &Visibility =
-            namespace.resolutions[ind]
-                .get(&target_name)
-                .ok_or_else(|| {
-                    RichError::new(
-                        Error::UnresolvedItem {
-                            name: name.to_string(),
-                        },
-                        span,
-                    )
-                })?;
+        let visibility: &Visibility = namespace.resolutions[ind]
+            .get(&target_name)
+            .ok_or_else(|| Error::UnresolvedItem {
+                name: name.to_string(),
+            })
+            .with_span(span)?;
 
         // 3. Verify Visibility
         if matches!(visibility, parse::Visibility::Private) {
-            return Err(RichError::new(
-                Error::PrivateItem {
-                    name: name.to_string(),
-                },
-                span,
-            ));
+            return Err(Error::PrivateItem {
+                name: name.to_string(),
+            })
+            .with_span(span);
         }
 
         // 4. Determine the local name and ID up front
@@ -351,7 +345,7 @@ impl DependencyGraph {
             let t_alias: T = alias_sym.clone().into();
 
             if t_alias.to_string() == MAIN_STR {
-                return Err(RichError::new(Error::MainCannotBeAlias, span));
+                return Err(Error::MainCannotBeAlias).with_span(span);
             }
             t_alias
         } else {
@@ -362,21 +356,17 @@ impl DependencyGraph {
 
         // 5. Check for collisions using `namespace` fields
         if namespace.registry.direct_targets.contains_key(&local_id) {
-            return Err(RichError::new(
-                Error::DuplicateAlias {
-                    name: local_symbol.to_string(),
-                },
-                span,
-            ));
+            return Err(Error::DuplicateAlias {
+                name: local_symbol.to_string(),
+            })
+            .with_span(span);
         }
 
         if namespace.memo.contains(&local_id) {
-            return Err(RichError::new(
-                Error::RedefinedItem {
-                    name: local_symbol.to_string(),
-                },
-                span,
-            ));
+            return Err(Error::RedefinedItem {
+                name: local_symbol.to_string(),
+            })
+            .with_span(span);
         }
         namespace.memo.insert(local_id.clone());
 
@@ -421,10 +411,7 @@ fn register_type_alias(
     let local_id = (name.clone(), source_id);
 
     if tracker.memo.contains(&local_id) {
-        return Err(RichError::new(
-            Error::RedefinedAlias { name: name.clone() },
-            *item.span(),
-        ));
+        return Err(Error::RedefinedAlias { name: name.clone() }).with_span(*item.span());
     }
 
     tracker.memo.insert(local_id);
@@ -443,14 +430,11 @@ fn register_function(
     let local_id = (name.clone(), source_id);
 
     if name.as_inner() == MAIN_STR && matches!(item.visibility(), Visibility::Public) {
-        return Err(RichError::new(Error::MainCannotBePublic, *item.span()));
+        return Err(Error::MainCannotBePublic).with_span(*item.span());
     }
 
     if tracker.memo.contains(&local_id) {
-        return Err(RichError::new(
-            Error::FunctionRedefined { name: name.clone() },
-            *item.span(),
-        ));
+        return Err(Error::FunctionRedefined { name: name.clone() }).with_span(*item.span());
     }
 
     tracker.memo.insert(local_id);

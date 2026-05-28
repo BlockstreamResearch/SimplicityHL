@@ -224,25 +224,19 @@ impl DependencyMap {
     ) -> Result<CanonPath, RichError> {
         let drp_name = use_decl.drp_name()?;
 
-        let resolved =
-            Self::build_and_verify_path(&remapping.target, &parts[1..]).map_err(|failed_path| {
-                RichError::new(
-                    Error::ExternalFileNotFound {
-                        lib: drp_name.to_string(),
-                        filename: failed_path,
-                    },
-                    *use_decl.span(),
-                )
-            })?;
+        let resolved = Self::build_and_verify_path(&remapping.target, &parts[1..])
+            .map_err(|failed_path| Error::ExternalFileNotFound {
+                lib: drp_name.to_string(),
+                filename: failed_path,
+            })
+            .with_span(*use_decl.span())?;
 
         if !resolved.starts_with(&remapping.target) {
-            return Err(RichError::new(
-                Error::ExternalFileNotFound {
-                    lib: drp_name.to_string(),
-                    filename: resolved.as_path().to_path_buf(),
-                },
-                *use_decl.span(),
-            ));
+            return Err(Error::ExternalFileNotFound {
+                lib: drp_name.to_string(),
+                filename: resolved.as_path().to_path_buf(),
+            })
+            .with_span(*use_decl.span());
         }
 
         self.check_local_file_imported_as_external(current_file, &resolved, use_decl)?;
@@ -262,24 +256,19 @@ impl DependencyMap {
             .ok_or_else(|| Error::Internal {
                 msg: "The 'crate' root path was not configured by the compiler.".to_string(),
             })
-            .map_err(|e| RichError::new(e, *use_decl.span()))?;
+            .with_span(*use_decl.span())?;
 
-        let resolved = Self::build_and_verify_path(root, &parts[1..]).map_err(|failed_path| {
-            RichError::new(
-                Error::FileNotFound {
-                    filename: failed_path,
-                },
-                *use_decl.span(),
-            )
-        })?;
+        let resolved = Self::build_and_verify_path(root, &parts[1..])
+            .map_err(|failed_path| Error::FileNotFound {
+                filename: failed_path,
+            })
+            .with_span(*use_decl.span())?;
 
         if !resolved.starts_with(root) {
-            return Err(RichError::new(
-                Error::FileNotFound {
-                    filename: resolved.as_path().to_path_buf(),
-                },
-                *use_decl.span(),
-            ));
+            return Err(Error::FileNotFound {
+                filename: resolved.as_path().to_path_buf(),
+            })
+            .with_span(*use_decl.span());
         }
 
         Ok(resolved)
