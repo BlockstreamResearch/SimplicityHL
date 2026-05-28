@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
+use crate::driver::error::Error;
 use crate::driver::{DependencyGraph, MAIN_MODULE, MAIN_STR};
-use crate::error::{Error, ErrorCollector, RichError, Span};
 use crate::error::WithSpan;
+use crate::error::{ErrorCollector, RichError, Span};
 use crate::impl_eq_hash;
 use crate::parse::{self, AliasedSymbolName, Function, TypeAlias, Visibility};
 use crate::str::{AliasName, FunctionName, SymbolName};
@@ -45,7 +46,8 @@ impl Program {
                     RichError::new(
                         Error::UnknownLibrary {
                             name: use_decl.str_path(),
-                        },
+                        }
+                        .into(),
                         *use_decl.span(),
                     )
                     .with_content(content.clone()),
@@ -265,8 +267,14 @@ impl DependencyGraph {
             (Ok(()), _) | (_, Ok(())) => Ok(()),
 
             (Err(err_alias), Err(err_func)) => {
-                let alias_is_missing = matches!(err_alias.error(), Error::UnresolvedItem { .. });
-                let func_is_missing = matches!(err_func.error(), Error::UnresolvedItem { .. });
+                let alias_is_missing = matches!(
+                    err_alias.error(),
+                    crate::error::Error::DriverError(Error::UnresolvedItem { .. })
+                );
+                let func_is_missing = matches!(
+                    err_func.error(),
+                    crate::error::Error::DriverError(Error::UnresolvedItem { .. })
+                );
 
                 if !alias_is_missing || func_is_missing {
                     // If it's missing everywhere, OR if the function is missing

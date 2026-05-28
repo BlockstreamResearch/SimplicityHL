@@ -1,5 +1,5 @@
-use crate::driver::CRATE_STR;
-use crate::error::{Error, RichError, WithSpan as _};
+use crate::driver::{Error, CRATE_STR};
+use crate::error::{RichError, WithSpan};
 use crate::parse::UseDecl;
 use crate::source::CanonPath;
 
@@ -404,7 +404,7 @@ pub(crate) mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err().error(),
-            Error::UnknownLibrary { .. }
+            crate::error::Error::DriverError(Error::UnknownLibrary { .. })
         ));
     }
 
@@ -462,7 +462,7 @@ pub(crate) mod tests {
 
         assert!(matches!(
             result.unwrap_err().error(),
-            Error::LocalFileImportedAsExternal { .. }
+            crate::error::Error::DriverError(Error::LocalFileImportedAsExternal { .. })
         ));
     }
 
@@ -503,7 +503,8 @@ pub(crate) mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err().error(),
-            Error::Internal{msg} if msg.contains("The 'crate' root path was not configured")
+            crate::error::Error::Internal{ msg }
+            if msg.contains("The 'crate' root path was not configured")
         ));
     }
 
