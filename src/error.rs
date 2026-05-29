@@ -633,7 +633,9 @@ pub enum Error {
         declared: ResolvedType,
         assigned: ResolvedType,
     },
+    // TODO: Remove these once `use` and `mod` are supported by the AST
     UseKeywordIsNotSupported,
+    ModuleKeywordIsNotSupported,
 }
 
 #[rustfmt::skip]
@@ -859,6 +861,10 @@ impl fmt::Display for Error {
             Error::UseKeywordIsNotSupported => write!(
                 f,
                 "The `use` keyword is not supported yet"
+            ),
+            Error::ModuleKeywordIsNotSupported => write!(
+                f,
+                "The `mod` keyword is not supported yet"
             ),
         }
     }
