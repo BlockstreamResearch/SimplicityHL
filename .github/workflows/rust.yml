@@ -106,3 +106,22 @@ jobs:
             echo "fuzzing $target"
             cargo fuzz run --fuzz-dir fuzz "$target" -- -runs=1
           done
+
+  ExternalJetLib:
+    name: External Jet Library
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Checkout repo"
+        uses: actions/checkout@v4
+
+      - name: "Setup cargo-rbmt"
+        uses: ./.github/actions/setup-rbmt
+
+      - name: "Build external jet dylib"
+        run: cargo rbmt --lock-file existing run --toolchain stable -- build --manifest-path external-jet-lib-example/Cargo.toml --lib
+
+      - name: "Build external-lib-consumer binary"
+        run: cargo rbmt --lock-file existing run --toolchain stable -- build --manifest-path external-jet-lib-example/Cargo.toml --bin external-lib-consumer
+
+      - name: "Run external-lib-consumer with compiled dylib"
+        run: ./target/debug/external-lib-consumer ./target/debug/libexternal_jet_lib_example.so
