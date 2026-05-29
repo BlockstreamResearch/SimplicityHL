@@ -74,8 +74,10 @@ pub enum Item {
     TypeAlias,
     /// A function.
     Function(Function),
-    /// A module, which is ignored.
+    Use,
     Module,
+    /// A placeholder used for error recovery during parsing.
+    Ignored,
 }
 
 /// Definition of a function.
@@ -984,7 +986,11 @@ impl AbstractSyntaxTree for Item {
                 Error::UseKeywordIsNotSupported,
                 *use_decl.span(),
             )),
-            parse::Item::Module => Ok(Self::Module),
+            parse::Item::Module(module) => Err(RichError::new(
+                Error::ModuleKeywordIsNotSupported,
+                *module.span(),
+            )),
+            parse::Item::Ignored => Ok(Self::Ignored),
         };
 
         scope.file_id = previous_file_id;
@@ -1658,48 +1664,6 @@ impl AbstractSyntaxTree for Match {
                 pattern: from.right().pattern().clone(),
                 expression: ast_r,
             },
-            span: *from.as_ref(),
-        })
-    }
-}
-
-impl AbstractSyntaxTree for Module {
-    type From = parse::Module;
-
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
-        assert!(ty.is_unit(), "Modules cannot return anything");
-        assert!(scope.is_topmost(), "Modules live in the topmost scope only");
-        let assignments = from
-            .assignments()
-            .iter()
-            .map(|s| ModuleAssignment::analyze(s, ty, scope))
-            .collect::<Result<Arc<[ModuleAssignment]>, RichError>>()?;
-        debug_assert!(scope.is_topmost());
-
-        Ok(Self {
-            name: from.name().shallow_clone(),
-            span: *from.as_ref(),
-            assignments,
-        })
-    }
-}
-
-impl AbstractSyntaxTree for ModuleAssignment {
-    type From = parse::ModuleAssignment;
-
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
-        assert!(ty.is_unit(), "Assignments cannot return anything");
-        let ty_expr = scope.resolve(from.ty()).with_span(from)?;
-        let expression = Expression::analyze(from.expression(), &ty_expr, scope)?;
-        let value = Value::from_const_expr(&expression)
-            .ok_or(Error::ExpressionUnexpectedType {
-                ty: ty_expr.clone(),
-            })
-            .with_span(from.expression())?;
-
-        Ok(Self {
-            name: from.name().clone(),
-            value,
             span: *from.as_ref(),
         })
     }

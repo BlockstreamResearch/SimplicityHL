@@ -305,15 +305,9 @@ impl<'a> arbitrary::Arbitrary<'a> for Hexadecimal {
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct ModuleName(Arc<str>);
 
-impl ModuleName {
-    /// Return the name of the witness module.
-    pub fn witness() -> Self {
-        Self(Arc::from("witness"))
-    }
-
-    /// Return the name of the parameter module.
-    pub fn param() -> Self {
-        Self(Arc::from("param"))
+impl Default for ModuleName {
+    fn default() -> Self {
+        Self(Arc::from(""))
     }
 }
 
@@ -324,6 +318,41 @@ impl From<SymbolName> for ModuleName {
 }
 
 wrapped_string!(ModuleName, "module name");
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for ModuleName {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // TODO: Consider to change it
+        const RESERVED_NAMES: [&str; 14] = [
+            "unwrap_left",
+            "unwrap_right",
+            "for_while",
+            "is_none",
+            "unwrap",
+            "assert",
+            "panic",
+            "match",
+            "into",
+            "fold",
+            "dbg",
+            "jet",
+            "witness",
+            "param",
+        ];
+
+        let len = u.int_in_range(1..=10)?;
+        let mut string = String::with_capacity(len);
+        for _ in 0..len {
+            let offset = u.int_in_range(0..=25)?;
+            string.push((b'a' + offset) as char)
+        }
+        if RESERVED_NAMES.contains(&string.as_str()) || crate::lexer::is_keyword(string.as_str()) {
+            string.push('_');
+        }
+
+        Ok(Self::from_str_unchecked(string.as_str()))
+    }
+}
 
 /// An unresolved identifier parsed from the source code.
 ///
