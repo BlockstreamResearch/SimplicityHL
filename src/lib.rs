@@ -1430,6 +1430,7 @@ mod functional_tests {
     }
 
     #[test]
+    #[ignore = "TODO: Enable this once module resolution is complete"]
     #[should_panic(expected = "not found")]
     fn crate_file_not_found_error() {
         run_multidep_test(

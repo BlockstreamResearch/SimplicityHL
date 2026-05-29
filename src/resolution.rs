@@ -2,6 +2,7 @@ use crate::driver::CRATE_STR;
 use crate::error::{Error, RichError, WithSpan as _};
 use crate::parse::UseDecl;
 use crate::source::CanonPath;
+use crate::str::Identifier;
 
 /// This defines how a specific dependency root path (e.g. "math")
 /// should be resolved to a physical path on the disk, restricted to
@@ -160,6 +161,28 @@ impl DependencyMapBuilder {
     }
 }
 
+/// Represents a fully resolved `use` declaration, split into two parts:
+/// the physical file on disk and the remaining inline path within it.
+///
+/// # Example
+///
+/// ``` md
+/// use drp_name::dir1::dir2::simf_file::first_mod::item;
+/// //  |______________________________| |______________|
+/// //              path                     mod_path
+/// ```
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedUse {
+    /// The resolved `.simf` file this `use` points to.
+    /// Represents the root `crate` directory if this is the root file.
+    pub(crate) path: CanonPath,
+
+    /// Path segments after the file boundary — inline `mod` names and the final item.
+    /// Empty if the `use` points directly to a file-level item.
+    #[allow(dead_code)]
+    pub(crate) mod_path: Vec<Identifier>,
+}
+
 impl DependencyMap {
     /// Re-sort the vector in descending order so the longest context paths are always at the front.
     /// This mathematically guarantees that the first match we find is the most specific.
@@ -189,30 +212,35 @@ impl DependencyMap {
         current_file: &CanonPath,
         use_decl: &UseDecl,
     ) -> Result<CanonPath, RichError> {
-        let parts = use_decl.path();
+        Ok(self.resolve_path_internal(current_file, use_decl)?.path)
+    }
+
+    pub(crate) fn resolve_path_internal(
+        &self,
+        current_file: &CanonPath,
+        use_decl: &UseDecl,
+    ) -> Result<ResolvedUse, RichError> {
         let drp_name = use_decl.drp_name()?;
+        let span = *use_decl.span();
 
         if drp_name == CRATE_STR {
-            return self.resolve_crate_path(current_file, use_decl, &parts);
+            return self.resolve_crate_path(current_file, use_decl);
         }
 
         // Because the vector is sorted by longest prefix,
         // the VERY FIRST match we find is guaranteed to be the correct one.
-        for remapping in &self.remappings {
-            if !current_file.starts_with(&remapping.context_prefix) {
-                continue;
-            }
-
-            // Check if the alias matches what the user typed
-            if remapping.drp_name == drp_name {
-                return self.resolve_external_path(remapping, current_file, use_decl, &parts);
-            }
-        }
-
-        Err(Error::UnknownLibrary {
-            name: drp_name.to_string(),
-        })
-        .with_span(*use_decl.span())
+        self.remappings
+            .iter()
+            .find(|r| current_file.starts_with(&r.context_prefix) && r.drp_name == drp_name)
+            .ok_or_else(|| {
+                RichError::new(
+                    Error::UnknownLibrary {
+                        name: drp_name.to_string(),
+                    },
+                    span,
+                )
+            })
+            .and_then(|remapping| self.resolve_external_path(remapping, current_file, use_decl))
     }
 
     fn resolve_external_path(
@@ -220,12 +248,12 @@ impl DependencyMap {
         remapping: &Remapping,
         current_file: &CanonPath,
         use_decl: &UseDecl,
-        parts: &[&str],
-    ) -> Result<CanonPath, RichError> {
+    ) -> Result<ResolvedUse, RichError> {
         let drp_name = use_decl.drp_name()?;
+        let parts_without_drp_name = &use_decl.path()[1..];
 
-        let resolved =
-            Self::build_and_verify_path(&remapping.target, &parts[1..]).map_err(|failed_path| {
+        let resolved = Self::build_and_verify_path(&remapping.target, parts_without_drp_name)
+            .map_err(|failed_path| {
                 RichError::new(
                     Error::ExternalFileNotFound {
                         lib: drp_name.to_string(),
@@ -235,28 +263,19 @@ impl DependencyMap {
                 )
             })?;
 
-        if !resolved.starts_with(&remapping.target) {
-            return Err(RichError::new(
-                Error::ExternalFileNotFound {
-                    lib: drp_name.to_string(),
-                    filename: resolved.as_path().to_path_buf(),
-                },
-                *use_decl.span(),
-            ));
-        }
-
-        self.check_local_file_imported_as_external(current_file, &resolved, use_decl)?;
-
+        self.check_local_file_imported_as_external(current_file, &resolved.path, use_decl.span())?;
         Ok(resolved)
     }
 
     /// Resolves `crate::...` imports into a physical file path.
+    ///
+    /// Attempts physical file resolution first. If that fails and the current file
+    /// is at the package root, it falls back to resolving inline items from the main scope.
     fn resolve_crate_path(
         &self,
         current_file: &CanonPath,
         use_decl: &UseDecl,
-        parts: &[&str],
-    ) -> Result<CanonPath, RichError> {
+    ) -> Result<ResolvedUse, RichError> {
         let root = self
             .get_package_root(current_file)
             .ok_or_else(|| Error::Internal {
@@ -264,25 +283,27 @@ impl DependencyMap {
             })
             .map_err(|e| RichError::new(e, *use_decl.span()))?;
 
-        let resolved = Self::build_and_verify_path(root, &parts[1..]).map_err(|failed_path| {
-            RichError::new(
-                Error::FileNotFound {
-                    filename: failed_path,
-                },
-                *use_decl.span(),
-            )
-        })?;
+        let parts_without_drp_name = &use_decl.path()[1..];
+        let failed_path = match Self::build_and_verify_path(root, parts_without_drp_name) {
+            Ok(resolved) => return Ok(resolved),
+            Err(path) => path,
+        };
 
-        if !resolved.starts_with(root) {
-            return Err(RichError::new(
-                Error::FileNotFound {
-                    filename: resolved.as_path().to_path_buf(),
-                },
-                *use_decl.span(),
-            ));
+        // Fallback: Check if the current file sits directly inside the root directory.
+        let is_in_root_dir = current_file.as_path().parent() == Some(root.as_path());
+        if is_in_root_dir {
+            return Ok(ResolvedUse {
+                path: current_file.clone(),
+                mod_path: parts_without_drp_name.to_vec(),
+            });
         }
 
-        Ok(resolved)
+        Err(RichError::new(
+            Error::FileNotFound {
+                filename: failed_path,
+            },
+            *use_decl.span(),
+        ))
     }
 
     /// Enforces that a local file is imported via `crate::` and not via an external alias.
@@ -290,38 +311,63 @@ impl DependencyMap {
         &self,
         current_file: &CanonPath,
         resolved: &CanonPath,
-        use_decl: &UseDecl,
+        use_decl_span: &crate::error::Span,
     ) -> Result<(), RichError> {
-        let current_crate = self.get_package_root(current_file);
-        let resolved_crate = self.get_package_root(resolved);
-
-        if let (Some(curr), Some(res)) = (current_crate, resolved_crate) {
+        if let (Some(curr), Some(res)) = (
+            self.get_package_root(current_file),
+            self.get_package_root(resolved),
+        ) {
             if curr == res {
                 return Err(Error::LocalFileImportedAsExternal {
                     path: resolved.as_path().to_path_buf(),
                 })
-                .with_span(*use_decl.span());
+                .with_span(*use_decl_span);
             }
         }
-
         Ok(())
     }
 
-    /// Replace `.join` method to better error handling
+    /// Walks `module_parts` greedily. Directories first, then the first matching `.simf` file.
+    /// Remaining segments after the file boundary are collected as inline `mod_path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failed candidate path as a raw `PathBuf`, without any additional context.
+    /// The caller is responsible for enriching this into a [`RichError`] with the appropriate
+    /// span, library name, and any other diagnostic information.
     fn build_and_verify_path(
         base_target: &CanonPath,
-        module_parts: &[impl ToString],
-    ) -> Result<CanonPath, std::path::PathBuf> {
-        let mut theoretical_path = base_target.as_path().to_path_buf();
-        for part in module_parts {
-            theoretical_path.push(part.to_string());
-        }
-        theoretical_path.set_extension("simf");
+        module_parts: &[Identifier],
+    ) -> Result<ResolvedUse, std::path::PathBuf> {
+        let mut path = base_target.as_path().to_path_buf();
 
-        match CanonPath::canonicalize(&theoretical_path) {
-            Ok(valid_canon_path) => Ok(valid_canon_path),
-            Err(_) => Err(theoretical_path),
+        let mut iter = module_parts.iter();
+
+        while let Some(part) = iter.next() {
+            let joined = path.join(part.as_inner());
+            if joined.is_dir() {
+                path = joined;
+                continue;
+            }
+
+            let mut file_candidate = joined;
+            file_candidate.set_extension("simf");
+
+            // Error context is intentionally dropped here. Callers enrich it with span, lib name, etc.
+            let resolved =
+                CanonPath::canonicalize(&file_candidate).map_err(|_| file_candidate.clone())?;
+
+            if !resolved.starts_with(base_target) {
+                return Err(file_candidate);
+            }
+
+            return Ok(ResolvedUse {
+                path: resolved,
+                mod_path: iter.cloned().collect(), // Add only remaining elements
+            });
         }
+
+        Err(path)
     }
 }
 
