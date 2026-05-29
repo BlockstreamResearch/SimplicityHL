@@ -9,9 +9,13 @@ target/
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
-# IntelliJ project files
+# IDE project files (for developers)
+## IntelliJ
 .idea
 *.iml
+
+## VSCode
+.vscode
 
 # mdbook HTML output dir
 book/book/
