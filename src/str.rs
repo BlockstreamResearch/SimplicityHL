@@ -96,30 +96,84 @@ impl From<SymbolName> for FunctionName {
     }
 }
 
+pub(crate) const FUNCTION_RESERVED: &[&str] = &[
+    "unwrap_left",
+    "unwrap_right",
+    "for_while",
+    "is_none",
+    "unwrap",
+    "assert",
+    "panic",
+    "match",
+    "into",
+    "fold",
+    "dbg",
+];
+
+pub(crate) const ALIAS_RESERVED: &[&str] = &[
+    "Either",
+    "Option",
+    "bool",
+    "List",
+    "u128",
+    "u256",
+    "u16",
+    "u32",
+    "u64",
+    "u1",
+    "u2",
+    "u4",
+    "u8",
+    "Ctx8",
+    "Pubkey",
+    "Message64",
+    "Message",
+    "Signature",
+    "Scalar",
+    "Fe",
+    "Gej",
+    "Ge",
+    "Point",
+    "Height",
+    "Time",
+    "Distance",
+    "Duration",
+    "Lock",
+    "Outpoint",
+    "Confidential1",
+    "ExplicitAsset",
+    "Asset1",
+    "ExplicitAmount",
+    "Amount1",
+    "ExplicitNonce",
+    "Nonce",
+    "TokenAmount1",
+];
+
+pub(crate) const MODULE_RESERVED: &[&str] = &["jet", "witness", "param"];
+
+pub fn is_reserved_function_name(name: &str) -> bool {
+    FUNCTION_RESERVED.contains(&name) || crate::lexer::is_keyword(name)
+}
+
+pub fn is_reserved_alias_name(name: &str) -> bool {
+    ALIAS_RESERVED.contains(&name) || crate::lexer::is_keyword(name)
+}
+
+pub fn is_reserved_module_name(name: &str) -> bool {
+    MODULE_RESERVED.contains(&name) || crate::lexer::is_keyword(name)
+}
+
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for FunctionName {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        const RESERVED_NAMES: [&str; 11] = [
-            "unwrap_left",
-            "unwrap_right",
-            "for_while",
-            "is_none",
-            "unwrap",
-            "assert",
-            "panic",
-            "match",
-            "into",
-            "fold",
-            "dbg",
-        ];
-
         let len = u.int_in_range(1..=10)?;
         let mut string = String::with_capacity(len);
         for _ in 0..len {
             let offset = u.int_in_range(0..=25)?;
             string.push((b'a' + offset) as char)
         }
-        if RESERVED_NAMES.contains(&string.as_str()) || crate::lexer::is_keyword(string.as_str()) {
+        if is_reserved_function_name(string.as_str()) {
             string.push('_');
         }
 
@@ -184,53 +238,13 @@ impl From<SymbolName> for AliasName {
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for AliasName {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        const RESERVED_NAMES: [&str; 37] = [
-            "Either",
-            "Option",
-            "bool",
-            "List",
-            "u128",
-            "u256",
-            "u16",
-            "u32",
-            "u64",
-            "u1",
-            "u2",
-            "u4",
-            "u8",
-            "Ctx8",
-            "Pubkey",
-            "Message64",
-            "Message",
-            "Signature",
-            "Scalar",
-            "Fe",
-            "Gej",
-            "Ge",
-            "Point",
-            "Height",
-            "Time",
-            "Distance",
-            "Duration",
-            "Lock",
-            "Outpoint",
-            "Confidential1",
-            "ExplicitAsset",
-            "Asset1",
-            "ExplicitAmount",
-            "Amount1",
-            "ExplicitNonce",
-            "Nonce",
-            "TokenAmount1",
-        ];
-
         let len = u.int_in_range(1..=10)?;
         let mut string = String::with_capacity(len);
         for _ in 0..len {
             let offset = u.int_in_range(0..=25)?;
             string.push((b'a' + offset) as char)
         }
-        if RESERVED_NAMES.contains(&string.as_str()) || crate::lexer::is_keyword(string.as_str()) {
+        if is_reserved_alias_name(string.as_str()) {
             string.push('_');
         }
 
@@ -305,15 +319,9 @@ impl<'a> arbitrary::Arbitrary<'a> for Hexadecimal {
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct ModuleName(Arc<str>);
 
-impl ModuleName {
-    /// Return the name of the witness module.
-    pub fn witness() -> Self {
-        Self(Arc::from("witness"))
-    }
-
-    /// Return the name of the parameter module.
-    pub fn param() -> Self {
-        Self(Arc::from("param"))
+impl Default for ModuleName {
+    fn default() -> Self {
+        Self(Arc::from(""))
     }
 }
 
@@ -324,6 +332,23 @@ impl From<SymbolName> for ModuleName {
 }
 
 wrapped_string!(ModuleName, "module name");
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for ModuleName {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let len = u.int_in_range(1..=10)?;
+        let mut string = String::with_capacity(len);
+        for _ in 0..len {
+            let offset = u.int_in_range(0..=25)?;
+            string.push((b'a' + offset) as char)
+        }
+        if is_reserved_module_name(string.as_str()) {
+            string.push('_');
+        }
+
+        Ok(Self::from_str_unchecked(string.as_str()))
+    }
+}
 
 /// An unresolved identifier parsed from the source code.
 ///
