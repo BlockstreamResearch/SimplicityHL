@@ -105,12 +105,12 @@ impl UseDecl {
     ///
     /// This includes the Dependency Root Path Name (the first segment)
     /// followed by all subsequent sub-module segments.
-    pub fn path(&self) -> Vec<&str> {
-        self.path.iter().map(|s| s.as_inner()).collect()
+    pub fn path(&self) -> &[Identifier] {
+        &self.path
     }
 
     pub fn str_path(&self) -> String {
-        let path: PathBuf = self.path.iter().map(|s| s.as_inner()).collect();
+        let path: PathBuf = self.path().iter().map(|iden| iden.as_inner()).collect();
         path.display().to_string()
     }
 
@@ -120,7 +120,7 @@ impl UseDecl {
     ///
     /// Returns a `RichError` if the use declaration path is completely empty.
     pub fn drp_name(&self) -> Result<&str, RichError> {
-        let parts = self.path();
+        let parts: Vec<&str> = self.path().iter().map(|iden| iden.as_inner()).collect();
         parts.first().copied().ok_or_else(|| {
             Error::CannotParse {
                 msg: "Empty use path".to_string(),
