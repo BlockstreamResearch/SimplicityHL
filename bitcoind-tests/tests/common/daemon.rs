@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use elements::encode::{deserialize, serialize_hex};
 use elements::hex::FromHex;
-use elementsd::bitcoincore_rpc::jsonrpc::serde_json::{json, Value};
+use elementsd::bitcoincore_rpc::jsonrpc::serde_json::Value;
 use elementsd::bitcoind::bitcoincore_rpc::RpcApi;
 use elementsd::ElementsD;
 use simplicityhl::elements;
@@ -52,7 +52,6 @@ pub trait Call {
     fn get_new_address(&self) -> elements::Address;
     fn send_to_address(&self, addr: &elements::Address, amt: &str) -> elements::Txid;
     fn get_transaction(&self, txid: &elements::Txid) -> elements::Transaction;
-    fn test_mempool_accept(&self, hex: &elements::Transaction) -> bool;
     fn send_raw_transaction(&self, hex: &elements::Transaction) -> elements::Txid;
     fn generate(&self, blocks: u32);
 }
@@ -107,11 +106,5 @@ impl Call for ElementsD {
             "generatetoaddress",
             &[blocks.into(), address.to_string().into()],
         );
-    }
-
-    fn test_mempool_accept(&self, tx: &elements::Transaction) -> bool {
-        let result = self.call("testmempoolaccept", &[json!([serialize_hex(tx)])]);
-        let allowed = result.get(0).unwrap().get("allowed");
-        allowed.unwrap().as_bool().unwrap()
     }
 }

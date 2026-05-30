@@ -634,18 +634,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "regex"
-version = "1.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81bc1d4caf89fac26a70747fe603c130093b53c773888797a6329091246d651a"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
 name = "regex-automata"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -681,15 +669,6 @@ name = "ryu"
 version = "1.0.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f91339c0467de62360649f8d3e185ca8de4224ff281f66000de5eb2a77a79041"
-
-[[package]]
-name = "santiago"
-version = "1.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de36022292bc2086eb8f55bffa460fef3475e4459b478820711f4c421feb87ec"
-dependencies = [
- "regex",
-]
 
 [[package]]
 name = "secp256k1"
@@ -773,9 +752,9 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "simplicity-lang"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70e57bd4d84853974a212eab24ed89da54f49fbccf5e33e93bcd29f0a6591cd5"
+checksum = "07f79806a665b34e4d8950edd053a991e57915e3924b8b21ac6f2bdd23d9e842"
 dependencies = [
  "bitcoin",
  "bitcoin_hashes",
@@ -785,15 +764,14 @@ dependencies = [
  "ghost-cell",
  "hex-conservative",
  "miniscript",
- "santiago",
  "simplicity-sys",
 ]
 
 [[package]]
 name = "simplicity-sys"
-version = "0.6.2"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3401ee7331f183a5458c0f5a4b3d5d00bde0fd12e2e03728c537df34efae289"
+checksum = "96d1ec5477c7650b8ef511aa56dccb28f2e8cdb6e87f260ecffdaf0ebfef2d3b"
 dependencies = [
  "bitcoin_hashes",
  "cc",
@@ -801,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "simplicityhl"
-version = "0.5.0"
+version = "0.6.0-rc.0"
 dependencies = [
  "base64 0.21.2",
  "chumsky",
