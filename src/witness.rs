@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -128,6 +128,23 @@ impl WitnessValues {
 
         Ok(())
     }
+
+    /// Return a copy of these witness values with zero values inserted for any witness declared
+    /// in `types` that has no assigned value. Witnesses already present are unchanged.
+    ///
+    /// This is used before populating Simplicity witness nodes: all nodes must be filled, even
+    /// those on branches that will be pruned away and never executed.
+    pub fn fill_missing(&self, types: &WitnessTypes) -> (Self, HashSet<WitnessName>) {
+        let mut map: HashMap<WitnessName, Value> = (*self.0).clone();
+        let mut zero_filled = HashSet::new();
+        for (name, ty) in types.iter() {
+            if !map.contains_key(name) {
+                map.insert(name.shallow_clone(), Value::zero(ty));
+                zero_filled.insert(name.shallow_clone());
+            }
+        }
+        (Self::from(map), zero_filled)
+    }
 }
 
 impl ParseFromStr for ResolvedType {
@@ -217,7 +234,7 @@ mod tests {
     use crate::error::ErrorCollector;
     use crate::parse::ParseFromStr;
     use crate::value::ValueConstructible;
-    use crate::{ast, driver, parse, CompiledProgram, SatisfiedProgram};
+    use crate::{ast, driver, parse, CompiledProgram, ResolvedType, SatisfiedProgram};
 
     #[test]
     fn witness_reuse() {
@@ -289,6 +306,45 @@ fn main() {
                     .contains("Witness expressions are not allowed outside the `main` function"))
             }
         }
+    }
+
+    #[test]
+    fn fill_missing_zero_fills_and_tracks_missing_witnesses() {
+        let ty = ResolvedType::parse_from_str("u32").unwrap();
+        let witness_types = WitnessTypes::from(HashMap::from([
+            (WitnessName::from_str_unchecked("A"), ty.clone()),
+            (WitnessName::from_str_unchecked("B"), ty.clone()),
+            (WitnessName::from_str_unchecked("C"), ty.clone()),
+        ]));
+
+        // A is explicitly provided with value zero (same value fill_missing would insert).
+        // B and C are not provided at all.
+        let provided = WitnessValues::from(HashMap::from([(
+            WitnessName::from_str_unchecked("A"),
+            Value::u32(0),
+        )]));
+
+        let (filled, zero_filled) = provided.fill_missing(&witness_types);
+
+        // Explicitly-provided witnesses must NOT be tracked as zero-filled,
+        // even when their value happens to be zero.
+        assert!(
+            !zero_filled.contains(&WitnessName::from_str_unchecked("A")),
+            "A was explicitly provided; must not appear in zero_filled"
+        );
+        // Missing witnesses must be tracked so check_surviving_witnesses can error.
+        assert!(
+            zero_filled.contains(&WitnessName::from_str_unchecked("B")),
+            "B was not provided; must appear in zero_filled"
+        );
+        assert!(
+            zero_filled.contains(&WitnessName::from_str_unchecked("C")),
+            "C was not provided; must appear in zero_filled"
+        );
+        // All three must now have values in the filled map.
+        assert!(filled.get(&WitnessName::from_str_unchecked("A")).is_some());
+        assert!(filled.get(&WitnessName::from_str_unchecked("B")).is_some());
+        assert!(filled.get(&WitnessName::from_str_unchecked("C")).is_some());
     }
 
     #[test]
