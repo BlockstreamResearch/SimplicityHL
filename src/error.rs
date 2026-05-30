@@ -475,6 +475,9 @@ impl fmt::Display for ErrorCollector {
 /// Records _what_ happened but not where.
 #[derive(Debug, Clone)]
 pub enum Error {
+    UnstableFeature {
+        feature_name: String,
+    },
     DependencyPathNotFound {
         path: PathBuf,
     },
@@ -640,6 +643,10 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::UnstableFeature { feature_name } => write!(
+                f,
+                "The '{feature_name}' feature is not enabled.\nEnable it with: -Z {feature_name}"
+            ),
             Error::DependencyPathNotFound { path } => write!(
                 f,
                 "Path not found: {}", path.display()

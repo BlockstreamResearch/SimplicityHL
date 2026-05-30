@@ -88,15 +88,23 @@ impl fmt::Display for LinearizationError {
 #[cfg(test)]
 mod tests {
     use crate::driver::tests::setup_graph;
+    use crate::unstable::UnstableFeature;
 
     use super::*;
 
     #[test]
     fn test_linearize_simple_import() {
-        let (graph, ids, _dir) = setup_graph(vec![
-            ("main.simf", "use lib::math::some_func;"),
-            ("libs/lib/math.simf", ""),
-        ]);
+        let (graph, ids, _dir) = setup_graph(
+            vec![
+                ("main.simf", "use lib::math::some_func;"),
+                ("libs/lib/math.simf", ""),
+            ],
+            [
+                UnstableFeature::UseKeyword,
+                UnstableFeature::CrateKeyword,
+                UnstableFeature::AsKeyword,
+            ],
+        );
 
         let order = graph.linearize().unwrap();
 
@@ -114,12 +122,19 @@ mod tests {
         // B -> imports Common
         // Expected: Common loaded ONLY ONCE.
 
-        let (graph, ids, _dir) = setup_graph(vec![
-            ("main.simf", "use lib::A::foo; use lib::B::bar;"),
-            ("libs/lib/A.simf", "use crate::Common::dummy1;"),
-            ("libs/lib/B.simf", "use crate::Common::dummy2;"),
-            ("libs/lib/Common.simf", ""),
-        ]);
+        let (graph, ids, _dir) = setup_graph(
+            vec![
+                ("main.simf", "use lib::A::foo; use lib::B::bar;"),
+                ("libs/lib/A.simf", "use crate::Common::dummy1;"),
+                ("libs/lib/B.simf", "use crate::Common::dummy2;"),
+                ("libs/lib/Common.simf", ""),
+            ],
+            [
+                UnstableFeature::UseKeyword,
+                UnstableFeature::CrateKeyword,
+                UnstableFeature::AsKeyword,
+            ],
+        );
 
         let order = graph.linearize().unwrap();
 
@@ -137,11 +152,18 @@ mod tests {
 
     #[test]
     fn test_linearize_detects_cycle() {
-        let (graph, _, _dir) = setup_graph(vec![
-            ("main.simf", "use lib::A::entry;"),
-            ("libs/lib/A.simf", "use crate::B::func;"),
-            ("libs/lib/B.simf", "use crate::A::func;"),
-        ]);
+        let (graph, _, _dir) = setup_graph(
+            vec![
+                ("main.simf", "use lib::A::entry;"),
+                ("libs/lib/A.simf", "use crate::B::func;"),
+                ("libs/lib/B.simf", "use crate::A::func;"),
+            ],
+            [
+                UnstableFeature::UseKeyword,
+                UnstableFeature::CrateKeyword,
+                UnstableFeature::AsKeyword,
+            ],
+        );
 
         let order = graph.linearize();
         assert!(matches!(
@@ -154,13 +176,20 @@ mod tests {
     fn test_linearize_allows_conflicting_nested_import_order() {
         // A imports X then Y, while B imports Y then X.
         // This DAG is still valid because neither X nor Y depends on the other.
-        let (graph, ids, _dir) = setup_graph(vec![
-            ("main.simf", "use lib::A::foo; use lib::B::bar;"),
-            ("libs/lib/A.simf", "use crate::X::foo; use crate::Y::bar;"),
-            ("libs/lib/B.simf", "use crate::Y::baz; use crate::X::qux;"),
-            ("libs/lib/X.simf", ""),
-            ("libs/lib/Y.simf", ""),
-        ]);
+        let (graph, ids, _dir) = setup_graph(
+            vec![
+                ("main.simf", "use lib::A::foo; use lib::B::bar;"),
+                ("libs/lib/A.simf", "use crate::X::foo; use crate::Y::bar;"),
+                ("libs/lib/B.simf", "use crate::Y::baz; use crate::X::qux;"),
+                ("libs/lib/X.simf", ""),
+                ("libs/lib/Y.simf", ""),
+            ],
+            [
+                UnstableFeature::UseKeyword,
+                UnstableFeature::CrateKeyword,
+                UnstableFeature::AsKeyword,
+            ],
+        );
 
         let order = graph
             .linearize()

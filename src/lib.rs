@@ -17,6 +17,7 @@ pub mod parse;
 pub mod pattern;
 pub mod resolution;
 pub mod source;
+pub mod unstable;
 
 #[cfg(feature = "serde")]
 mod serde;
@@ -45,6 +46,7 @@ use crate::resolution::DependencyMap;
 use crate::source::CanonSourceFile;
 use crate::source::SourceFile;
 pub use crate::types::ResolvedType;
+pub use crate::unstable::{UnstableFeature, UnstableFeatureManager};
 pub use crate::value::Value;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 
@@ -69,6 +71,25 @@ impl TemplateProgram {
         dependency_map: &DependencyMap,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
+        Self::with_unstable_and_dep(
+            source,
+            dependency_map,
+            &UnstableFeatureManager::default(),
+            jet_hinter,
+        )
+    }
+
+    /// Parse the template of a SimplicityHL program with explicit unstable features enabled.
+    ///
+    /// ## Errors
+    ///
+    /// The string is not a valid SimplicityHL program.
+    pub fn with_unstable_and_dep(
+        source: CanonSourceFile,
+        dependency_map: &DependencyMap,
+        unstable_manager: &UnstableFeatureManager,
+        jet_hinter: Box<dyn ast::JetHinter>,
+    ) -> Result<Self, String> {
         let mut error_handler = ErrorCollector::new();
 
         // 1. Parse root file
@@ -76,12 +97,18 @@ impl TemplateProgram {
             parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler)
                 .ok_or_else(|| error_handler.to_string())?;
 
-        // 2. Create the driver program
+        // 2. Check unstable features and record errors with precise spans
+        let mut unstable_errors = ErrorCollector::new();
+        unstable_manager.check_program(&parsed_program, &mut unstable_errors);
+        error_handler.extend_with_handler(source.clone(), &unstable_errors);
+
+        // 3. Create the driver program
         let graph = DependencyGraph::new(
             source.clone(),
             Arc::from(dependency_map.clone()),
             &parsed_program,
             &mut error_handler,
+            unstable_manager,
         )?
         .ok_or_else(|| error_handler.to_string())?;
 
@@ -89,7 +116,7 @@ impl TemplateProgram {
             .linearize_and_build(&mut error_handler)?
             .ok_or_else(|| error_handler.to_string())?;
 
-        // 3. AST Analysis
+        // 4. AST Analysis
         let ast_program = ast::Program::analyze(&driver_program, jet_hinter.clone_box())
             .with_source(source.clone())?;
         Ok(Self {
@@ -108,28 +135,42 @@ impl TemplateProgram {
         s: Str,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
+        Self::with_unstable(s, &UnstableFeatureManager::default(), jet_hinter)
+    }
+
+    /// Parse the template of a SimplicityHL program with explicit unstable features enabled.
+    ///
+    /// ## Errors
+    ///
+    /// The string is not a valid SimplicityHL program.
+    pub fn with_unstable<Str: Into<Arc<str>>>(
+        s: Str,
+        unstable_manager: &UnstableFeatureManager,
+        jet_hinter: Box<dyn ast::JetHinter>,
+    ) -> Result<Self, String> {
         let file = s.into();
         let source = SourceFile::anonymous(file.clone());
         let mut error_handler = ErrorCollector::new();
-        let parse_program = parse::Program::parse_from_str_with_errors(source, &mut error_handler);
 
-        let driver_program = if let Some(parse_program) = parse_program {
-            driver::Program::from_parse(&parse_program, file.clone(), &mut error_handler)
-        } else {
-            None
-        };
+        let parsed_program =
+            parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler)
+                .ok_or_else(|| error_handler.to_string())?;
 
-        if let Some(program) = driver_program {
-            let ast_program = ast::Program::analyze(&program, jet_hinter.clone_box())
-                .with_content(Arc::clone(&file))?;
-            Ok(Self {
-                simfony: ast_program,
-                file,
-                jet_hinter,
-            })
-        } else {
-            Err(ErrorCollector::to_string(&error_handler))?
-        }
+        let mut unstable_errors = ErrorCollector::new();
+        unstable_manager.check_program(&parsed_program, &mut unstable_errors);
+        error_handler.extend_with_handler(source.clone(), &unstable_errors);
+
+        let driver_program =
+            driver::Program::from_parse(&parsed_program, file.clone(), &mut error_handler)
+                .ok_or_else(|| error_handler.to_string())?;
+
+        let ast_program = ast::Program::analyze(&driver_program, jet_hinter.clone_box())
+            .with_content(Arc::clone(&file))?;
+        Ok(Self {
+            simfony: ast_program,
+            file,
+            jet_hinter,
+        })
     }
 
     /// Access the parameters of the program.
@@ -205,8 +246,32 @@ impl CompiledProgram {
         include_debug_symbols: bool,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        TemplateProgram::new_with_dep(source, dependency_map, jet_hinter.clone_box())
-            .and_then(|template| template.instantiate(arguments, include_debug_symbols))
+        Self::with_unstable_and_dep(
+            source,
+            dependency_map,
+            &UnstableFeatureManager::default(),
+            arguments,
+            include_debug_symbols,
+            jet_hinter,
+        )
+    }
+
+    /// Parse and compile a SimplicityHL program with explicit unstable features enabled.
+    pub fn with_unstable_and_dep(
+        source: CanonSourceFile,
+        dependency_map: &DependencyMap,
+        unstable_manager: &UnstableFeatureManager,
+        arguments: Arguments,
+        include_debug_symbols: bool,
+        jet_hinter: Box<dyn ast::JetHinter>,
+    ) -> Result<Self, String> {
+        TemplateProgram::with_unstable_and_dep(
+            source,
+            dependency_map,
+            unstable_manager,
+            jet_hinter.clone_box(),
+        )
+        .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
     /// Parse and compile a SimplicityHL program from the given string.
@@ -221,7 +286,24 @@ impl CompiledProgram {
         include_debug_symbols: bool,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        TemplateProgram::new(s, jet_hinter.clone_box())
+        Self::with_unstable(
+            s,
+            &UnstableFeatureManager::default(),
+            arguments,
+            include_debug_symbols,
+            jet_hinter,
+        )
+    }
+
+    /// Parse and compile a SimplicityHL program with explicit unstable features enabled.
+    pub fn with_unstable<Str: Into<Arc<str>>>(
+        s: Str,
+        unstable_manager: &UnstableFeatureManager,
+        arguments: Arguments,
+        include_debug_symbols: bool,
+        jet_hinter: Box<dyn ast::JetHinter>,
+    ) -> Result<Self, String> {
+        TemplateProgram::with_unstable(s, unstable_manager, jet_hinter.clone_box())
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -307,7 +389,32 @@ impl SatisfiedProgram {
         include_debug_symbols: bool,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        let compiled = CompiledProgram::new(s, arguments, include_debug_symbols, jet_hinter)?;
+        Self::with_unstable(
+            s,
+            &UnstableFeatureManager::default(),
+            arguments,
+            witness_values,
+            include_debug_symbols,
+            jet_hinter,
+        )
+    }
+
+    /// Parse, compile and satisfy a SimplicityHL program with explicit unstable features enabled.
+    pub fn with_unstable<Str: Into<Arc<str>>>(
+        s: Str,
+        unstable_manager: &UnstableFeatureManager,
+        arguments: Arguments,
+        witness_values: WitnessValues,
+        include_debug_symbols: bool,
+        jet_hinter: Box<dyn ast::JetHinter>,
+    ) -> Result<Self, String> {
+        let compiled = CompiledProgram::with_unstable(
+            s,
+            unstable_manager,
+            arguments,
+            include_debug_symbols,
+            jet_hinter,
+        )?;
         compiled.satisfy(witness_values)
     }
 
@@ -435,20 +542,52 @@ pub(crate) mod tests {
 
     impl TestCase<TemplateProgram> {
         pub fn template_file<P: AsRef<Path>>(program_file_path: P) -> Self {
-            let program_text = std::fs::read_to_string(program_file_path).unwrap();
-            Self::template_text(Cow::Owned(program_text))
+            Self::template_file_with_unstable(
+                program_file_path,
+                std::iter::empty::<UnstableFeature>(),
+            )
         }
 
+        pub fn template_file_with_unstable<P: AsRef<Path>, F>(
+            program_file_path: P,
+            features: F,
+        ) -> Self
+        where
+            F: IntoIterator<Item = UnstableFeature> + Clone,
+        {
+            let program_text = std::fs::read_to_string(program_file_path).unwrap();
+            Self::template_text_with_unstable(Cow::Owned(program_text), features)
+        }
+
+        // Temporary allow while imports are unstable
+        #[allow(dead_code)]
         pub fn template_deps(prog_path: &Path, dependency_map: &DependencyMap) -> Self {
+            Self::template_deps_with_unstable(
+                prog_path,
+                dependency_map,
+                std::iter::empty::<UnstableFeature>(),
+            )
+        }
+
+        pub fn template_deps_with_unstable<F>(
+            prog_path: &Path,
+            dependency_map: &DependencyMap,
+            features: F,
+        ) -> Self
+        where
+            F: IntoIterator<Item = UnstableFeature> + Clone,
+        {
+            let unstable_manager = UnstableFeatureManager::new(features);
             let program_text = std::fs::read_to_string(prog_path).unwrap();
             let source = CanonSourceFile::new(
                 crate::source::CanonPath::canonicalize(prog_path).unwrap(),
                 Arc::from(program_text),
             );
 
-            let program = match TemplateProgram::new_with_dep(
+            let program = match TemplateProgram::with_unstable_and_dep(
                 source,
                 dependency_map,
+                &unstable_manager,
                 Box::new(ElementsJetHinter::new()),
             ) {
                 Ok(x) => x,
@@ -464,8 +603,33 @@ pub(crate) mod tests {
         }
 
         pub fn template_text(program_text: Cow<str>) -> Self {
-            let program = match TemplateProgram::new(
+            Self::template_text_with_unstable(program_text, std::iter::empty::<UnstableFeature>())
+        }
+
+        pub fn template_text_with_unstable<F>(program_text: Cow<str>, features: F) -> Self
+        where
+            F: IntoIterator<Item = UnstableFeature> + Clone,
+        {
+            let unstable_manager = UnstableFeatureManager::new(features.clone());
+
+            let features_vec: Vec<UnstableFeature> = features.into_iter().collect();
+            if !features_vec.is_empty() {
+                let result =
+                    TemplateProgram::new(program_text.as_ref(), Box::new(ElementsJetHinter::new()));
+                let err = result.expect_err("Program should fail without unstable flags");
+                for feature in features_vec {
+                    assert!(
+                        err.contains(&feature.to_string()),
+                        "Expected unstable feature error to mention '{}', got: {}",
+                        feature,
+                        err
+                    );
+                }
+            }
+
+            let program = match TemplateProgram::with_unstable(
                 program_text.as_ref(),
+                &unstable_manager,
                 Box::new(ElementsJetHinter::new()),
             ) {
                 Ok(x) => x,
@@ -512,16 +676,59 @@ pub(crate) mod tests {
                 .with_arguments(Arguments::default())
         }
 
+        // Temporary allow while imports are unstable
+        #[allow(dead_code)]
+        pub fn program_file_with_unstable<P: AsRef<Path>, F>(
+            program_file_path: P,
+            features: F,
+        ) -> Self
+        where
+            F: IntoIterator<Item = UnstableFeature> + Clone,
+        {
+            TestCase::<TemplateProgram>::template_file_with_unstable(program_file_path, features)
+                .with_arguments(Arguments::default())
+        }
+
         pub fn program_text(program_text: Cow<str>) -> Self {
             TestCase::<TemplateProgram>::template_text(program_text)
                 .with_arguments(Arguments::default())
         }
 
+        // Temporary allow while imports are unstable
+        #[allow(dead_code)]
+        pub fn program_text_with_unstable<F>(program_text: Cow<str>, features: F) -> Self
+        where
+            F: IntoIterator<Item = UnstableFeature> + Clone,
+        {
+            TestCase::<TemplateProgram>::template_text_with_unstable(program_text, features)
+                .with_arguments(Arguments::default())
+        }
+
+        // Temporary allow while imports are unstable
+        #[allow(dead_code)]
         pub fn program_file_with_deps<P, I, K>(prog_path: P, dependencies: I) -> Self
         where
             P: AsRef<Path>,
             I: IntoIterator<Item = (P, K, P)>,
             K: Into<String>,
+        {
+            Self::program_file_with_deps_and_unstable(
+                prog_path,
+                dependencies,
+                std::iter::empty::<UnstableFeature>(),
+            )
+        }
+
+        pub fn program_file_with_deps_and_unstable<P, I, K, F>(
+            prog_path: P,
+            dependencies: I,
+            features: F,
+        ) -> Self
+        where
+            P: AsRef<Path>,
+            I: IntoIterator<Item = (P, K, P)>,
+            K: Into<String>,
+            F: IntoIterator<Item = UnstableFeature> + Clone,
         {
             let parent = prog_path.as_ref().parent().unwrap();
             let canon_root = canon(parent);
@@ -536,8 +743,36 @@ pub(crate) mod tests {
 
             let dependency_map = builder.build().unwrap();
 
-            TestCase::<TemplateProgram>::template_deps(prog_path.as_ref(), &dependency_map)
-                .with_arguments(Arguments::default())
+            let features_vec: Vec<UnstableFeature> = features.clone().into_iter().collect();
+            if !features_vec.is_empty() {
+                let program_text = std::fs::read_to_string(prog_path.as_ref()).unwrap();
+                let source = CanonSourceFile::new(
+                    crate::source::CanonPath::canonicalize(prog_path.as_ref()).unwrap(),
+                    Arc::from(program_text),
+                );
+                let result = TemplateProgram::new_with_dep(
+                    source,
+                    &dependency_map,
+                    Box::new(ElementsJetHinter::new()),
+                );
+                let err = result
+                    .expect_err("Program with dependencies should fail without unstable flags");
+                for feature in features_vec {
+                    assert!(
+                        err.contains(&feature.to_string()),
+                        "Expected unstable feature error to mention '{}', got: {}",
+                        feature,
+                        err
+                    );
+                }
+            }
+
+            TestCase::<TemplateProgram>::template_deps_with_unstable(
+                prog_path.as_ref(),
+                &dependency_map,
+                features,
+            )
+            .with_arguments(Arguments::default())
         }
 
         #[cfg(feature = "serde")]
@@ -643,21 +878,31 @@ pub(crate) mod tests {
 
     /// THE DEFAULT HELPER
     /// Automatically sets up the standard `lib` self-referencing dependency.
-    pub(crate) fn run_dependency_test(root_path: &str, lib_alias: &str) {
+    pub(crate) fn run_dependency_test<F>(root_path: &str, lib_alias: &str, features: F)
+    where
+        F: IntoIterator<Item = UnstableFeature> + Clone,
+    {
         let root_path = PathBuf::from(root_path);
         let lib_path = root_path.join(lib_alias);
         let main_path = root_path.join("main.simf");
 
-        TestCase::program_file_with_deps(&main_path, [(&root_path, lib_alias, &lib_path)])
-            .with_witness_values(WitnessValues::default())
-            .assert_run_success();
+        TestCase::program_file_with_deps_and_unstable(
+            &main_path,
+            [(&root_path, lib_alias, &lib_path)],
+            features,
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
     }
 
     /// THE ADVANCED HELPER
     /// A helper function to run standard library dependency tests.
     /// `deps` expects an array of tuples: `(context_folder, alias, target_folder)`.
     /// Use `"."` for the `context_folder` if the context is the root test directory.
-    pub(crate) fn run_multidep_test(root_path: &str, deps: &[(&str, &str, &str)]) {
+    pub(crate) fn run_multidep_test<F>(root_path: &str, deps: &[(&str, &str, &str)], features: F)
+    where
+        F: IntoIterator<Item = UnstableFeature> + Clone,
+    {
         let root_path = PathBuf::from(root_path);
         let main_path = root_path.join("main.simf");
 
@@ -679,7 +924,7 @@ pub(crate) mod tests {
 
         let ref_deps = mapped_deps.iter().map(|(c, a, t)| (c, *a, t));
 
-        TestCase::program_file_with_deps(&main_path, ref_deps)
+        TestCase::program_file_with_deps_and_unstable(&main_path, ref_deps, features)
             .with_witness_values(WitnessValues::default())
             .assert_run_success();
     }
@@ -692,7 +937,15 @@ pub(crate) mod tests {
     /// ```
     #[test]
     fn single_dep() {
-        run_dependency_test("./examples/single_dep", "temp");
+        run_dependency_test(
+            "./examples/single_dep",
+            "temp",
+            [
+                UnstableFeature::UseKeyword,
+                UnstableFeature::CrateKeyword,
+                UnstableFeature::AsKeyword,
+            ],
+        );
     }
 
     /// Run with `simc` command:
@@ -707,6 +960,7 @@ pub(crate) mod tests {
         run_multidep_test(
             "./examples/simple_multidep",
             &[(".", "math", "math"), (".", "crypto", "crypto")],
+            [UnstableFeature::UseKeyword],
         );
     }
 
@@ -727,6 +981,7 @@ pub(crate) mod tests {
                 (".", "base_math", "math"),
                 ("merkle", "math", "math"),
             ],
+            [UnstableFeature::UseKeyword, UnstableFeature::AsKeyword],
         );
     }
 
@@ -737,7 +992,11 @@ pub(crate) mod tests {
     /// ```
     #[test]
     fn local_crate() {
-        run_multidep_test("./examples/local_crate", &[]);
+        run_multidep_test(
+            "./examples/local_crate",
+            &[],
+            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
+        );
     }
 
     #[test]
@@ -758,10 +1017,14 @@ pub(crate) mod tests {
 
         let dependency_map = DependencyMapBuilder::new(canon_root).build().unwrap();
 
-        TestCase::<TemplateProgram>::template_deps(&main_path, &dependency_map)
-            .with_arguments(Arguments::default())
-            .with_witness_values(WitnessValues::default())
-            .assert_run_success();
+        TestCase::<TemplateProgram>::template_deps_with_unstable(
+            &main_path,
+            &dependency_map,
+            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
+        )
+        .with_arguments(Arguments::default())
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
     }
 
     #[test]
@@ -1217,10 +1480,12 @@ mod error_tests {
         );
 
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
+        let unstable_manager = UnstableFeatureManager::new(UnstableFeature::all().iter().copied());
 
-        let err = TemplateProgram::new_with_dep(
+        let err = TemplateProgram::with_unstable_and_dep(
             source_file(&main_path),
             &dependencies,
+            &unstable_manager,
             Box::new(ElementsJetHinter::new()),
         )
         .expect_err("dependency body has a type error");
@@ -1248,9 +1513,11 @@ mod error_tests {
         ws.create_file("workspace/lib/base.simf", "pub fn one() -> u32 { 1 }\n");
 
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
-        let _err = TemplateProgram::new_with_dep(
+        let unstable_manager = UnstableFeatureManager::new(UnstableFeature::all().iter().copied());
+        let _err = TemplateProgram::with_unstable_and_dep(
             source_file(&main_path),
             &dependencies,
+            &unstable_manager,
             Box::new(ElementsJetHinter::new()),
         )
         .expect_err("omitted-context dependencies");
@@ -1266,10 +1533,12 @@ mod error_tests {
             "use lib::missing::Thing;\nfn main() {}\n",
         );
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
+        let unstable_manager = UnstableFeatureManager::new(UnstableFeature::all().iter().copied());
 
-        let err = TemplateProgram::new_with_dep(
+        let err = TemplateProgram::with_unstable_and_dep(
             source_file(&main_path),
             &dependencies,
+            &unstable_manager,
             Box::new(ElementsJetHinter::new()),
         )
         .expect_err("missing imported module should fail");
@@ -1283,7 +1552,10 @@ mod error_tests {
 
 #[cfg(test)]
 mod functional_tests {
-    use crate::tests::{run_dependency_test, run_multidep_test};
+    use crate::{
+        tests::{run_dependency_test, run_multidep_test},
+        UnstableFeature,
+    };
 
     const VALID_TESTS_DIR: &str = "./functional-tests/valid-test-cases";
     const ERROR_TESTS_DIR: &str = "./functional-tests/error-test-cases";
@@ -1291,7 +1563,11 @@ mod functional_tests {
     // Real test cases
     #[test]
     fn module_simple() {
-        run_dependency_test(format!("{}/module-simple", VALID_TESTS_DIR).as_str(), "lib");
+        run_dependency_test(
+            format!("{}/module-simple", VALID_TESTS_DIR).as_str(),
+            "lib",
+            [UnstableFeature::UseKeyword],
+        );
     }
 
     #[test]
@@ -1299,6 +1575,7 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/diamond-dependency-resolution", VALID_TESTS_DIR).as_str(),
             "lib",
+            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
         );
     }
 
@@ -1307,6 +1584,7 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/deep-reexport-chain", VALID_TESTS_DIR).as_str(),
             "lib",
+            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
         );
     }
 
@@ -1315,6 +1593,7 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/leaky-signature", VALID_TESTS_DIR).as_str(),
             "lib",
+            [UnstableFeature::UseKeyword],
         );
     }
 
@@ -1323,6 +1602,7 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/reexport-diamond", VALID_TESTS_DIR).as_str(),
             "lib",
+            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
         );
     }
 
@@ -1336,6 +1616,7 @@ mod functional_tests {
                 ("api", "crypto", "crypto"),
                 ("api", "math", "math"),
             ],
+            [UnstableFeature::UseKeyword],
         );
     }
 
@@ -1352,6 +1633,7 @@ mod functional_tests {
                 ("auth", "types", "types"),
                 ("auth", "db", "db"),
             ],
+            [UnstableFeature::UseKeyword],
         );
     }
 
@@ -1362,6 +1644,7 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/cyclic-dependency", ERROR_TESTS_DIR).as_str(),
             "lib",
+            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
         );
     }
 
@@ -1371,13 +1654,18 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/file-not-found", ERROR_TESTS_DIR).as_str(),
             "lib",
+            [UnstableFeature::UseKeyword],
         );
     }
 
     #[test]
     #[should_panic(expected = "DependencyPathNotFound")]
     fn lib_not_found_error() {
-        run_dependency_test(format!("{}/lib-not-found", ERROR_TESTS_DIR).as_str(), "lib");
+        run_dependency_test(
+            format!("{}/lib-not-found", ERROR_TESTS_DIR).as_str(),
+            "lib",
+            [UnstableFeature::UseKeyword],
+        );
     }
 
     #[test]
@@ -1386,6 +1674,7 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/private-visibility", ERROR_TESTS_DIR).as_str(),
             "lib",
+            [UnstableFeature::UseKeyword],
         );
     }
 
@@ -1395,6 +1684,7 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/name-collision", ERROR_TESTS_DIR).as_str(),
             "lib",
+            [UnstableFeature::UseKeyword],
         );
     }
 
@@ -1405,12 +1695,17 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/type-alias-duplication", ERROR_TESTS_DIR).as_str(),
             "lib",
+            [UnstableFeature::UseKeyword],
         );
     }
 
     #[test]
     fn local_crate_resolution() {
-        run_multidep_test(format!("{}/local-crate", VALID_TESTS_DIR).as_str(), &[]);
+        run_multidep_test(
+            format!("{}/local-crate", VALID_TESTS_DIR).as_str(),
+            &[],
+            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
+        );
     }
 
     #[test]
@@ -1418,6 +1713,7 @@ mod functional_tests {
         run_multidep_test(
             format!("{}/local-crate-nested", VALID_TESTS_DIR).as_str(),
             &[],
+            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
         );
     }
 
@@ -1426,6 +1722,7 @@ mod functional_tests {
         run_multidep_test(
             format!("{}/external-library-uses-crate", VALID_TESTS_DIR).as_str(),
             &[(".", "ext_lib", "ext_lib")],
+            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
         );
     }
 
@@ -1435,6 +1732,7 @@ mod functional_tests {
         run_multidep_test(
             format!("{}/crate-file-not-found", ERROR_TESTS_DIR).as_str(),
             &[],
+            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
         );
     }
 
@@ -1446,6 +1744,7 @@ mod functional_tests {
         run_multidep_test(
             format!("{}/local-file-as-external", ERROR_TESTS_DIR).as_str(),
             &[(".", "ext", ".")],
+            [UnstableFeature::UseKeyword],
         );
     }
 }
