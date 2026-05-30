@@ -6,7 +6,7 @@ use std::sync::Arc;
 use miniscript::iter::{Tree, TreeLike};
 
 use crate::array::BTreeSlice;
-use crate::error::Error;
+use crate::ast::Error;
 use crate::named::{CoreExt, PairBuilder, SelectorBuilder};
 use crate::str::Identifier;
 use crate::types::{ResolvedType, TypeInner};

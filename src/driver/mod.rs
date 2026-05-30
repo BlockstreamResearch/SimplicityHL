@@ -27,6 +27,7 @@
 //! resolves and parses these external files relative to the entry point during
 //! the dependency graph construction.
 
+mod error;
 mod linearization;
 pub(crate) mod resolve_order;
 
@@ -36,12 +37,14 @@ use std::sync::Arc;
 
 use chumsky::container::Container;
 
-use crate::error::{Error, ErrorCollector, RichError, Span};
+use crate::error::{ErrorCollector, RichError, Span};
 use crate::parse::{self, ParseFromStrWithErrors};
 use crate::resolution::DependencyMap;
 use crate::source::{CanonPath, CanonSourceFile};
 
 pub use crate::driver::resolve_order::{FileScoped, Program, SymbolTable};
+
+pub use crate::driver::error::Error;
 
 /// The reserved identifier for the program's entry point.
 pub(crate) const MAIN_STR: &str = "main";
@@ -209,7 +212,8 @@ impl DependencyGraph {
             let err = RichError::new(
                 Error::FileNotFound {
                     filename: PathBuf::from(path.as_path()),
-                },
+                }
+                .into(),
                 span,
             )
             .with_source(importer_source.clone());
