@@ -860,6 +860,65 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn prune_removes_unused_witness_from_serialized_output() {
+        use crate::value::ValueConstructible;
+        // Program has three u8 witnesses: X, Y (true branch), Z (false branch).
+        // With X=1 the true branch is taken, so Z is in the pruned (non-executed) branch.
+        //
+        // Without pruning: all three witnesses are serialized → 3 bytes.
+        // With pruning:    Z's node is gone from the DAG     → 2 bytes.
+        let compiled = CompiledProgram::new(
+            std::borrow::Cow::Borrowed(
+                r#"fn main() {
+    let x: u8 = witness::X;
+    match jet::eq_8(x, 1) {
+        true  => { let y: u8 = witness::Y; assert!(jet::eq_8(y, 2)); },
+        false => { let z: u8 = witness::Z; assert!(jet::eq_8(z, 3)); },
+    }
+}"#,
+            ),
+            Arguments::default(),
+            false,
+        )
+        .expect("program compiles");
+
+        let mut witnesses = std::collections::HashMap::new();
+        witnesses.insert(crate::str::WitnessName::from_str_unchecked("X"), Value::u8(1));
+        witnesses.insert(crate::str::WitnessName::from_str_unchecked("Y"), Value::u8(2));
+        witnesses.insert(crate::str::WitnessName::from_str_unchecked("Z"), Value::u8(0));
+        let witness_values = WitnessValues::from(witnesses);
+
+        // Without pruning: all three witnesses (X, Y, Z) are serialized.
+        let unpruned = compiled
+            .satisfy(witness_values.shallow_clone())
+            .expect("satisfy succeeds");
+        let (_, unpruned_witness_bytes) = unpruned.redeem().to_vec_with_witness();
+        assert_eq!(
+            unpruned_witness_bytes.len(),
+            3,
+            "unpruned: expected 3 witness bytes (X + Z + Y), got {}",
+            unpruned_witness_bytes.len()
+        );
+
+        // With pruning: Z's node is removed from the DAG, leaving only X and Y.
+        let env = dummy_env::dummy_with(
+            elements::LockTime::ZERO,
+            elements::Sequence::MAX,
+            false,
+        );
+        let pruned = compiled
+            .satisfy_with_env(witness_values, Some(&env))
+            .expect("satisfy_with_env succeeds");
+        let (_, pruned_witness_bytes) = pruned.redeem().to_vec_with_witness();
+        assert_eq!(
+            pruned_witness_bytes.len(),
+            2,
+            "pruned: expected 2 witness bytes (X + Y only), got {}",
+            pruned_witness_bytes.len()
+        );
+    }
+
+    #[test]
     #[cfg(feature = "serde")]
     fn p2ms() {
         TestCase::program_file("./examples/p2ms.simf")
