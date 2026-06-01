@@ -6,13 +6,13 @@ use elements::{confidential, secp256k1_zkp as secp256k1};
 use elementsd::ElementsD;
 use secp256k1::XOnlyPublicKey;
 use simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
+use simplicityhl::ast::ElementsJetHinter;
 use simplicityhl::{elements, simplicity};
 
 use crate::common::daemon::Call;
 
 type FnWitness = fn([u8; 32]) -> simplicityhl::WitnessValues;
 
-#[derive(Clone)]
 pub struct TestCase<'a> {
     pub name: &'static str,
     template: Option<simplicityhl::TemplateProgram>,
@@ -53,8 +53,13 @@ impl<'a> TestCase<'a> {
 
     pub fn program_path<P: AsRef<std::path::Path>>(mut self, path: P) -> Self {
         let text = std::fs::read_to_string(path).expect("path should be readable");
-        let compiled = simplicityhl::CompiledProgram::new(text.as_str(), simplicityhl::Arguments::default(), false)
-            .expect("program should compile");
+        let compiled = simplicityhl::CompiledProgram::new(
+            text.as_str(),
+            simplicityhl::Arguments::default(),
+            false,
+            Box::new(ElementsJetHinter::new()),
+        )
+        .expect("program should compile");
         self.compiled = Some(compiled);
         self
     }
@@ -62,7 +67,8 @@ impl<'a> TestCase<'a> {
     pub fn template_path<P: AsRef<std::path::Path>>(mut self, path: P) -> Self {
         let text = std::fs::read_to_string(path).expect("path should be readable");
         let template =
-            simplicityhl::TemplateProgram::new(text.as_str()).expect("program should compile");
+            simplicityhl::TemplateProgram::new(text.as_str(), Box::new(ElementsJetHinter::new()))
+                .expect("program should compile");
         self.template = Some(template);
         self
     }
@@ -205,7 +211,7 @@ impl<'a> TestCase<'a> {
         let satisfied_program = compiled
             .satisfy(witness_values)
             .expect("program should be satisfiable");
-        let (program_bytes, witness_bytes) = satisfied_program.redeem().encode_to_vec();
+        let (program_bytes, witness_bytes) = satisfied_program.redeem().to_vec_with_witness();
         psbt.inputs_mut()[0].final_script_witness = Some(vec![
             witness_bytes,
             program_bytes,

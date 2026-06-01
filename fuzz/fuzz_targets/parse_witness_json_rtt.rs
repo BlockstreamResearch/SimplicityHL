@@ -1,6 +1,6 @@
 #![cfg_attr(fuzzing, no_main)]
 
-#[cfg(any(fuzzing, test))]
+#[cfg(fuzzing)]
 fn do_test(witness_values: simplicityhl::WitnessValues) {
     let witness_text = serde_json::to_string(&witness_values)
         .expect("Witness map should be convertible into JSON");
