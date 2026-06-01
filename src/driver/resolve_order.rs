@@ -178,7 +178,7 @@ impl DependencyGraph {
             let module = &self.modules[source_id];
             let source = &module.source;
 
-            for elem in module.parsed_program.items() {
+            for elem in module.program.items() {
                 // Handle Uses (Early Continue flattens the nesting)
                 if let parse::Item::Use(use_decl) = elem {
                     let resolve_path =
@@ -250,7 +250,7 @@ impl DependencyGraph {
             items: items.into(),
             aliases: aliases.into_symbol_table(),
             functions: functions.into_symbol_table(),
-            span: *self.modules[0].parsed_program.as_ref(),
+            span: *self.modules[0].program.as_ref(),
         })
     }
 
