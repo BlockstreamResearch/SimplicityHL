@@ -38,7 +38,7 @@ use chumsky::container::Container;
 
 use crate::error::{Error, ErrorCollector, RichError, Span};
 use crate::parse::{self, ParseFromStrWithErrors};
-use crate::resolution::DependencyMap;
+use crate::resolution::{DependencyMap, ResolvedUse};
 use crate::source::{CanonPath, CanonSourceFile};
 
 pub use crate::driver::resolve_order::{FileScoped, Program, SymbolTable};
@@ -55,11 +55,11 @@ pub(crate) const MAIN_MODULE: usize = 0;
 /// Represents a single, isolated file in the SimplicityHL project.
 /// In this architecture, a file and a module are the exact same thing.
 #[derive(Debug, Clone)]
-struct Module {
+struct SourceModule {
     source: CanonSourceFile,
     /// The completely parsed program for this specific file.
     /// it contains all the functions, aliases, and imports defined inside the file.
-    parsed_program: parse::Program,
+    program: parse::Program,
 }
 
 /// An Intermediate Representation that helps transform isolated files into a global program.
@@ -85,7 +85,7 @@ pub(crate) struct DependencyGraph {
     /// lifetimes or performance-heavy reference counting (`Rc<RefCell<T>>`).
     ///
     /// Using a flat `Vec` as a memory arena is the idiomatic Rust solution.
-    modules: Vec<Module>,
+    modules: Vec<SourceModule>,
 
     /// The configuration environment.
     /// Used to resolve external library dependencies and invoke their associated functions.
@@ -97,9 +97,17 @@ pub(crate) struct DependencyGraph {
     lookup: HashMap<CanonPath, usize>,
 
     /// Fast lookup: Module ID -> `CanonPath`.
+    ///
     /// A direct index mapping internal IDs back to their absolute file paths.
     /// This serves as the exact inverse of the `lookup` map.
+    ///
+    /// This is highly useful for error reporting and diagnostics.
     paths: Vec<CanonPath>,
+
+    /// Memoized results of [`crate::resolution::DependencyMap::resolve_path`] to avoid
+    /// resolving the same [`parse::UseDecl`] twice — once during the driver phase
+    /// and once during the building phase after linearization.
+    use_cache: HashMap<parse::UseDecl, ResolvedUse>,
 
     // TODO: Consider to optimising this with `Vec` instead of `HashMap`
     /// The Adjacency List: Defines the Directed acyclic Graph (DAG) of imports.
@@ -141,24 +149,26 @@ impl DependencyGraph {
         handler: &mut ErrorCollector,
     ) -> Result<Option<Self>, String> {
         let mut graph = Self {
-            modules: vec![Module {
+            modules: vec![SourceModule {
                 source: root_source.clone(),
-                parsed_program: root_program.clone(),
+                program: root_program.clone(),
             }],
             dependency_map,
             lookup: HashMap::new(),
             paths: vec![root_source.name().clone()],
+            use_cache: HashMap::new(),
             dependencies: HashMap::new(),
         };
 
         graph.lookup.insert(root_source.name().clone(), MAIN_MODULE);
         graph.dependencies.insert(MAIN_MODULE, Vec::new());
 
+        let mut use_cache = HashMap::new();
         let mut queue = VecDeque::new();
         queue.push_back(MAIN_MODULE);
 
         // Prevent errors in the checked files from being doubled in the `load_and_parse_dependencies` function.
-        let mut inalid_imports = HashSet::new();
+        let mut invalid_imports = HashSet::new();
 
         while let Some(curr_id) = queue.pop_front() {
             let Some(current_module) = graph.modules.get(curr_id) else {
@@ -171,24 +181,27 @@ impl DependencyGraph {
             // We need this to report errors inside THIS file.
             let importer_source = current_module.source.clone();
 
-            // PHASE 1: Immutably read from the graph
             let valid_imports = Self::resolve_imports(
-                &current_module.parsed_program,
+                &current_module.program,
                 &importer_source,
                 &graph.dependency_map,
+                &mut use_cache,
                 handler,
             );
 
-            // PHASE 2: Mutate the graph
-            graph.load_and_parse_dependencies(
-                curr_id,
-                valid_imports,
-                &mut inalid_imports,
-                &importer_source,
+            let mut ctx = LoadContext {
+                invalid_imports: &mut invalid_imports,
                 handler,
-                &mut queue,
-            );
+                queue: &mut queue,
+            };
+            let current = CurrentModule {
+                id: curr_id,
+                source: &importer_source,
+            };
+            graph.load_and_parse_dependencies(&current, valid_imports, &mut ctx);
         }
+
+        graph.use_cache = use_cache;
 
         // TODO: Consider getting rid of the 'String' error here and changing it to a more appropriate error
         // (e.g. 'Result<Self, ErrorCollector>') after resolving https://github.com/BlockstreamResearch/SimplicityHL/issues/270.
@@ -199,12 +212,12 @@ impl DependencyGraph {
     /// into an `parse::Program`, and combining them so the compiler can easily work with the file.
     /// If the file is missing or contains syntax errors, it logs the diagnostic to the
     /// `ErrorCollector` and safely returns `None`.
-    fn parse_and_get_program(
+    fn parse_and_get_source_module(
         path: &CanonPath,
         importer_source: &CanonSourceFile,
         span: Span,
         handler: &mut ErrorCollector,
-    ) -> Option<Module> {
+    ) -> Option<SourceModule> {
         let Ok(content) = std::fs::read_to_string(path.as_path()) else {
             let err = RichError::new(
                 Error::FileNotFound {
@@ -227,55 +240,52 @@ impl DependencyGraph {
             handler.extend_with_handler(source, &error_handler);
             None
         } else {
-            ast.map(|parsed_program| Module {
-                source,
-                parsed_program,
-            })
+            ast.map(|program| SourceModule { source, program })
         }
     }
 
-    /// PHASE 1 OF GRAPH CONSTRUCTION: Resolves all imports inside a single `parse::Program`.
-    /// Note: This is a specialized helper function designed exclusively for the `DependencyGraph::new()` constructor.
+    /// PHASE 1 OF GRAPH CONSTRUCTION: Resolves all `use` declarations within a single
+    /// [`parse::Program`], recursively walking into inline `mod` blocks.
+    ///
+    /// Results are cached in `use_cache` to avoid redundant filesystem lookups during
+    /// later construction phases.
+    /// Note: This is a specialized helper designed exclusively for [`DependencyGraph::new()`].
     fn resolve_imports(
         current_program: &parse::Program,
         importer_source: &CanonSourceFile,
         dependency_map: &DependencyMap,
+        use_cache: &mut HashMap<parse::UseDecl, ResolvedUse>,
         handler: &mut ErrorCollector,
     ) -> Vec<(CanonPath, Span)> {
+        let mut ctx = ImportContext {
+            importer_source,
+            dependency_map,
+            use_cache,
+            handler,
+        };
+
         let mut valid_imports = Vec::new();
-
-        for elem in current_program.items() {
-            let parse::Item::Use(use_decl) = elem else {
-                continue;
-            };
-
-            match dependency_map.resolve_path(importer_source.name(), use_decl) {
-                Ok(path) => valid_imports.push((path, *use_decl.span())),
-                Err(err) => handler.push(err.with_source(importer_source.clone())),
-            }
+        for item in current_program.items() {
+            ctx.process_item(item, &mut valid_imports);
         }
-
         valid_imports
     }
 
     /// PHASE 2 OF GRAPH CONSTRUCTION: Loads, parses, and registers new dependencies.
-    /// Note: This is a specialized helper function designed exclusively for the `DependencyGraph::new()` constructor.
+    /// Note: This is a specialized helper designed exclusively for [`DependencyGraph::new()`].
     fn load_and_parse_dependencies(
         &mut self,
-        curr_id: usize,
+        current: &CurrentModule,
         valid_imports: Vec<(CanonPath, Span)>,
-        inalid_imports: &mut HashSet<CanonPath>,
-        importer_source: &CanonSourceFile,
-        handler: &mut ErrorCollector,
-        queue: &mut VecDeque<usize>,
+        ctx: &mut LoadContext,
     ) {
         for (path, import_span) in valid_imports {
-            if inalid_imports.contains(&path) {
+            if ctx.invalid_imports.contains(&path) {
                 continue;
             }
 
             if let Some(&existing_id) = self.lookup.get(&path) {
-                let deps = self.dependencies.entry(curr_id).or_default();
+                let deps = self.dependencies.entry(current.id).or_default();
                 if !deps.contains(&existing_id) {
                     deps.push(existing_id);
                 }
@@ -283,9 +293,9 @@ impl DependencyGraph {
             }
 
             let Some(module) =
-                Self::parse_and_get_program(&path, importer_source, import_span, handler)
+                Self::parse_and_get_source_module(&path, current.source, import_span, ctx.handler)
             else {
-                inalid_imports.push(path);
+                ctx.invalid_imports.push(path);
                 continue;
             };
 
@@ -294,11 +304,80 @@ impl DependencyGraph {
 
             self.lookup.insert(path.clone(), last_ind);
             self.paths.push(path.clone());
-            self.dependencies.entry(curr_id).or_default().push(last_ind);
-
-            queue.push_back(last_ind);
+            self.dependencies
+                .entry(current.id)
+                .or_default()
+                .push(last_ind);
+            ctx.queue.push_back(last_ind);
         }
     }
+}
+
+/// Groups all shared state for import resolution to avoid threading a lot of parameters
+/// through every recursive call. Lives only for the duration of [`resolve_imports`].
+struct ImportContext<'a> {
+    importer_source: &'a CanonSourceFile,
+    dependency_map: &'a DependencyMap,
+    use_cache: &'a mut HashMap<parse::UseDecl, ResolvedUse>,
+    handler: &'a mut ErrorCollector,
+}
+
+impl<'a> ImportContext<'a> {
+    /// Resolves a single `use` declaration, caches the result for reuse during
+    /// later graph construction phases, and returns the resolved path and span.
+    /// Returns `None` and reports to `handler` if resolution fails.
+    fn resolve_single(&mut self, use_decl: &parse::UseDecl) -> Option<(CanonPath, Span)> {
+        match self
+            .dependency_map
+            .resolve_path_internal(self.importer_source.name(), use_decl)
+        {
+            Ok(resolved) => {
+                let result = (resolved.path.clone(), *use_decl.span());
+                self.use_cache.insert(use_decl.clone(), resolved);
+                Some(result)
+            }
+            Err(err) => {
+                self.handler
+                    .push(err.with_source(self.importer_source.clone()));
+                None
+            }
+        }
+    }
+
+    /// Recursively walks an item, collecting resolved imports.
+    /// Recurses into inline `mod` blocks.
+    fn process_item(&mut self, item: &parse::Item, valid_imports: &mut Vec<(CanonPath, Span)>) {
+        match item {
+            parse::Item::Use(use_decl) => {
+                if let Some(import) = self.resolve_single(use_decl) {
+                    valid_imports.push(import);
+                }
+            }
+            parse::Item::Module(module) => {
+                for item in module.items() {
+                    self.process_item(item, valid_imports);
+                }
+            }
+
+            // These items carry no import information at this stage and can be safely skipped.
+            parse::Item::TypeAlias(_) | parse::Item::Function(_) | parse::Item::Ignored => {}
+        }
+    }
+}
+
+/// Shared mutable state threaded through dependency loading.
+/// Lives only for the duration of [`DependencyGraph::new()`].
+struct LoadContext<'a> {
+    invalid_imports: &'a mut HashSet<CanonPath>,
+    handler: &'a mut ErrorCollector,
+    queue: &'a mut VecDeque<usize>,
+}
+
+/// The currently processed module and its source, used for error reporting
+/// and dependency registration.
+struct CurrentModule<'a> {
+    id: usize,
+    source: &'a CanonSourceFile,
 }
 
 #[cfg(test)]
