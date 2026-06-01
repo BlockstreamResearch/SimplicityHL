@@ -3,6 +3,7 @@
 pub mod array;
 pub mod ast;
 pub mod compile;
+mod contract_id;
 pub mod debug;
 #[cfg(feature = "docs")]
 pub mod docs;
@@ -39,11 +40,13 @@ pub use simplicity::elements;
 
 use crate::debug::DebugSymbols;
 use crate::driver::DependencyGraph;
-use crate::error::{ErrorCollector, WithContent, WithSource as _};
+use crate::error::{ErrorCollector, RichError, WithContent as _, WithSource as _};
 use crate::parse::ParseFromStrWithErrors;
 use crate::resolution::DependencyMap;
 use crate::source::CanonSourceFile;
 use crate::source::SourceFile;
+
+pub use crate::contract_id::ContractId;
 pub use crate::types::ResolvedType;
 pub use crate::value::Value;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
@@ -140,6 +143,15 @@ impl TemplateProgram {
     /// Access the witness types of the program.
     pub fn witness_types(&self) -> &WitnessTypes {
         self.simfony.witness_types()
+    }
+
+    /// Compute the canonical contract ID.
+    ///
+    /// ## Errors
+    ///
+    /// Returns an error if program compilation fails.
+    pub fn contract_id(&self) -> Result<ContractId, RichError> {
+        ContractId::from_template(self)
     }
 
     /// Instantiate the template program with the given `arguments`.

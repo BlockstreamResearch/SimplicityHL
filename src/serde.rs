@@ -6,7 +6,7 @@ use crate::str::WitnessName;
 use crate::types::ResolvedType;
 use crate::value::Value;
 use crate::witness::{Arguments, WitnessValues};
-use crate::{AbiMeta, Parameters, WitnessTypes};
+use crate::{AbiMeta, ContractId, Parameters, WitnessTypes};
 use serde::{de, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 
 struct WitnessMapVisitor;
@@ -58,6 +58,15 @@ impl Serialize for WitnessName {
         S: Serializer,
     {
         serializer.serialize_str(self.as_ref())
+    }
+}
+
+impl Serialize for ContractId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }
 
