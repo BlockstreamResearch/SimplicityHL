@@ -75,7 +75,7 @@ pub enum Item {
     /// A function.
     Function(Function),
     Use,
-    Module,
+    Module(Vec<Item>),
     /// A placeholder used for error recovery during parsing.
     Ignored,
 }
@@ -699,7 +699,7 @@ impl Scope {
     /// * May also return errors propagated from item collection and insertion, such as [`Error::PrivateItem`] or [`Error::RedefinedItem`].
     pub fn resolve_use(&mut self, use_decl: &UseDecl) -> Result<(), Error> {
         let path = use_decl.path();
-        if path[0].as_inner() != CRATE_STR {
+        if path.first().map(|id| id.as_inner()) != Some(CRATE_STR) {
             return Err(Error::MissingCrateKeyword);
         }
 
@@ -710,6 +710,8 @@ impl Scope {
         };
 
         // Phase 1: navigate to target and collect items. Immutable borrow, dropped at end of block
+        // Vec<(ProcessedAlias, ProcessedFunction, ProcessedModule)>
+        // where each is Result<(Key, (Value, Visibility)), Error>
         let collected: Vec<_> = {
             // TODO: Part, that can be optimized
             // How many segments do the caller's path and the target's path have in common?
@@ -1043,24 +1045,43 @@ impl Program {
         );
 
         let (parameters, witness_types, call_tracker) = scope.destruct();
-        let mut iter = items.into_iter().filter_map(|item| match item {
-            Item::Function(Function::Main(expr)) => Some(expr),
-            _ => None,
-        });
+        let main = Self::extract_single_main(&items)
+            // If we find a duplicate of main function
+            .map_err(|err| err.with_span(from.into()))?
+            .ok_or(Error::MainRequired)
+            .with_span(from)?;
 
-        let main = iter.next().ok_or(Error::MainRequired).with_span(from)?;
-        if iter.next().is_some() {
-            return Err(Error::FunctionRedefined {
-                name: FunctionName::main(),
-            })
-            .with_span(from);
-        }
         Ok(Self {
             main,
             parameters,
             witness_types,
             call_tracker: Arc::new(call_tracker),
         })
+    }
+
+    // Put this helper function inside your impl block or just above your logic
+    fn extract_single_main(items: &[Item]) -> Result<Option<Expression>, Error> {
+        let mut main_expr = None;
+
+        for item in items {
+            let extracted = match item {
+                Item::Function(Function::Main(expr)) => Some(expr.clone()),
+                Item::Module(items) => Self::extract_single_main(items)?,
+                _ => None,
+            };
+
+            let Some(expr) = extracted else {
+                continue;
+            };
+
+            if main_expr.replace(expr).is_some() {
+                return Err(Error::FunctionRedefined {
+                    name: FunctionName::main(),
+                });
+            }
+        }
+
+        Ok(main_expr)
     }
 }
 
@@ -1090,11 +1111,13 @@ impl AbstractSyntaxTree for Item {
                 scope
                     .enter_module(module.name().clone(), module.visibility().clone())
                     .with_span(module)?;
+
+                let mut analyzed_children = Vec::new();
                 for item in module.items() {
-                    Item::analyze(item, ty, scope)?;
+                    analyzed_children.push(Item::analyze(item, ty, scope)?);
                 }
                 scope.exit_module();
-                Ok(Self::Module)
+                Ok(Self::Module(analyzed_children))
             }
             parse::Item::Ignored => Ok(Self::Ignored),
         }
@@ -1153,10 +1176,6 @@ impl AbstractSyntaxTree for Function {
             if !resolved.is_unit() {
                 return Err(Error::MainNoOutput).with_span(from);
             }
-        }
-
-        if !scope.module_path.is_empty() {
-            return Err(Error::MainOutOfEntryFile).with_span(from);
         }
 
         if matches!(from.visibility(), Visibility::Public) {
@@ -1858,19 +1877,6 @@ mod scope_resolution_tests {
             result.is_ok(),
             "unimported alias from another module should not collide: {result:?}"
         );
-    }
-
-    #[test]
-    fn dependency_main_does_not_satisfy_missing_root_main() {
-        let result = analyze_multifile(vec![
-            ("main.simf", "use lib::A::helper;"),
-            ("libs/lib/A.simf", "fn main() {} pub fn helper() {}"),
-        ]);
-
-        assert!(
-            result.is_err(),
-            "Main function must be inside an entry file: {result:?}"
-        )
     }
 
     #[test]

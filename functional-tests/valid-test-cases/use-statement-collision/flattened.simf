@@ -1,0 +1,20 @@
+mod unit_1 {
+    pub fn foo() -> u32 { 7 }
+}
+
+mod unit_3 {
+    pub fn foo() -> u32 { 8 }
+}
+
+mod unit_2 {
+    use crate::unit_3::foo;
+    pub fn bar() {}
+}
+
+mod unit_0 {
+    use crate::unit_1::foo;
+    use crate::unit_2::bar;
+    fn main() {
+        assert!(jet::eq_32(foo(), 7));
+    }
+}

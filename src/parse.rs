@@ -94,6 +94,8 @@ pub enum Visibility {
 /// ```
 #[derive(Clone, Debug)]
 pub struct UseDecl {
+    file_id: usize,
+
     /// The visibility of the import (e.g., `pub use` vs `use`).
     visibility: Visibility,
 
@@ -110,18 +112,16 @@ pub struct UseDecl {
 
 impl UseDecl {
     /// The driver uses this to ensure imports conform to the flattened program structure.
-    pub(crate) fn new(
-        visibility: Visibility,
-        path: &[Identifier],
-        items: UseItems,
-        span: Span,
-    ) -> Self {
-        Self {
-            visibility,
-            path: Vec::from(path),
-            items,
-            span,
-        }
+    pub(crate) fn set_file_id(&mut self, file_id: usize) {
+        self.file_id = file_id;
+    }
+
+    pub(crate) fn set_path(&mut self, path: &[Identifier]) {
+        self.path = Vec::from(path)
+    }
+
+    pub fn file_id(&self) -> usize {
+        self.file_id
     }
 
     pub fn visibility(&self) -> &Visibility {
@@ -165,11 +165,15 @@ impl UseDecl {
     }
 }
 
-impl_eq_hash!(UseDecl; visibility, path, items);
+// `file_id` and `span` are required because `UseDecl` hashing is context-dependent.
+// For instance, identical `use crate::...` paths differ between binary and library roots.
+// Tested by: `functional_tests::identical_crate_uses_in_different_package_roots_do_not_poison_resolution_cache`.
+impl_eq_hash!(UseDecl; file_id, visibility, path, items, span);
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for UseDecl {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let file_id = u.int_in_range(0..=3)?;
         let visibility = Visibility::arbitrary(u)?;
         let path_len = u.int_in_range(2..=4)?;
         let path = (0..path_len)
@@ -178,6 +182,7 @@ impl<'a> arbitrary::Arbitrary<'a> for UseDecl {
         let items = UseItems::arbitrary(u)?;
 
         Ok(Self {
+            file_id,
             visibility,
             path,
             items,
@@ -226,7 +231,7 @@ impl Function {
         self.file_id
     }
 
-    pub fn set_file_id(&mut self, file_id: usize) {
+    pub(crate) fn set_file_id(&mut self, file_id: usize) {
         self.file_id = file_id;
     }
 
@@ -401,7 +406,7 @@ impl TypeAlias {
         self.file_id
     }
 
-    pub fn set_file_id(&mut self, file_id: usize) {
+    pub(crate) fn set_file_id(&mut self, file_id: usize) {
         self.file_id = file_id;
     }
 
@@ -1469,7 +1474,7 @@ impl ChumskyParse for Function {
             .then(params)
             .then(ret)
             .then(body)
-            .map_with(move |((((visibility, name), params), ret), body), e| Self {
+            .map_with(|((((visibility, name), params), ret), body), e| Self {
                 file_id: MAIN_MODULE,
                 visibility,
                 name,
@@ -1535,6 +1540,7 @@ impl ChumskyParse for UseDecl {
             .then(items)
             .then_ignore(just(Token::Semi))
             .map_with(|((visibility, path), items), e| Self {
+                file_id: MAIN_MODULE,
                 visibility,
                 path,
                 items,
@@ -1822,7 +1828,7 @@ impl ChumskyParse for TypeAlias {
                     .then(AliasedType::parser())
                     .then_ignore(just(Token::Semi)),
             )
-            .map_with(move |(visibility, (name, ty)), e| Self {
+            .map_with(|(visibility, (name, ty)), e| Self {
                 file_id: MAIN_MODULE,
                 visibility,
                 name: name.0,
@@ -2140,7 +2146,6 @@ impl Module {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
-        let file_id = MAIN_MODULE;
         let visibility = just(Token::Pub)
             .to(Visibility::Public)
             .or_not()
@@ -2165,8 +2170,8 @@ impl Module {
 
         visibility
             .then(just(Token::Mod).ignore_then(name).then(items))
-            .map_with(move |(visibility, (name, items)), e| Self {
-                file_id,
+            .map_with(|(visibility, (name, items)), e| Self {
+                file_id: MAIN_MODULE,
                 visibility,
                 name: name.0,
                 items,
@@ -2558,6 +2563,7 @@ mod test {
         /// Creates a dummy `UseDecl` specifically for testing `DependencyMap` resolution.
         pub fn dummy_path(path: Vec<Identifier>) -> Self {
             Self {
+                file_id: MAIN_MODULE,
                 visibility: Visibility::default(),
                 path,
                 items: UseItems::List(Vec::new()),

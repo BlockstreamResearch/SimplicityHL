@@ -1,0 +1,26 @@
+mod math {
+    pub mod ops {
+        pub fn double(x: u32) -> u32 { 
+            let (_, res): (bool, u32) = jet::add_32(x, x);
+            res
+        }
+    }
+}
+
+mod business_logic {
+    use crate::math::ops::double;
+
+    pub fn calculate_fee(base_price: u32, tax: u32) -> u32 {
+        let (_, res): (bool, u32) = jet::add_32(double(base_price), tax);
+        res
+    }
+}
+
+use crate::business_logic::calculate_fee;
+fn main() {
+    let price: u32 = 15;
+    let tax: u32 = 5;
+
+    let total: u32 = calculate_fee(price, tax);
+    assert!(jet::eq_32(total, 35));
+}

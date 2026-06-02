@@ -1,0 +1,34 @@
+mod unit_2 {
+    pub fn hash(x: u32, y: u32) -> u32 {
+        jet::xor_32(x, y)
+    }
+}
+
+mod unit_1 {
+    use crate::unit_2::hash as temp_hash;
+    pub fn get_root(tx1: u32, tx2: u32) -> u32 {
+        temp_hash(tx1, tx2)
+    }
+    pub fn hash(tx1: u32, tx2: u32) -> u32 {
+        jet::and_32(tx1, tx2)
+    }
+}
+
+// main unit
+mod unit_0 {
+    use crate::unit_1::{get_root, hash as and_hash};
+    use crate::unit_2::hash as or_hash;
+    
+    pub fn get_block_value_hash(prev_hash: u32, tx1: u32, tx2: u32) -> u32 {
+        let root: u32 = get_root(tx1, tx2);
+        or_hash(prev_hash, root)
+    }
+    
+    fn main() {
+        let block_val_hash: u32 = get_block_value_hash(5, 10, 20);
+        assert!(jet::eq_32(block_val_hash, 27));
+        let first_value: u32 = 15;
+        let second_value: u32 = 22;
+        assert!(jet::eq_32(and_hash(first_value, second_value), 6));
+    }
+}

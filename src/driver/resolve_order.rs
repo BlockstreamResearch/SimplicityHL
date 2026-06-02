@@ -1,5 +1,5 @@
-use crate::driver::{DependencyGraph, CRATE_STR, MAIN_MODULE};
-use crate::error::ErrorCollector;
+use crate::driver::{DependencyGraph, CRATE_STR, MAIN_MODULE, MAIN_STR};
+use crate::error::{Error, ErrorCollector, RichError};
 use crate::parse::{self, Visibility};
 use crate::str::{Identifier, ModuleName};
 
@@ -39,8 +39,15 @@ impl DependencyGraph {
                 .collect();
 
             if source_id == MAIN_MODULE {
-                items.extend(local_items);
-                continue;
+                let has_main = local_items.iter().any(|item| {
+                    matches!(item, parse::Item::Function(f) if f.name().as_inner() == MAIN_STR)
+                });
+
+                if !has_main {
+                    handler.push(RichError::parsing_error(
+                        &Error::MainOutOfEntryFile.to_string(),
+                    ));
+                }
             }
 
             let name = ModuleName::from_str_unchecked(Self::get_module_name(source_id).as_inner());
@@ -69,7 +76,7 @@ impl DependencyGraph {
                 function.set_file_id(source_id);
                 Some(parse::Item::Function(function))
             }
-            parse::Item::Use(use_decl) => Some(self.rewrite_use(use_decl)),
+            parse::Item::Use(use_decl) => Some(self.rewrite_use(source_id, use_decl)),
             parse::Item::Module(module) => {
                 let items: Vec<parse::Item> = module
                     .items()
@@ -96,24 +103,20 @@ impl DependencyGraph {
     ///
     /// `use base_math::simple_op::hash` into `use file_2::hash`
     /// `use crate::inline_mod::item` into `use crate::inline_mod::item`
-    fn rewrite_use(&self, use_decl: &parse::UseDecl) -> parse::Item {
-        let resolved = &self.use_cache[use_decl];
+    fn rewrite_use(&self, source_id: usize, use_decl: &parse::UseDecl) -> parse::Item {
+        let mut use_decl = use_decl.clone();
+        use_decl.set_file_id(source_id);
+        let resolved = &self.use_cache[&use_decl];
         let target_id = self.lookup[&resolved.path];
 
         let mut new_path = Vec::with_capacity(resolved.mod_path.len() + 2);
         new_path.push(Identifier::from_str_unchecked(CRATE_STR));
 
-        if target_id != MAIN_MODULE {
-            new_path.push(Self::get_module_name(target_id));
-        }
+        new_path.push(Self::get_module_name(target_id));
         new_path.extend(resolved.mod_path.iter().cloned());
 
-        parse::Item::Use(parse::UseDecl::new(
-            use_decl.visibility().clone(),
-            &new_path,
-            use_decl.items().clone(),
-            *use_decl.span(),
-        ))
+        use_decl.set_path(&new_path);
+        parse::Item::Use(use_decl)
     }
 }
 
@@ -142,42 +145,12 @@ mod flattening_tests {
     }
 
     #[test]
-    fn test_main_module_is_not_wrapped() {
-        // Scenario: The entry file should have its items injected directly into
-        // the root of the AST, NOT wrapped in a `mod file_0` block.
-        let (program, _) = build_flattened_program(vec![(
-            "main.simf",
-            "pub fn root_func() {} type root_type = u32;",
-        )]);
-
-        let items = program.items();
-
-        // Ensure there are no Module wrappers at the root level
-        let has_modules = items
-            .iter()
-            .any(|item| matches!(item, parse::Item::Module(_)));
-        assert!(
-            !has_modules,
-            "Main module items should not be wrapped in a mod block"
-        );
-
-        // Ensure the items are directly present
-        let has_func = items.iter().any(
-            |item| matches!(item, parse::Item::Function(f) if f.name().as_inner() == "root_func"),
-        );
-        assert!(
-            has_func,
-            "root_func must be injected directly into the root"
-        );
-    }
-
-    #[test]
     fn test_dependency_is_wrapped_in_file_module() {
         // Scenario: A dependency file MUST be wrapped in a `mod file_N` block,
         // and its visibility must be Private to prevent leaking.
         let (program, ids) = build_flattened_program(vec![
             ("libs/lib/A.simf", "pub fn dep_func() {}"),
-            ("main.simf", "use lib::A::dep_func;"),
+            ("main.simf", "use lib::A::dep_func; fn main() {}"),
         ]);
 
         let file_a_id = ids["A"];
@@ -216,17 +189,26 @@ mod flattening_tests {
         // must rewrite this path to `use crate::file_N::foo`.
         let (program, ids) = build_flattened_program(vec![
             ("libs/lib/A.simf", "pub fn foo() {}"),
-            ("main.simf", "use lib::A::foo;"),
+            ("main.simf", "use lib::A::foo; fn main() {}"),
         ]);
 
         let file_a_id = ids["A"];
         let expected_file_segment = format!("unit_{}", file_a_id);
 
+        // Flatten the modules and search their inner contents
         let use_decl = program
             .items()
             .iter()
-            .find_map(|item| {
-                if let parse::Item::Use(u) = item {
+            .filter_map(|item| {
+                if let parse::Item::Module(module) = item {
+                    Some(module.items()) // Get the slice of inner items
+                } else {
+                    None
+                }
+            })
+            .flatten() // Unpack all the inner slices into a single stream
+            .find_map(|inner_item| {
+                if let parse::Item::Use(u) = inner_item {
                     Some(u)
                 } else {
                     None
@@ -249,7 +231,32 @@ mod flattening_tests {
         assert_eq!(
             path[1].as_inner(),
             expected_file_segment.as_str(),
-            "Path must route through the canonical `file_N`"
+            "Path must route through the canonical `unit_N`"
+        );
+    }
+
+    #[test]
+    fn dependency_main_does_not_satisfy_missing_root_main() {
+        let (graph, _ids, _dir) = setup_graph(vec![
+            ("main.simf", "use lib::A::helper;"),
+            (
+                "libs/lib/A.simf",
+                "fn main() { assert!(false); } pub fn helper() {}",
+            ),
+        ]);
+
+        let mut error_handler = ErrorCollector::new();
+        let driver_program = graph.linearize_and_build(&mut error_handler);
+
+        assert!(
+            matches!(driver_program, Ok(None)),
+            "Expected the build to fail and return Ok(None), but got: {:?}",
+            driver_program
+        );
+
+        assert!(
+            error_handler.has_errors(),
+            "a dependency `fn main` must not satisfy a missing entrypoint `fn main`"
         );
     }
 }
