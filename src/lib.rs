@@ -59,6 +59,22 @@ pub struct TemplateProgram {
 }
 
 impl TemplateProgram {
+    /// Parses and flattens a multi-file program into a single enriched [`parse::Program`]
+    /// with all imports resolved and each file wrapped in a `unit_N` module.
+    ///
+    /// ## Errors
+    ///
+    /// The string is not a valid SimplicityHL program.
+    pub fn flatten(
+        source: CanonSourceFile,
+        dependency_map: &DependencyMap,
+    ) -> Result<String, String> {
+        let mut error_handler = ErrorCollector::new();
+        Self::dependency_helper(source, dependency_map, &mut error_handler)?
+            .ok_or_else(|| error_handler.to_string())
+            .map(|p| p.to_string())
+    }
+
     /// Parse the template of a SimplicityHL program.
     ///
     /// ## Errors
@@ -71,25 +87,10 @@ impl TemplateProgram {
     ) -> Result<Self, String> {
         let mut error_handler = ErrorCollector::new();
 
-        // 1. Parse root file
-        let parsed_program =
-            parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler)
+        let driver_program =
+            Self::dependency_helper(source.clone(), dependency_map, &mut error_handler)?
                 .ok_or_else(|| error_handler.to_string())?;
 
-        // 2. Create the driver program
-        let graph = DependencyGraph::new(
-            source.clone(),
-            Arc::from(dependency_map.clone()),
-            &parsed_program,
-            &mut error_handler,
-        )?
-        .ok_or_else(|| error_handler.to_string())?;
-
-        let driver_program: driver::Program = graph
-            .linearize_and_build(&mut error_handler)?
-            .ok_or_else(|| error_handler.to_string())?;
-
-        // 3. AST Analysis
         let ast_program = ast::Program::analyze(&driver_program, jet_hinter.clone_box())
             .with_source(source.clone())?;
         Ok(Self {
@@ -112,14 +113,9 @@ impl TemplateProgram {
         let source = SourceFile::anonymous(file.clone());
         let mut error_handler = ErrorCollector::new();
         let parse_program = parse::Program::parse_from_str_with_errors(source, &mut error_handler);
+        dbg!(&file);
 
-        let driver_program = if let Some(parse_program) = parse_program {
-            driver::Program::from_parse(&parse_program, file.clone(), &mut error_handler)
-        } else {
-            None
-        };
-
-        if let Some(program) = driver_program {
+        if let Some(program) = parse_program {
             let ast_program = ast::Program::analyze(&program, jet_hinter.clone_box())
                 .with_content(Arc::clone(&file))?;
             Ok(Self {
@@ -128,8 +124,21 @@ impl TemplateProgram {
                 jet_hinter,
             })
         } else {
-            Err(ErrorCollector::to_string(&error_handler))?
+            Err(error_handler.to_string())?
         }
+    }
+
+    fn dependency_helper(
+        source: CanonSourceFile,
+        dependency_map: &DependencyMap,
+        handler: &mut ErrorCollector,
+    ) -> Result<Option<parse::Program>, String> {
+        let program = parse::Program::parse_from_str_with_errors(source.clone(), handler)
+            .ok_or_else(|| handler.to_string())?;
+        let graph =
+            DependencyGraph::new(source, Arc::from(dependency_map.clone()), &program, handler)?
+                .ok_or_else(|| handler.to_string())?;
+        graph.linearize_and_build(handler)
     }
 
     /// Access the parameters of the program.
@@ -1390,7 +1399,7 @@ mod functional_tests {
     }
 
     #[test]
-    #[should_panic(expected = "The alias `add` was defined multiple times")]
+    #[should_panic(expected = "Item `add` was defined multiple times")]
     fn name_collision_error() {
         run_dependency_test(
             format!("{}/name-collision", ERROR_TESTS_DIR).as_str(),
@@ -1430,7 +1439,6 @@ mod functional_tests {
     }
 
     #[test]
-    #[ignore = "TODO: Enable this once module resolution is complete"]
     #[should_panic(expected = "not found")]
     fn crate_file_not_found_error() {
         run_multidep_test(

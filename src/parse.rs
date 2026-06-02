@@ -39,6 +39,14 @@ pub struct Program {
 }
 
 impl Program {
+    // Need for driver usage
+    pub(crate) fn new(items: &[Item], span: Span) -> Self {
+        Self {
+            items: Arc::from(items),
+            span,
+        }
+    }
+
     /// Access the items of the program.
     pub fn items(&self) -> &[Item] {
         &self.items
@@ -101,6 +109,21 @@ pub struct UseDecl {
 }
 
 impl UseDecl {
+    /// The driver uses this to ensure imports conform to the flattened program structure.
+    pub(crate) fn new(
+        visibility: Visibility,
+        path: &[Identifier],
+        items: UseItems,
+        span: Span,
+    ) -> Self {
+        Self {
+            visibility,
+            path: Vec::from(path),
+            items,
+            span,
+        }
+    }
+
     pub fn visibility(&self) -> &Visibility {
         &self.visibility
     }
@@ -633,6 +656,22 @@ pub struct Module {
 }
 
 impl Module {
+    /// Needed by the driver to wrap a single file into a module.
+    pub(crate) fn new(
+        file_id: usize,
+        visibility: Visibility,
+        name: ModuleName,
+        items: &[Item],
+    ) -> Module {
+        Self {
+            file_id,
+            visibility,
+            name,
+            items: Arc::from(items),
+            span: Span::new(0, 0),
+        }
+    }
+
     pub fn visibility(&self) -> &Visibility {
         &self.visibility
     }

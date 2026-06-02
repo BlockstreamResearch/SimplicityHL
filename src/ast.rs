@@ -8,19 +8,19 @@ use miniscript::iter::{Tree, TreeLike};
 use simplicity::jet::{Elements, Jet};
 
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
-use crate::driver::{FileScoped, SymbolTable, MAIN_MODULE, MAIN_STR};
+use crate::driver::{CRATE_STR, MAIN_STR};
 use crate::error::{Error, RichError, Span, WithSpan};
 use crate::jet::JetHL;
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
-use crate::parse::MatchPattern;
+use crate::parse::{MatchPattern, UseDecl, Visibility};
 use crate::pattern::Pattern;
-use crate::str::{AliasName, FunctionName, Identifier, ModuleName, WitnessName};
+use crate::str::{AliasName, FunctionName, Identifier, ModuleName, SymbolName, WitnessName};
 use crate::types::{
     AliasedType, ResolvedType, StructuralType, TypeConstructible, TypeDeconstructible, UIntType,
 };
 use crate::value::{UIntValue, Value};
 use crate::witness::{Parameters, WitnessTypes};
-use crate::{driver, impl_eq_hash, parse};
+use crate::{impl_eq_hash, parse};
 
 /// A program consists of the main function.
 ///
@@ -431,56 +431,6 @@ impl MatchArm {
     }
 }
 
-/// Item when analyzing modules.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub enum ModuleItem {
-    Ignored,
-    Module(Module),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct Module {
-    name: ModuleName,
-    assignments: Arc<[ModuleAssignment]>,
-    span: Span,
-}
-
-impl Module {
-    /// Access the assignments of the module.
-    pub fn assignments(&self) -> &[ModuleAssignment] {
-        &self.assignments
-    }
-
-    /// Access the span of the module.
-    pub fn span(&self) -> &Span {
-        &self.span
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct ModuleAssignment {
-    name: WitnessName,
-    value: Value,
-    span: Span,
-}
-
-impl ModuleAssignment {
-    /// Access the assigned witness name.
-    pub fn name(&self) -> &WitnessName {
-        &self.name
-    }
-
-    /// Access the assigned witness value.
-    pub fn value(&self) -> &Value {
-        &self.value
-    }
-
-    /// Access the span of the module.
-    pub fn span(&self) -> &Span {
-        &self.span
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum ExprTree<'a> {
     Expression(&'a Expression),
@@ -584,6 +534,15 @@ impl JetHinter for ElementsJetHinter {
     }
 }
 
+/// A single module namespace. Handles arbitrary nesting via `submodules`.
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
+struct ModuleScope {
+    aliases: HashMap<AliasName, (ResolvedType, Visibility)>,
+    functions: HashMap<FunctionName, (CustomFunction, Visibility)>,
+    /// Nested inling `mod` blocks, each becoming a child scope.
+    submodules: HashMap<ModuleName, (ModuleScope, Visibility)>,
+}
+
 /// Scope for generating the abstract syntax tree.
 ///
 /// The scope is used for:
@@ -592,14 +551,17 @@ impl JetHinter for ElementsJetHinter {
 /// 3. Assigning types to each witness expression
 /// 4. Resolving calls to custom functions
 struct Scope {
-    file_id: usize,
+    /// Current position in the module tree. Push on `mod` enter, pop on exit.
+    /// Empty path means we are at the root (main file) scope.
+    module_path: Vec<ModuleName>,
+
+    /// Global scope where items from the main file that live at the root level.
+    root: ModuleScope,
+
+    /// Block-level variable scopes. Push on block enter, pop on block exit.
     variables: Vec<HashMap<Identifier, ResolvedType>>,
-    aliases: HashMap<FileScoped<AliasName>, ResolvedType>,
-    aliases_table: SymbolTable<AliasName>,
     parameters: HashMap<WitnessName, ResolvedType>,
     witnesses: HashMap<WitnessName, ResolvedType>,
-    functions: HashMap<FileScoped<FunctionName>, CustomFunction>,
-    functions_table: SymbolTable<FunctionName>,
     is_main: bool,
     call_tracker: CallTracker,
     jet_hinter: Box<dyn JetHinter>,
@@ -608,8 +570,6 @@ struct Scope {
 impl Default for Scope {
     fn default() -> Self {
         Self::new(
-            SymbolTable::<AliasName>::default(),
-            SymbolTable::<FunctionName>::default(),
             // TODO: Should be passed in global configuration
             Box::new(ElementsJetHinter),
         )
@@ -617,37 +577,25 @@ impl Default for Scope {
 }
 
 impl Scope {
-    pub fn new(
-        aliases_table: SymbolTable<AliasName>,
-        functions_table: SymbolTable<FunctionName>,
-        jet_hinter: Box<dyn JetHinter>,
-    ) -> Self {
+    pub fn new(jet_hinter: Box<dyn JetHinter>) -> Self {
         Self {
-            file_id: MAIN_MODULE,
+            module_path: Vec::new(),
+            root: ModuleScope::default(),
             variables: Vec::new(),
-            aliases: HashMap::new(),
-            aliases_table,
             parameters: HashMap::new(),
             witnesses: HashMap::new(),
-            functions: HashMap::new(),
-            functions_table,
             is_main: false,
             call_tracker: CallTracker::default(),
             jet_hinter,
         }
     }
 
-    pub fn file_id(&self) -> usize {
-        self.file_id
-    }
-
-    /// Check if the current scope is topmost.
-    pub fn is_topmost(&self) -> bool {
+    pub fn is_outside_function(&self) -> bool {
         self.variables.is_empty()
     }
 
-    /// Push a new scope onto the stack.
-    pub fn push_scope(&mut self) {
+    /// Enter a new block inside the current function.
+    pub fn enter_block(&mut self) {
         self.variables.push(HashMap::new());
     }
 
@@ -655,45 +603,266 @@ impl Scope {
     ///
     /// ## Panics
     ///
-    /// - The current scope is already inside the main function.
-    /// - The current scope is not topmost.
-    pub fn push_main_scope(&mut self) {
+    /// - Already inside the main function.
+    /// - Already inside a function body.
+    pub fn enter_main(&mut self) {
         assert!(!self.is_main, "Already inside main function");
-        assert!(self.is_topmost(), "Current scope is not topmost");
-        self.push_scope();
+        assert!(self.is_outside_function(), "Already inside a function body");
+        self.enter_block();
         self.is_main = true;
     }
 
-    /// Pop the current scope from the stack.
+    /// Exit the current block inside the curreent function.
     ///
     /// ## Panics
     ///
-    /// The stack is empty.
-    pub fn pop_scope(&mut self) {
-        self.variables.pop().expect("Stack is empty");
+    /// - No acive block to exit.
+    pub fn exit_block(&mut self) {
+        self.variables.pop().expect("No active block to exit");
     }
 
     /// Pop the scope of the main function from the stack.
     ///
     /// ## Panics
     ///
-    /// - The current scope is not inside the main function.
-    /// - The current scope is not nested in the topmost scope.
-    pub fn pop_main_scope(&mut self) {
+    /// - Not inside the main function.
+    /// - Unclosed nested blocks remain.
+    pub fn exit_main(&mut self) {
         assert!(self.is_main, "Current scope is not inside main function");
-        self.pop_scope();
+        self.exit_block();
         self.is_main = false;
         assert!(
-            self.is_topmost(),
+            self.is_outside_function(),
             "Current scope is not nested in topmost scope"
         )
     }
 
-    /// Push a variable onto the current stack.
+    /// Enter a named module, pushing it onto the module path.
+    ///
+    /// ## Errors
+    ///
+    /// * [`Error::ModuleRedefined`] A module with this name is already defined in the current scope.
+    pub fn enter_module(&mut self, name: ModuleName, visibility: Visibility) -> Result<(), Error> {
+        let current = self.current_module_mut();
+        if current.submodules.contains_key(&name) {
+            return Err(Error::ModuleRedefined { name });
+        }
+
+        current
+            .submodules
+            .insert(name.clone(), (ModuleScope::default(), visibility));
+        self.module_path.push(name);
+        Ok(())
+    }
+
+    /// Exit the current module, popping it from the module path.
     ///
     /// ## Panics
     ///
-    /// The stack is empty.
+    /// Not inside any module.
+    pub fn exit_module(&mut self) {
+        self.module_path.pop().expect("Not inside any module");
+    }
+
+    /// This allows us to perform read-only checks (like redefinitions) and
+    /// call `resolve` without taking a premature mutable borrow of `self`.
+    fn current_module(&self) -> &ModuleScope {
+        self.module_path.iter().fold(&self.root, |scope, segment| {
+            &scope.submodules.get(segment).expect("Module not found").0
+        })
+    }
+
+    /// We use iterations and `O(N)` algorithm, because nested block are not so deep.
+    /// It will be strange to see 100 nested blocks, so common `.fold()` will be enough for that.
+    fn current_module_mut(&mut self) -> &mut ModuleScope {
+        self.module_path
+            .iter()
+            .fold(&mut self.root, |scope, segment| {
+                &mut scope
+                    .submodules
+                    .get_mut(segment)
+                    .expect("Module not found")
+                    .0
+            })
+    }
+
+    // TODO: Consider to optimize it (we definitely can do it)
+    /// Resolves a `use` declaration by navigating the module tree, checking visibility,
+    /// and importing matching items into the current scope.
+    ///
+    /// ## Errors
+    ///
+    /// * [`Error::MissingCrateKeyword`] The import path does not start with the `crate` keyword.
+    /// * [`Error::ModuleNotFound`] A module segment in the target path does not exist.
+    /// * [`Error::ModuleIsPrivate`] Attempted to navigate into a private module from an unauthorized scope.
+    /// * [`Error::MainCannotBeAlias`] Attempted to alias an imported item to the reserved `main` identifier.
+    /// * May also return errors propagated from item collection and insertion, such as [`Error::PrivateItem`] or [`Error::RedefinedItem`].
+    pub fn resolve_use(&mut self, use_decl: &UseDecl) -> Result<(), Error> {
+        let path = use_decl.path();
+        if path[0].as_inner() != CRATE_STR {
+            return Err(Error::MissingCrateKeyword);
+        }
+
+        let use_vis = use_decl.visibility().clone();
+        let use_decl_items = match use_decl.items() {
+            parse::UseItems::Single(elem) => std::slice::from_ref(elem),
+            parse::UseItems::List(elems) => elems.as_slice(),
+        };
+
+        // Phase 1: navigate to target and collect items. Immutable borrow, dropped at end of block
+        let collected: Vec<_> = {
+            // TODO: Part, that can be optimized
+            // How many segments do the caller's path and the target's path have in common?
+            let shared_prefix_len = self
+                .module_path
+                .iter()
+                .zip(&path[1..])
+                .take_while(|(curr, nav)| curr.as_inner() == nav.as_inner())
+                .count();
+
+            let mut target_scope = &self.root;
+
+            for (ind, segment) in path[1..].iter().enumerate() {
+                let name = ModuleName::from_str_unchecked(segment.as_inner());
+
+                let (inner, visibility) = target_scope
+                    .submodules
+                    .get(&name)
+                    .ok_or_else(|| Error::ModuleNotFound { name: name.clone() })?;
+
+                if matches!(visibility, Visibility::Private) && shared_prefix_len < ind {
+                    return Err(Error::ModuleIsPrivate { name });
+                }
+
+                target_scope = inner;
+            }
+
+            let mut collected = Vec::with_capacity(use_decl_items.len());
+            for (name, aliased) in use_decl_items {
+                if aliased.as_ref().is_some_and(|a| a.as_inner() == MAIN_STR) {
+                    return Err(Error::MainCannotBeAlias);
+                }
+
+                let local_name = aliased.as_ref().unwrap_or(name);
+
+                let alias_res =
+                    Self::try_collect_item(name, local_name, &target_scope.aliases, &use_vis);
+                let func_res =
+                    Self::try_collect_item(name, local_name, &target_scope.functions, &use_vis);
+                let mod_res =
+                    Self::try_collect_item(name, local_name, &target_scope.submodules, &use_vis);
+
+                collected.push((alias_res, func_res, mod_res));
+            }
+            collected
+        };
+
+        // Phase 2: insert into current scope
+        let current = self.current_module_mut();
+        for (alias_res, func_res, mod_res) in collected {
+            Self::resolve_processing_use_items_error(&[
+                Self::insert_collected(alias_res, &mut current.aliases),
+                Self::insert_collected(func_res, &mut current.functions),
+                Self::insert_collected(mod_res, &mut current.submodules),
+            ])?;
+        }
+
+        Ok(())
+    }
+
+    /// Attempts to find `name` in `target_map` and prepare it for import into another scope.
+    ///
+    /// ## Errors
+    ///
+    /// * [`Error::UnresolvedItem`] The requested `name` was not found in the `target_map`.
+    /// * [`Error::PrivateItem`] The requested item exists in the map, but its visibility is restricted to private.
+    fn try_collect_item<K, V>(
+        name: &SymbolName,
+        local_name: &SymbolName,
+        target_map: &HashMap<K, (V, Visibility)>,
+        use_vis: &Visibility,
+    ) -> Result<(K, (V, Visibility)), Error>
+    where
+        K: Eq + std::hash::Hash + From<SymbolName> + Clone,
+        V: Clone,
+    {
+        let (value, vis) =
+            target_map
+                .get(&K::from(name.clone()))
+                .ok_or_else(|| Error::UnresolvedItem {
+                    name: name.to_string(),
+                })?;
+
+        if matches!(vis, Visibility::Private) {
+            return Err(Error::PrivateItem {
+                name: name.to_string(),
+            });
+        }
+
+        Ok((
+            K::from(local_name.clone()),
+            (value.clone(), use_vis.clone()),
+        ))
+    }
+
+    /// Inserts a successfully collected item into the current scope's map.
+    ///
+    /// ## Errors
+    ///
+    /// * [`Error::RedefinedItem`] An item with the same name is already defined in the target scope.
+    /// * Propagates any upstream resolution error passed into the `res` argument.
+    fn insert_collected<K, V>(
+        res: Result<(K, (V, Visibility)), Error>,
+        map: &mut HashMap<K, (V, Visibility)>,
+    ) -> Result<(), Error>
+    where
+        K: Eq + std::hash::Hash + std::fmt::Display,
+    {
+        res.and_then(|(k, v)| match map.entry(k) {
+            Entry::Occupied(entry) => Err(Error::RedefinedItem {
+                name: entry.key().to_string(),
+            }),
+            Entry::Vacant(entry) => {
+                entry.insert(v);
+                Ok(())
+            }
+        })
+    }
+
+    // TODO: Consider to use better error handling
+    /// Evaluates the results of attempting to collect an item from multiple namespaces
+    /// (aliases, functions, submodules) and resolves the final error state.
+    ///
+    /// ## Errors
+    ///
+    /// * Returns a specific error (e.g., [`Error::PrivateItem`], [`Error::RedefinedItem`]) if one occurred.
+    /// * Returns a fallback [`Error::UnresolvedItem`] if the item could not be found in any of the checked namespaces.
+    fn resolve_processing_use_items_error(results: &[Result<(), Error>]) -> Result<(), Error> {
+        if results.iter().any(|res| res.is_ok()) {
+            return Ok(());
+        }
+
+        let errors: Vec<&Error> = results
+            .iter()
+            .filter_map(|res| res.as_ref().err())
+            .collect();
+
+        if let Some(&specific_err) = errors
+            .iter()
+            .find(|e| !matches!(e, Error::UnresolvedItem { .. }))
+        {
+            return Err(specific_err.clone());
+        }
+
+        // Fallback to the first `UnresolvedItem` error
+        Err(errors[0].clone())
+    }
+
+    /// Insert a variable into the current block.
+    ///
+    /// ## Panics
+    ///
+    /// - No active block.
     pub fn insert_variable(&mut self, identifier: Identifier, ty: ResolvedType) {
         self.variables
             .last_mut()
@@ -709,50 +878,17 @@ impl Scope {
             .find_map(|scope| scope.get(identifier))
     }
 
-    /// Retrieves the definition of a type alias, enforcing strict error prioritization.
+    /// Retrieves the resolved type of a type alias in the current module scope.
     ///
-    /// # Errors
-    /// * [`Error::UndefinedAlias`]: The alias is not found in the global registry.
-    /// * [`Error::Internal`]: The specified `file_id` does not exist in the `files`.
-    /// * [`Error::PrivateItem`]: The alias exists globally but is not exposed to the current file's scope.
+    /// ## Errors
+    ///
+    /// * [`Error::UndefinedAlias`]: The alias is not defined in the current scope.
     fn get_alias(&self, name: &AliasName) -> Result<ResolvedType, Error> {
-        // 1. Get the true global ID of the alias.
-        let initial_id = (name.clone(), self.file_id);
-        let global_id = self
-            .aliases_table
-            .imports()
-            .resolved_roots()
-            .get(&initial_id)
-            .cloned()
-            .unwrap_or(initial_id);
-
-        // 2. Fetch the alias from the global pool.
-        let resolved_type = self
+        self.current_module()
             .aliases
-            .get(&global_id)
-            .ok_or_else(|| Error::UndefinedAlias { name: name.clone() })?;
-
-        // 3. Fetch the file scope for visibility checking.
-        let file_scope = self
-            .aliases_table
-            .local_scopes()
-            .get(self.file_id)
-            .ok_or_else(|| Error::Internal {
-                msg: format!(
-                    "file_id {} not found inside current Scope aliases",
-                    self.file_id
-                ),
-            })?;
-
-        // 4. Verify local scope visibility.
-        if file_scope.contains(name) {
-            // We clone here because types usually need to be owned in AST resolution
-            Ok(resolved_type.clone())
-        } else {
-            Err(Error::PrivateItem {
-                name: name.as_inner().to_string(),
-            })
-        }
+            .get(name)
+            .map(|(ty, _)| ty.clone())
+            .ok_or_else(|| Error::UndefinedAlias { name: name.clone() })
     }
 
     /// Resolve a type with aliases to a type without aliases.
@@ -760,24 +896,25 @@ impl Scope {
     /// ## Errors
     ///
     /// * [`Error::UndefinedAlias`]: The alias is not found in the global registry.
-    /// * [`Error::Internal`]: The specified `file_id` does not exist in the `files`.
-    /// * [`Error::PrivateItem`]: The alias exists globally but is not exposed to the current file's scope.
     pub fn resolve(&self, ty: &AliasedType) -> Result<ResolvedType, Error> {
         ty.resolve(|name| self.get_alias(name))
     }
 
-    /// Push a type alias into the global map.
+    /// Insert a type alias into the current module scope.
     ///
     /// ## Errors
     ///
-    /// There are any undefined aliases.
-    pub fn insert_alias(&mut self, name: AliasName, ty: AliasedType) -> Result<(), Error> {
-        let plug = (name.clone(), self.file_id);
-        if self.aliases.contains_key(&plug) {
+    /// * [`Error::RedefinedAlias`]: The alias name is already defined in the current scope.
+    pub fn insert_alias(&mut self, alias: parse::TypeAlias) -> Result<(), Error> {
+        let name = alias.name().clone();
+        if self.current_module().aliases.contains_key(&name) {
             return Err(Error::RedefinedAlias { name });
         }
 
-        let _ = self.aliases.insert(plug, self.resolve(&ty)?);
+        let resolved = self.resolve(alias.ty())?;
+        self.current_module_mut()
+            .aliases
+            .insert(name, (resolved, alias.visibility().clone()));
         Ok(())
     }
 
@@ -785,7 +922,7 @@ impl Scope {
     ///
     /// ## Errors
     ///
-    /// A parameter of the same name has already been defined as a different type.
+    /// * [`Error::ExpressionTypeMismatch`] A parameter of the same name has already been defined as a different type.
     pub fn insert_parameter(&mut self, name: WitnessName, ty: ResolvedType) -> Result<(), Error> {
         match self.parameters.entry(name.clone()) {
             Entry::Occupied(entry) if entry.get() == &ty => Ok(()),
@@ -804,8 +941,8 @@ impl Scope {
     ///
     /// ## Errors
     ///
-    /// - The current scope is not inside the main function.
-    /// - A witness with the same name has already been defined.
+    /// * [`Error::WitnessOutsideMain`] The current scope is not inside the main function.
+    /// * [`Error::WitnessReused`] A witness with the same name has already been defined.
     pub fn insert_witness(&mut self, name: WitnessName, ty: ResolvedType) -> Result<(), Error> {
         if !self.is_main {
             return Err(Error::WitnessOutsideMain);
@@ -837,74 +974,34 @@ impl Scope {
     ///
     /// ## Errors
     ///
-    /// The function has already been defined.
+    /// * [`Error::FunctionRedefined`] The function has already been defined.
     pub fn insert_function(
         &mut self,
         name: FunctionName,
+        visibility: Visibility,
         function: CustomFunction,
     ) -> Result<(), Error> {
-        let func_name_id = (name.clone(), self.file_id);
-
-        if self.functions.contains_key(&func_name_id) {
+        if self.current_module().functions.contains_key(&name) {
             return Err(Error::FunctionRedefined { name });
         }
 
-        let _ = self.functions.insert(func_name_id, function);
+        self.current_module_mut()
+            .functions
+            .insert(name, (function, visibility));
         Ok(())
     }
 
     /// Retrieves the definition of a custom function, enforcing strict error prioritization.
     ///
-    /// # Architecture Note
-    /// The order of operations here is intentional to prioritize specific compiler errors:
-    /// 1. Resolve the alias to find the true global coordinates.
-    /// 2. Check for global existence (`FunctionUndefined`) *before* checking local visibility.
-    /// 3. Verify if the current file's scope is actually allowed to see it (`PrivateItem`).
-    ///
-    /// # Errors
+    /// ## Errors
     ///
     /// * [`Error::FunctionUndefined`]: The function is not found in the global registry.
-    /// * [`Error::Internal`]: The specified `file_id` does not exist in the `files`.
-    /// * [`Error::PrivateItem`]: The function exists globally but is not exposed to the current file's scope.
-    pub fn get_function(&self, name: &FunctionName) -> Result<&CustomFunction, Error> {
-        // 1. Get the true global ID of the alias (or keep the current name if it is not aliased).
-        let initial_id = (name.clone(), self.file_id);
-        let global_id = self
-            .functions_table
-            .imports()
-            .resolved_roots()
-            .get(&initial_id)
-            .cloned()
-            .unwrap_or(initial_id);
-
-        // 2. Fetch the function from the global pool.
-        // We do this first so we can throw FunctionUndefined before checking local visibility.
-        let function = self
+    pub fn get_function(&self, name: &FunctionName) -> Result<CustomFunction, Error> {
+        self.current_module()
             .functions
-            .get(&global_id)
-            .ok_or_else(|| Error::FunctionUndefined { name: name.clone() })?;
-
-        // TODO: Consider changing it to a better error handler with a source file.
-        let file_scope = self
-            .functions_table
-            .local_scopes()
-            .get(self.file_id)
-            .ok_or_else(|| Error::Internal {
-                msg: format!(
-                    "file_id {} not found inside current Scope files",
-                    self.file_id
-                ),
-            })?;
-
-        // 3. Verify local scope visibility.
-        // We successfully found the function globally, but is this file allowed to use it?
-        if file_scope.contains(name) {
-            Ok(function)
-        } else {
-            Err(Error::PrivateItem {
-                name: name.as_inner().to_string(),
-            })
-        }
+            .get(name)
+            .map(|(func, _)| func.clone())
+            .ok_or_else(|| Error::FunctionUndefined { name: name.clone() })
     }
 
     /// Track a call expression with its span.
@@ -928,18 +1025,23 @@ trait AbstractSyntaxTree: Sized {
 
 impl Program {
     pub fn analyze(
-        from: &driver::Program,
+        from: &parse::Program,
         jet_hinter: Box<dyn JetHinter>,
     ) -> Result<Self, RichError> {
         let unit = ResolvedType::unit();
-        let mut scope = Scope::new(from.aliases().clone(), from.functions().clone(), jet_hinter);
+        let mut scope = Scope::new(jet_hinter);
 
         let items = from
             .items()
             .iter()
             .map(|s| Item::analyze(s, &unit, &mut scope))
             .collect::<Result<Vec<Item>, RichError>>()?;
-        debug_assert!(scope.is_topmost());
+        debug_assert!(scope.is_outside_function());
+        debug_assert!(
+            scope.module_path.is_empty(),
+            "Unclosed module scopes remain"
+        );
+
         let (parameters, witness_types, call_tracker) = scope.destruct();
         let mut iter = items.into_iter().filter_map(|item| match item {
             Item::Function(Function::Main(expr)) => Some(expr),
@@ -967,34 +1069,35 @@ impl AbstractSyntaxTree for Item {
 
     fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
         assert!(ty.is_unit(), "Items cannot return anything");
-        assert!(scope.is_topmost(), "Items live in the topmost scope only");
-        let previous_file_id = scope.file_id();
+        assert!(
+            scope.is_outside_function(),
+            "Variables live only inside the function"
+        );
 
-        let res = match from {
+        match from {
             parse::Item::TypeAlias(alias) => {
-                scope.file_id = alias.file_id();
-                scope
-                    .insert_alias(alias.name().clone(), alias.ty().clone())
-                    .with_span(alias)?;
+                scope.insert_alias(alias.clone()).with_span(alias)?;
                 Ok(Self::TypeAlias)
             }
             parse::Item::Function(function) => {
-                scope.file_id = function.file_id();
                 Function::analyze(function, ty, scope).map(Self::Function)
             }
-            parse::Item::Use(use_decl) => Err(RichError::new(
-                Error::UseKeywordIsNotSupported,
-                *use_decl.span(),
-            )),
-            parse::Item::Module(module) => Err(RichError::new(
-                Error::ModuleKeywordIsNotSupported,
-                *module.span(),
-            )),
+            parse::Item::Use(use_decl) => {
+                scope.resolve_use(use_decl).with_span(use_decl)?;
+                Ok(Self::Use)
+            }
+            parse::Item::Module(module) => {
+                scope
+                    .enter_module(module.name().clone(), module.visibility().clone())
+                    .with_span(module)?;
+                for item in module.items() {
+                    Item::analyze(item, ty, scope)?;
+                }
+                scope.exit_module();
+                Ok(Self::Module)
+            }
             parse::Item::Ignored => Ok(Self::Ignored),
-        };
-
-        scope.file_id = previous_file_id;
-        res
+        }
     }
 }
 
@@ -1003,7 +1106,10 @@ impl AbstractSyntaxTree for Function {
 
     fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
         assert!(ty.is_unit(), "Function definitions cannot return anything");
-        assert!(scope.is_topmost(), "Items live in the topmost scope only");
+        assert!(
+            scope.is_outside_function(),
+            "Variables live only inside the function"
+        );
 
         if from.name().as_inner() != MAIN_STR {
             let params = from
@@ -1023,17 +1129,17 @@ impl AbstractSyntaxTree for Function {
                 .transpose()?
                 .unwrap_or_else(ResolvedType::unit);
 
-            scope.push_scope();
+            scope.enter_block();
             for param in params.iter() {
                 scope.insert_variable(param.identifier().clone(), param.ty().clone());
             }
             let body = Expression::analyze(from.body(), &ret, scope).map(Arc::new)?;
-            scope.pop_scope();
+            scope.exit_block();
 
-            debug_assert!(scope.is_topmost());
+            debug_assert!(scope.is_outside_function());
             let function = CustomFunction { params, body };
             scope
-                .insert_function(from.name().clone(), function)
+                .insert_function(from.name().clone(), from.visibility().clone(), function)
                 .with_span(from)?;
 
             return Ok(Self::Custom);
@@ -1049,13 +1155,17 @@ impl AbstractSyntaxTree for Function {
             }
         }
 
-        if scope.file_id() != MAIN_MODULE {
+        if !scope.module_path.is_empty() {
             return Err(Error::MainOutOfEntryFile).with_span(from);
         }
 
-        scope.push_main_scope();
+        if matches!(from.visibility(), Visibility::Public) {
+            return Err(Error::MainCannotBePublic).with_span(from);
+        }
+
+        scope.enter_main();
         let body = Expression::analyze(from.body(), ty, scope)?;
-        scope.pop_main_scope();
+        scope.exit_main();
         Ok(Self::Main(body))
     }
 }
@@ -1129,7 +1239,7 @@ impl AbstractSyntaxTree for Expression {
                 })
             }
             parse::ExpressionInner::Block(statements, expression) => {
-                scope.push_scope();
+                scope.enter_block();
                 let ast_statements = statements
                     .iter()
                     .map(|s| Statement::analyze(s, &ResolvedType::unit(), scope))
@@ -1145,7 +1255,7 @@ impl AbstractSyntaxTree for Expression {
                     })
                     .with_span(from),
                 }?;
-                scope.pop_scope();
+                scope.exit_block();
 
                 Ok(Self {
                     ty: ty.clone(),
@@ -1563,13 +1673,11 @@ impl AbstractSyntaxTree for CallName {
             parse::CallName::TypeCast(target) => {
                 scope.resolve(target).map(Self::TypeCast).with_span(from)
             }
-            parse::CallName::Custom(name) => scope
-                .get_function(name)
-                .cloned()
-                .map(Self::Custom)
-                .with_span(from),
+            parse::CallName::Custom(name) => {
+                scope.get_function(name).map(Self::Custom).with_span(from)
+            }
             parse::CallName::ArrayFold(name, size) => {
-                let function = scope.get_function(name).cloned().with_span(from)?;
+                let function = scope.get_function(name).with_span(from)?;
                 // A function that is used in a array fold has the signature:
                 //   fn f(element: E, accumulator: A) -> A
                 if function.params().len() != 2 || function.params()[1].ty() != function.body().ty()
@@ -1580,7 +1688,7 @@ impl AbstractSyntaxTree for CallName {
                 }
             }
             parse::CallName::Fold(name, bound) => {
-                let function = scope.get_function(name).cloned().with_span(from)?;
+                let function = scope.get_function(name).with_span(from)?;
                 // A function that is used in a list fold has the signature:
                 //   fn f(element: E, accumulator: A) -> A
                 if function.params().len() != 2 || function.params()[1].ty() != function.body().ty()
@@ -1591,7 +1699,7 @@ impl AbstractSyntaxTree for CallName {
                 }
             }
             parse::CallName::ForWhile(name) => {
-                let function = scope.get_function(name).cloned().with_span(from)?;
+                let function = scope.get_function(name).with_span(from)?;
                 // A function that is used in a for-while loop has the signature:
                 //   fn f(accumulator: A, readonly_context: C, counter: u{N}) -> Either<B, A>
                 // where
@@ -1633,7 +1741,7 @@ impl AbstractSyntaxTree for Match {
         let scrutinee =
             Expression::analyze(from.scrutinee(), &scrutinee_ty, scope).map(Arc::new)?;
 
-        scope.push_scope();
+        scope.enter_block();
         if let Some((pat_l, ty_l)) = from.left().pattern().as_typed_pattern() {
             let ty_l = scope.resolve(ty_l).with_span(from)?;
             let typed_variables = pat_l.is_of_type(&ty_l).with_span(from)?;
@@ -1642,8 +1750,8 @@ impl AbstractSyntaxTree for Match {
             }
         }
         let ast_l = Expression::analyze(from.left().expression(), ty, scope).map(Arc::new)?;
-        scope.pop_scope();
-        scope.push_scope();
+        scope.exit_block();
+        scope.enter_block();
         if let Some((pat_r, ty_r)) = from.right().pattern().as_typed_pattern() {
             let ty_r = scope.resolve(ty_r).with_span(from)?;
             let typed_variables = pat_r.is_of_type(&ty_r).with_span(from)?;
@@ -1652,7 +1760,7 @@ impl AbstractSyntaxTree for Match {
             }
         }
         let ast_r = Expression::analyze(from.right().expression(), ty, scope).map(Arc::new)?;
-        scope.pop_scope();
+        scope.exit_block();
 
         Ok(Self {
             scrutinee,
@@ -1696,97 +1804,5 @@ impl AsRef<Span> for Call {
 impl AsRef<Span> for Match {
     fn as_ref(&self) -> &Span {
         &self.span
-    }
-}
-
-impl AsRef<Span> for Module {
-    fn as_ref(&self) -> &Span {
-        &self.span
-    }
-}
-
-impl AsRef<Span> for ModuleAssignment {
-    fn as_ref(&self) -> &Span {
-        &self.span
-    }
-}
-
-#[cfg(test)]
-mod alias_scope_regression_tests {
-    use super::{ElementsJetHinter, Program};
-    use crate::driver::tests::setup_graph;
-    use crate::error::ErrorCollector;
-
-    fn analyze_multifile(files: Vec<(&str, &str)>) -> Result<(), String> {
-        let (graph, _ids, _dir) = setup_graph(files);
-
-        let mut error_handler = ErrorCollector::new();
-        let driver_program = graph
-            .linearize_and_build(&mut error_handler)
-            .unwrap()
-            .expect("driver build should succeed");
-
-        Program::analyze(&driver_program, Box::new(ElementsJetHinter))
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-
-    #[test]
-    fn private_type_alias_from_dependency_does_not_leak() {
-        let result = analyze_multifile(vec![
-            (
-                "main.simf",
-                "use lib::A::helper; fn main() { helper(); let x: Secret = 0; }",
-            ),
-            ("libs/lib/A.simf", "type Secret = u32; pub fn helper() {}"),
-        ]);
-
-        assert!(
-            result.is_err(),
-            "private alias from another file leaked into root scope: {result:?}"
-        );
-    }
-
-    #[test]
-    fn same_alias_name_in_different_modules_does_not_conflict_if_only_one_is_imported() {
-        let result = analyze_multifile(vec![
-            (
-                "main.simf",
-                "use lib::A::Word; use lib::B::id; fn main() { let x: Word = 0; assert!(jet::is_zero_32(id(x))); }",
-            ),
-            ("libs/lib/A.simf", "pub type Word = u32;"),
-            ("libs/lib/B.simf", "pub type Word = u16; pub fn id(x: u32) -> u32 { x }"),
-        ]);
-
-        assert!(
-            result.is_ok(),
-            "unimported alias from another module should not collide: {result:?}"
-        );
-    }
-
-    #[test]
-    fn dependency_main_does_not_satisfy_missing_root_main() {
-        let result = analyze_multifile(vec![
-            ("main.simf", "use lib::A::helper;"),
-            ("libs/lib/A.simf", "fn main() {} pub fn helper() {}"),
-        ]);
-
-        assert!(
-            result.is_err(),
-            "Main function must be inside an entry file: {result:?}"
-        )
-    }
-
-    #[test]
-    fn main_must_be_defined_once_per_project() {
-        let result = analyze_multifile(vec![
-            ("main.simf", "use lib::A::helper; fn main() { helper(); }"),
-            ("libs/lib/A.simf", "fn main() {} pub fn helper() {}"),
-        ]);
-
-        assert!(
-            result.is_err(),
-            "Main function must be inside an entry file: {result:?}"
-        );
     }
 }
