@@ -1,4 +1,5 @@
 use crate::num::NonZeroPow2Usize;
+use crate::num::Pow2Usize;
 use crate::types::BuiltinAlias::*;
 use crate::types::UIntType::*;
 use crate::types::*;
@@ -57,6 +58,33 @@ impl JetHL for Elements {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum SourceJetClassification {
+    Unary,
+    Binary,
+    Ternary,
+    Quaternary,
+    Custom(Vec<AliasedType>),
+}
+
+impl SourceJetClassification {
+    fn divisor(&self) -> usize {
+        match self {
+            SourceJetClassification::Unary => 1,
+            SourceJetClassification::Binary => 2,
+            SourceJetClassification::Ternary => 3,
+            SourceJetClassification::Quaternary => 4,
+            SourceJetClassification::Custom(types) => types.len(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum TargetJetClassification {
+    Unary,
+    Custom(AliasedType),
+}
+
 fn tuple<A: Into<AliasedType>, I: IntoIterator<Item = A>>(elements: I) -> AliasedType {
     AliasedType::tuple(elements.into_iter().map(A::into))
 }
@@ -81,7 +109,7 @@ fn option<A: Into<AliasedType>>(inner: A) -> AliasedType {
     AliasedType::option(inner.into())
 }
 
-pub fn source_type(jet: Elements) -> Vec<AliasedType> {
+fn source_jet_classification(jet: Elements) -> SourceJetClassification {
     match jet {
         /*
          * ==============================
@@ -99,8 +127,8 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
         | Elements::High8
         | Elements::High16
         | Elements::High32
-        | Elements::High64 => vec![],
-        Elements::Verify => vec![bool()],
+        | Elements::High64 => SourceJetClassification::Unary,
+        Elements::Verify => SourceJetClassification::Custom(vec![bool()]),
         Elements::Complement1
         | Elements::Some1
         | Elements::LeftPadLow1_8
@@ -122,7 +150,7 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
         | Elements::RightPadHigh1_8
         | Elements::RightPadHigh1_16
         | Elements::RightPadHigh1_32
-        | Elements::RightPadHigh1_64 => vec![U1.into()],
+        | Elements::RightPadHigh1_64 => SourceJetClassification::Unary,
         Elements::Complement8
         | Elements::Some8
         | Elements::All8
@@ -149,7 +177,7 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
         | Elements::RightPadHigh8_64
         | Elements::RightExtend8_16
         | Elements::RightExtend8_32
-        | Elements::RightExtend8_64 => vec![U8.into()],
+        | Elements::RightExtend8_64 => SourceJetClassification::Unary,
         Elements::Complement16
         | Elements::Some16
         | Elements::All16
@@ -172,7 +200,7 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
         | Elements::RightPadHigh16_32
         | Elements::RightPadHigh16_64
         | Elements::RightExtend16_32
-        | Elements::RightExtend16_64 => vec![U16.into()],
+        | Elements::RightExtend16_64 => SourceJetClassification::Unary,
         Elements::Complement32
         | Elements::Some32
         | Elements::All32
@@ -191,7 +219,7 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
         | Elements::LeftExtend32_64
         | Elements::RightPadLow32_64
         | Elements::RightPadHigh32_64
-        | Elements::RightExtend32_64 => vec![U32.into()],
+        | Elements::RightExtend32_64 => SourceJetClassification::Unary,
         Elements::Complement64
         | Elements::Some64
         | Elements::All64
@@ -206,122 +234,160 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
         | Elements::Rightmost64_4
         | Elements::Rightmost64_8
         | Elements::Rightmost64_16
-        | Elements::Rightmost64_32 => vec![U64.into()],
+        | Elements::Rightmost64_32 => SourceJetClassification::Unary,
         Elements::And1 | Elements::Or1 | Elements::Xor1 | Elements::Eq1 => {
-            vec![U1.into(), U1.into()]
+            SourceJetClassification::Binary
         }
         Elements::And8 | Elements::Or8 | Elements::Xor8 | Elements::Eq8 => {
-            vec![U8.into(), U8.into()]
+            SourceJetClassification::Binary
         }
         Elements::And16 | Elements::Or16 | Elements::Xor16 | Elements::Eq16 => {
-            vec![U16.into(), U16.into()]
+            SourceJetClassification::Binary
         }
         Elements::And32 | Elements::Or32 | Elements::Xor32 | Elements::Eq32 => {
-            vec![U32.into(), U32.into()]
+            SourceJetClassification::Binary
         }
         Elements::And64 | Elements::Or64 | Elements::Xor64 | Elements::Eq64 => {
-            vec![U64.into(), U64.into()]
+            SourceJetClassification::Binary
         }
-        Elements::Eq256 => vec![U256.into(), U256.into()],
-        Elements::Maj1 | Elements::XorXor1 | Elements::Ch1 => vec![U1.into(), U1.into(), U1.into()],
-        Elements::Maj8 | Elements::XorXor8 | Elements::Ch8 => vec![U8.into(), U8.into(), U8.into()],
+        Elements::Eq256 => SourceJetClassification::Binary,
+        Elements::Maj1 | Elements::XorXor1 | Elements::Ch1 => SourceJetClassification::Ternary,
+        Elements::Maj8 | Elements::XorXor8 | Elements::Ch8 => SourceJetClassification::Ternary,
         Elements::Maj16 | Elements::XorXor16 | Elements::Ch16 => {
-            vec![U16.into(), tuple([U16, U16])]
+            SourceJetClassification::Custom(vec![U16.into(), tuple([U16, U16])])
         }
         Elements::Maj32 | Elements::XorXor32 | Elements::Ch32 => {
-            vec![U32.into(), tuple([U32, U32])]
+            SourceJetClassification::Custom(vec![U32.into(), tuple([U32, U32])])
         }
         Elements::Maj64 | Elements::XorXor64 | Elements::Ch64 => {
-            vec![U64.into(), tuple([U64, U64])]
+            SourceJetClassification::Custom(vec![U64.into(), tuple([U64, U64])])
         }
-        Elements::FullLeftShift8_1 => vec![U8.into(), U1.into()],
-        Elements::FullLeftShift8_2 => vec![U8.into(), U2.into()],
-        Elements::FullLeftShift8_4 => vec![U8.into(), U4.into()],
-        Elements::FullLeftShift16_1 => vec![U16.into(), U1.into()],
-        Elements::FullLeftShift16_2 => vec![U16.into(), U2.into()],
-        Elements::FullLeftShift16_4 => vec![U16.into(), U4.into()],
-        Elements::FullLeftShift16_8 => vec![U16.into(), U8.into()],
-        Elements::FullLeftShift32_1 => vec![U32.into(), U1.into()],
-        Elements::FullLeftShift32_2 => vec![U32.into(), U2.into()],
-        Elements::FullLeftShift32_4 => vec![U32.into(), U4.into()],
-        Elements::FullLeftShift32_8 => vec![U32.into(), U8.into()],
-        Elements::FullLeftShift32_16 => vec![U32.into(), U16.into()],
-        Elements::FullLeftShift64_1 => vec![U64.into(), U1.into()],
-        Elements::FullLeftShift64_2 => vec![U64.into(), U2.into()],
-        Elements::FullLeftShift64_4 => vec![U64.into(), U4.into()],
-        Elements::FullLeftShift64_8 => vec![U64.into(), U8.into()],
-        Elements::FullLeftShift64_16 => vec![U64.into(), U16.into()],
-        Elements::FullLeftShift64_32 => vec![U64.into(), U32.into()],
-        Elements::FullRightShift8_1 => vec![U1.into(), U8.into()],
-        Elements::FullRightShift8_2 => vec![U2.into(), U8.into()],
-        Elements::FullRightShift8_4 => vec![U4.into(), U8.into()],
-        Elements::FullRightShift16_1 => vec![U1.into(), U16.into()],
-        Elements::FullRightShift16_2 => vec![U2.into(), U16.into()],
-        Elements::FullRightShift16_4 => vec![U4.into(), U16.into()],
-        Elements::FullRightShift16_8 => vec![U8.into(), U16.into()],
-        Elements::FullRightShift32_1 => vec![U1.into(), U32.into()],
-        Elements::FullRightShift32_2 => vec![U2.into(), U32.into()],
-        Elements::FullRightShift32_4 => vec![U4.into(), U32.into()],
-        Elements::FullRightShift32_8 => vec![U8.into(), U32.into()],
-        Elements::FullRightShift32_16 => vec![U16.into(), U32.into()],
-        Elements::FullRightShift64_1 => vec![U1.into(), U64.into()],
-        Elements::FullRightShift64_2 => vec![U2.into(), U64.into()],
-        Elements::FullRightShift64_4 => vec![U4.into(), U64.into()],
-        Elements::FullRightShift64_8 => vec![U8.into(), U64.into()],
-        Elements::FullRightShift64_16 => vec![U16.into(), U64.into()],
-        Elements::FullRightShift64_32 => vec![U32.into(), U64.into()],
+        Elements::FullLeftShift8_1 => SourceJetClassification::Custom(vec![U8.into(), U1.into()]),
+        Elements::FullLeftShift8_2 => SourceJetClassification::Custom(vec![U8.into(), U2.into()]),
+        Elements::FullLeftShift8_4 => SourceJetClassification::Custom(vec![U8.into(), U4.into()]),
+        Elements::FullLeftShift16_1 => SourceJetClassification::Custom(vec![U16.into(), U1.into()]),
+        Elements::FullLeftShift16_2 => SourceJetClassification::Custom(vec![U16.into(), U2.into()]),
+        Elements::FullLeftShift16_4 => SourceJetClassification::Custom(vec![U16.into(), U4.into()]),
+        Elements::FullLeftShift16_8 => SourceJetClassification::Custom(vec![U16.into(), U8.into()]),
+        Elements::FullLeftShift32_1 => SourceJetClassification::Custom(vec![U32.into(), U1.into()]),
+        Elements::FullLeftShift32_2 => SourceJetClassification::Custom(vec![U32.into(), U2.into()]),
+        Elements::FullLeftShift32_4 => SourceJetClassification::Custom(vec![U32.into(), U4.into()]),
+        Elements::FullLeftShift32_8 => SourceJetClassification::Custom(vec![U32.into(), U8.into()]),
+        Elements::FullLeftShift32_16 => {
+            SourceJetClassification::Custom(vec![U32.into(), U16.into()])
+        }
+        Elements::FullLeftShift64_1 => SourceJetClassification::Custom(vec![U64.into(), U1.into()]),
+        Elements::FullLeftShift64_2 => SourceJetClassification::Custom(vec![U64.into(), U2.into()]),
+        Elements::FullLeftShift64_4 => SourceJetClassification::Custom(vec![U64.into(), U4.into()]),
+        Elements::FullLeftShift64_8 => SourceJetClassification::Custom(vec![U64.into(), U8.into()]),
+        Elements::FullLeftShift64_16 => {
+            SourceJetClassification::Custom(vec![U64.into(), U16.into()])
+        }
+        Elements::FullLeftShift64_32 => {
+            SourceJetClassification::Custom(vec![U64.into(), U32.into()])
+        }
+        Elements::FullRightShift8_1 => SourceJetClassification::Custom(vec![U1.into(), U8.into()]),
+        Elements::FullRightShift8_2 => SourceJetClassification::Custom(vec![U2.into(), U8.into()]),
+        Elements::FullRightShift8_4 => SourceJetClassification::Custom(vec![U4.into(), U8.into()]),
+        Elements::FullRightShift16_1 => {
+            SourceJetClassification::Custom(vec![U1.into(), U16.into()])
+        }
+        Elements::FullRightShift16_2 => {
+            SourceJetClassification::Custom(vec![U2.into(), U16.into()])
+        }
+        Elements::FullRightShift16_4 => {
+            SourceJetClassification::Custom(vec![U4.into(), U16.into()])
+        }
+        Elements::FullRightShift16_8 => {
+            SourceJetClassification::Custom(vec![U8.into(), U16.into()])
+        }
+        Elements::FullRightShift32_1 => {
+            SourceJetClassification::Custom(vec![U1.into(), U32.into()])
+        }
+        Elements::FullRightShift32_2 => {
+            SourceJetClassification::Custom(vec![U2.into(), U32.into()])
+        }
+        Elements::FullRightShift32_4 => {
+            SourceJetClassification::Custom(vec![U4.into(), U32.into()])
+        }
+        Elements::FullRightShift32_8 => {
+            SourceJetClassification::Custom(vec![U8.into(), U32.into()])
+        }
+        Elements::FullRightShift32_16 => {
+            SourceJetClassification::Custom(vec![U16.into(), U32.into()])
+        }
+        Elements::FullRightShift64_1 => {
+            SourceJetClassification::Custom(vec![U1.into(), U64.into()])
+        }
+        Elements::FullRightShift64_2 => {
+            SourceJetClassification::Custom(vec![U2.into(), U64.into()])
+        }
+        Elements::FullRightShift64_4 => {
+            SourceJetClassification::Custom(vec![U4.into(), U64.into()])
+        }
+        Elements::FullRightShift64_8 => {
+            SourceJetClassification::Custom(vec![U8.into(), U64.into()])
+        }
+        Elements::FullRightShift64_16 => {
+            SourceJetClassification::Custom(vec![U16.into(), U64.into()])
+        }
+        Elements::FullRightShift64_32 => {
+            SourceJetClassification::Custom(vec![U32.into(), U64.into()])
+        }
         Elements::LeftShiftWith8 | Elements::RightShiftWith8 => {
-            vec![U1.into(), U4.into(), U8.into()]
+            SourceJetClassification::Custom(vec![U1.into(), U4.into(), U8.into()])
         }
         Elements::LeftShiftWith16 | Elements::RightShiftWith16 => {
-            vec![U1.into(), U4.into(), U16.into()]
+            SourceJetClassification::Custom(vec![U1.into(), U4.into(), U16.into()])
         }
         Elements::LeftShiftWith32 | Elements::RightShiftWith32 => {
-            vec![U1.into(), U8.into(), U32.into()]
+            SourceJetClassification::Custom(vec![U1.into(), U8.into(), U32.into()])
         }
         Elements::LeftShiftWith64 | Elements::RightShiftWith64 => {
-            vec![U1.into(), U8.into(), U64.into()]
+            SourceJetClassification::Custom(vec![U1.into(), U8.into(), U64.into()])
         }
         Elements::LeftShift8
         | Elements::RightShift8
         | Elements::LeftRotate8
-        | Elements::RightRotate8 => vec![U4.into(), U8.into()],
+        | Elements::RightRotate8 => SourceJetClassification::Custom(vec![U4.into(), U8.into()]),
         Elements::LeftShift16
         | Elements::RightShift16
         | Elements::LeftRotate16
-        | Elements::RightRotate16 => vec![U4.into(), U16.into()],
+        | Elements::RightRotate16 => SourceJetClassification::Custom(vec![U4.into(), U16.into()]),
         Elements::LeftShift32
         | Elements::RightShift32
         | Elements::LeftRotate32
-        | Elements::RightRotate32 => vec![U8.into(), U32.into()],
+        | Elements::RightRotate32 => SourceJetClassification::Custom(vec![U8.into(), U32.into()]),
         Elements::LeftShift64
         | Elements::RightShift64
         | Elements::LeftRotate64
-        | Elements::RightRotate64 => vec![U8.into(), U64.into()],
+        | Elements::RightRotate64 => SourceJetClassification::Custom(vec![U8.into(), U64.into()]),
         /*
          * Arithmetic
          */
-        Elements::One8 | Elements::One16 | Elements::One32 | Elements::One64 => vec![],
+        Elements::One8 | Elements::One16 | Elements::One32 | Elements::One64 => {
+            SourceJetClassification::Unary
+        }
         Elements::Increment8
         | Elements::Negate8
         | Elements::Decrement8
         | Elements::IsZero8
-        | Elements::IsOne8 => vec![U8.into()],
+        | Elements::IsOne8 => SourceJetClassification::Unary,
         Elements::Increment16
         | Elements::Negate16
         | Elements::Decrement16
         | Elements::IsZero16
-        | Elements::IsOne16 => vec![U16.into()],
+        | Elements::IsOne16 => SourceJetClassification::Unary,
         Elements::Increment32
         | Elements::Negate32
         | Elements::Decrement32
         | Elements::IsZero32
-        | Elements::IsOne32 => vec![U32.into()],
+        | Elements::IsOne32 => SourceJetClassification::Unary,
         Elements::Increment64
         | Elements::Negate64
         | Elements::Decrement64
         | Elements::IsZero64
-        | Elements::IsOne64 => vec![U64.into()],
+        | Elements::IsOne64 => SourceJetClassification::Unary,
         Elements::Add8
         | Elements::Subtract8
         | Elements::Multiply8
@@ -332,7 +398,7 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
         | Elements::DivMod8
         | Elements::Divide8
         | Elements::Modulo8
-        | Elements::Divides8 => vec![U8.into(), U8.into()],
+        | Elements::Divides8 => SourceJetClassification::Binary,
         Elements::Add16
         | Elements::Subtract16
         | Elements::Multiply16
@@ -343,7 +409,7 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
         | Elements::DivMod16
         | Elements::Divide16
         | Elements::Modulo16
-        | Elements::Divides16 => vec![U16.into(), U16.into()],
+        | Elements::Divides16 => SourceJetClassification::Binary,
         Elements::Add32
         | Elements::Subtract32
         | Elements::Multiply32
@@ -354,7 +420,7 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
         | Elements::DivMod32
         | Elements::Divide32
         | Elements::Modulo32
-        | Elements::Divides32 => vec![U32.into(), U32.into()],
+        | Elements::Divides32 => SourceJetClassification::Binary,
         Elements::Add64
         | Elements::Subtract64
         | Elements::Multiply64
@@ -365,76 +431,118 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
         | Elements::DivMod64
         | Elements::Divide64
         | Elements::Modulo64
-        | Elements::Divides64 => vec![U64.into(), U64.into()],
-        Elements::DivMod128_64 => vec![U128.into(), U64.into()],
-        Elements::FullAdd8 | Elements::FullSubtract8 => vec![bool(), U8.into(), U8.into()],
-        Elements::FullAdd16 | Elements::FullSubtract16 => vec![bool(), U16.into(), U16.into()],
-        Elements::FullAdd32 | Elements::FullSubtract32 => vec![bool(), U32.into(), U32.into()],
-        Elements::FullAdd64 | Elements::FullSubtract64 => vec![bool(), U64.into(), U64.into()],
-        Elements::FullIncrement8 | Elements::FullDecrement8 => vec![bool(), U8.into()],
-        Elements::FullIncrement16 | Elements::FullDecrement16 => vec![bool(), U16.into()],
-        Elements::FullIncrement32 | Elements::FullDecrement32 => vec![bool(), U32.into()],
-        Elements::FullIncrement64 | Elements::FullDecrement64 => vec![bool(), U64.into()],
-        Elements::FullMultiply8 => vec![U8.into(), U8.into(), U8.into(), U8.into()],
-        Elements::FullMultiply16 => vec![U16.into(), U16.into(), U16.into(), U16.into()],
-        Elements::FullMultiply32 => vec![U32.into(), U32.into(), U32.into(), U32.into()],
-        Elements::FullMultiply64 => vec![U64.into(), U64.into(), U64.into(), U64.into()],
-        Elements::Median8 => vec![U8.into(), U8.into(), U8.into()],
-        Elements::Median16 => vec![U16.into(), U16.into(), U16.into()],
-        Elements::Median32 => vec![U32.into(), U32.into(), U32.into()],
-        Elements::Median64 => vec![U64.into(), U64.into(), U64.into()],
+        | Elements::Divides64 => SourceJetClassification::Binary,
+        Elements::DivMod128_64 => SourceJetClassification::Custom(vec![U128.into(), U64.into()]),
+        Elements::FullAdd8 | Elements::FullSubtract8 => {
+            SourceJetClassification::Custom(vec![bool(), U8.into(), U8.into()])
+        }
+        Elements::FullAdd16 | Elements::FullSubtract16 => {
+            SourceJetClassification::Custom(vec![bool(), U16.into(), U16.into()])
+        }
+        Elements::FullAdd32 | Elements::FullSubtract32 => {
+            SourceJetClassification::Custom(vec![bool(), U32.into(), U32.into()])
+        }
+        Elements::FullAdd64 | Elements::FullSubtract64 => {
+            SourceJetClassification::Custom(vec![bool(), U64.into(), U64.into()])
+        }
+        Elements::FullIncrement8 | Elements::FullDecrement8 => {
+            SourceJetClassification::Custom(vec![bool(), U8.into()])
+        }
+        Elements::FullIncrement16 | Elements::FullDecrement16 => {
+            SourceJetClassification::Custom(vec![bool(), U16.into()])
+        }
+        Elements::FullIncrement32 | Elements::FullDecrement32 => {
+            SourceJetClassification::Custom(vec![bool(), U32.into()])
+        }
+        Elements::FullIncrement64 | Elements::FullDecrement64 => {
+            SourceJetClassification::Custom(vec![bool(), U64.into()])
+        }
+        Elements::FullMultiply8 => SourceJetClassification::Quaternary,
+        Elements::FullMultiply16 => SourceJetClassification::Quaternary,
+        Elements::FullMultiply32 => SourceJetClassification::Quaternary,
+        Elements::FullMultiply64 => SourceJetClassification::Quaternary,
+        Elements::Median8 => SourceJetClassification::Ternary,
+        Elements::Median16 => SourceJetClassification::Ternary,
+        Elements::Median32 => SourceJetClassification::Ternary,
+        Elements::Median64 => SourceJetClassification::Ternary,
         /*
          * Hash functions
          */
-        Elements::Sha256Iv | Elements::Sha256Ctx8Init => vec![],
-        Elements::Sha256Block => vec![U256.into(), U256.into(), U256.into()],
-        Elements::Sha256Ctx8Add1 => vec![Ctx8.into(), U8.into()],
-        Elements::Sha256Ctx8Add2 => vec![Ctx8.into(), U16.into()],
-        Elements::Sha256Ctx8Add4 => vec![Ctx8.into(), U32.into()],
-        Elements::Sha256Ctx8Add8 => vec![Ctx8.into(), U64.into()],
-        Elements::Sha256Ctx8Add16 => vec![Ctx8.into(), U128.into()],
-        Elements::Sha256Ctx8Add32 => vec![Ctx8.into(), U256.into()],
-        Elements::Sha256Ctx8Add64 => vec![Ctx8.into(), array(U8, 64)],
-        Elements::Sha256Ctx8Add128 => vec![Ctx8.into(), array(U8, 128)],
-        Elements::Sha256Ctx8Add256 => vec![Ctx8.into(), array(U8, 256)],
-        Elements::Sha256Ctx8Add512 => vec![Ctx8.into(), array(U8, 512)],
-        Elements::Sha256Ctx8AddBuffer511 => vec![Ctx8.into(), list(U8, 512)],
-        Elements::Sha256Ctx8Finalize => vec![Ctx8.into()],
+        Elements::Sha256Iv | Elements::Sha256Ctx8Init => SourceJetClassification::Unary,
+        Elements::Sha256Block => SourceJetClassification::Ternary,
+        Elements::Sha256Ctx8Add1 => SourceJetClassification::Custom(vec![Ctx8.into(), U8.into()]),
+        Elements::Sha256Ctx8Add2 => SourceJetClassification::Custom(vec![Ctx8.into(), U16.into()]),
+        Elements::Sha256Ctx8Add4 => SourceJetClassification::Custom(vec![Ctx8.into(), U32.into()]),
+        Elements::Sha256Ctx8Add8 => SourceJetClassification::Custom(vec![Ctx8.into(), U64.into()]),
+        Elements::Sha256Ctx8Add16 => {
+            SourceJetClassification::Custom(vec![Ctx8.into(), U128.into()])
+        }
+        Elements::Sha256Ctx8Add32 => {
+            SourceJetClassification::Custom(vec![Ctx8.into(), U256.into()])
+        }
+        Elements::Sha256Ctx8Add64 => {
+            SourceJetClassification::Custom(vec![Ctx8.into(), array(U8, 64)])
+        }
+        Elements::Sha256Ctx8Add128 => {
+            SourceJetClassification::Custom(vec![Ctx8.into(), array(U8, 128)])
+        }
+        Elements::Sha256Ctx8Add256 => {
+            SourceJetClassification::Custom(vec![Ctx8.into(), array(U8, 256)])
+        }
+        Elements::Sha256Ctx8Add512 => {
+            SourceJetClassification::Custom(vec![Ctx8.into(), array(U8, 512)])
+        }
+        Elements::Sha256Ctx8AddBuffer511 => {
+            SourceJetClassification::Custom(vec![Ctx8.into(), list(U8, 512)])
+        }
+        Elements::Sha256Ctx8Finalize => SourceJetClassification::Custom(vec![Ctx8.into()]),
         /*
          * Elliptic curve functions
          */
         // XXX: Nonstandard tuple
-        Elements::PointVerify1 => {
-            vec![tuple([tuple([Scalar, Point]), Scalar.into()]), Point.into()]
+        Elements::PointVerify1 => SourceJetClassification::Custom(vec![
+            tuple([tuple([Scalar, Point]), Scalar.into()]),
+            Point.into(),
+        ]),
+        Elements::Decompress => SourceJetClassification::Custom(vec![Point.into()]),
+        // XXX: Nonstandard tuple
+        Elements::LinearVerify1 => SourceJetClassification::Custom(vec![
+            tuple([tuple([Scalar, Ge]), Scalar.into()]),
+            Ge.into(),
+        ]),
+        // XXX: Nonstandard tuple
+        Elements::LinearCombination1 => {
+            SourceJetClassification::Custom(vec![tuple([Scalar, Gej]), Scalar.into()])
         }
-        Elements::Decompress => vec![Point.into()],
-        // XXX: Nonstandard tuple
-        Elements::LinearVerify1 => vec![tuple([tuple([Scalar, Ge]), Scalar.into()]), Ge.into()],
-        // XXX: Nonstandard tuple
-        Elements::LinearCombination1 => vec![tuple([Scalar, Gej]), Scalar.into()],
-        Elements::Scale => vec![Scalar.into(), Gej.into()],
-        Elements::Generate => vec![Scalar.into()],
-        Elements::GejInfinity => vec![],
+        Elements::Scale => SourceJetClassification::Custom(vec![Scalar.into(), Gej.into()]),
+        Elements::Generate => SourceJetClassification::Custom(vec![Scalar.into()]),
+        Elements::GejInfinity => SourceJetClassification::Unary,
         Elements::GejNormalize
         | Elements::GejNegate
         | Elements::GejDouble
         | Elements::GejIsInfinity
         | Elements::GejYIsOdd
-        | Elements::GejIsOnCurve => vec![Gej.into()],
-        Elements::GeNegate | Elements::GeIsOnCurve => vec![Ge.into()],
-        Elements::GejAdd | Elements::GejEquiv => vec![Gej.into(), Gej.into()],
-        Elements::GejGeAddEx | Elements::GejGeAdd | Elements::GejGeEquiv => {
-            vec![Gej.into(), Ge.into()]
+        | Elements::GejIsOnCurve => SourceJetClassification::Custom(vec![Gej.into()]),
+        Elements::GeNegate | Elements::GeIsOnCurve => {
+            SourceJetClassification::Custom(vec![Ge.into()])
         }
-        Elements::GejRescale => vec![Gej.into(), Fe.into()],
-        Elements::GejXEquiv => vec![Fe.into(), Gej.into()],
-        Elements::ScalarAdd | Elements::ScalarMultiply => vec![Scalar.into(), Scalar.into()],
+        Elements::GejAdd | Elements::GejEquiv => {
+            SourceJetClassification::Custom(vec![Gej.into(), Gej.into()])
+        }
+        Elements::GejGeAddEx | Elements::GejGeAdd | Elements::GejGeEquiv => {
+            SourceJetClassification::Custom(vec![Gej.into(), Ge.into()])
+        }
+        Elements::GejRescale => SourceJetClassification::Custom(vec![Gej.into(), Fe.into()]),
+        Elements::GejXEquiv => SourceJetClassification::Custom(vec![Fe.into(), Gej.into()]),
+        Elements::ScalarAdd | Elements::ScalarMultiply => {
+            SourceJetClassification::Custom(vec![Scalar.into(), Scalar.into()])
+        }
         Elements::ScalarNormalize
         | Elements::ScalarNegate
         | Elements::ScalarSquare
         | Elements::ScalarInvert
         | Elements::ScalarMultiplyLambda
-        | Elements::ScalarIsZero => vec![Scalar.into()],
+        | Elements::ScalarIsZero => SourceJetClassification::Custom(vec![Scalar.into()]),
         Elements::FeNormalize
         | Elements::FeNegate
         | Elements::FeSquare
@@ -443,21 +551,27 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
         | Elements::FeSquareRoot
         | Elements::FeIsZero
         | Elements::FeIsOdd
-        | Elements::Swu => vec![Fe.into()],
-        Elements::FeAdd | Elements::FeMultiply => vec![Fe.into(), Fe.into()],
-        Elements::HashToCurve => vec![U256.into()],
+        | Elements::Swu => SourceJetClassification::Custom(vec![Fe.into()]),
+        Elements::FeAdd | Elements::FeMultiply => {
+            SourceJetClassification::Custom(vec![Fe.into(), Fe.into()])
+        }
+        Elements::HashToCurve => SourceJetClassification::Unary,
         /*
          * Digital signatures
          */
         // XXX: Nonstandard tuple
-        Elements::CheckSigVerify => vec![tuple([Pubkey, Message64]), Signature.into()],
+        Elements::CheckSigVerify => {
+            SourceJetClassification::Custom(vec![tuple([Pubkey, Message64]), Signature.into()])
+        }
         // XXX: Nonstandard tuple
-        Elements::Bip0340Verify => vec![tuple([Pubkey, Message]), Signature.into()],
+        Elements::Bip0340Verify => {
+            SourceJetClassification::Custom(vec![tuple([Pubkey, Message]), Signature.into()])
+        }
         /*
          * Bitcoin (without primitives)
          */
-        Elements::TapdataInit => vec![],
-        Elements::ParseLock | Elements::ParseSequence => vec![U32.into()],
+        Elements::TapdataInit => SourceJetClassification::Unary,
+        Elements::ParseLock | Elements::ParseSequence => SourceJetClassification::Unary,
         /*
          * ==============================
          *         Elements jets
@@ -488,39 +602,49 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
         | Elements::InputAmountsHash
         | Elements::InputScriptsHash
         | Elements::TapleafHash
-        | Elements::TappathHash => vec![],
-        Elements::OutpointHash => vec![Ctx8.into(), option(U256), Outpoint.into()],
-        Elements::AssetAmountHash => {
-            vec![Ctx8.into(), Asset1.into(), Amount1.into()]
+        | Elements::TappathHash => SourceJetClassification::Unary,
+        Elements::OutpointHash => {
+            SourceJetClassification::Custom(vec![Ctx8.into(), option(U256), Outpoint.into()])
         }
-        Elements::NonceHash => vec![Ctx8.into(), option(Nonce)],
-        Elements::AnnexHash => vec![Ctx8.into(), option(U256)],
-        Elements::BuildTapleafSimplicity => vec![U256.into()],
-        Elements::BuildTapbranch => vec![U256.into(), U256.into()],
-        Elements::BuildTaptweak => vec![Pubkey.into(), U256.into()],
+        Elements::AssetAmountHash => {
+            SourceJetClassification::Custom(vec![Ctx8.into(), Asset1.into(), Amount1.into()])
+        }
+        Elements::NonceHash => SourceJetClassification::Custom(vec![Ctx8.into(), option(Nonce)]),
+        Elements::AnnexHash => SourceJetClassification::Custom(vec![Ctx8.into(), option(U256)]),
+        Elements::BuildTapleafSimplicity => SourceJetClassification::Unary,
+        Elements::BuildTapbranch => SourceJetClassification::Binary,
+        Elements::BuildTaptweak => {
+            SourceJetClassification::Custom(vec![Pubkey.into(), U256.into()])
+        }
         /*
          * Time locks
          */
-        Elements::CheckLockTime => vec![Time.into()],
-        Elements::BrokenDoNotUseCheckLockDistance => vec![Distance.into()],
-        Elements::BrokenDoNotUseCheckLockDuration => vec![Duration.into()],
-        Elements::CheckLockHeight => vec![Height.into()],
+        Elements::CheckLockTime => SourceJetClassification::Custom(vec![Time.into()]),
+        Elements::BrokenDoNotUseCheckLockDistance => {
+            SourceJetClassification::Custom(vec![Distance.into()])
+        }
+        Elements::BrokenDoNotUseCheckLockDuration => {
+            SourceJetClassification::Custom(vec![Duration.into()])
+        }
+        Elements::CheckLockHeight => SourceJetClassification::Custom(vec![Height.into()]),
         Elements::TxLockTime
         | Elements::BrokenDoNotUseTxLockDistance
         | Elements::BrokenDoNotUseTxLockDuration
         | Elements::TxLockHeight
-        | Elements::TxIsFinal => vec![],
+        | Elements::TxIsFinal => SourceJetClassification::Unary,
         /*
          * Issuance
          */
         Elements::Issuance
         | Elements::IssuanceAsset
         | Elements::IssuanceToken
-        | Elements::IssuanceEntropy => vec![U32.into()],
-        Elements::CalculateIssuanceEntropy => vec![Outpoint.into(), U256.into()],
+        | Elements::IssuanceEntropy => SourceJetClassification::Unary,
+        Elements::CalculateIssuanceEntropy => {
+            SourceJetClassification::Custom(vec![Outpoint.into(), U256.into()])
+        }
         Elements::CalculateAsset
         | Elements::CalculateExplicitToken
-        | Elements::CalculateConfidentialToken => vec![U256.into()],
+        | Elements::CalculateConfidentialToken => SourceJetClassification::Unary,
         /*
          * Transaction
          */
@@ -549,7 +673,7 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
         | Elements::Version
         | Elements::GenesisBlockHash
         | Elements::LbtcAsset
-        | Elements::TransactionId => vec![],
+        | Elements::TransactionId => SourceJetClassification::Unary,
         Elements::OutputAsset
         | Elements::OutputAmount
         | Elements::OutputNonce
@@ -575,14 +699,34 @@ pub fn source_type(jet: Elements) -> Vec<AliasedType> {
         | Elements::IssuanceTokenAmount
         | Elements::IssuanceAssetProof
         | Elements::IssuanceTokenProof
-        | Elements::IssuanceHash => vec![U32.into()],
-        Elements::OutputNullDatum => vec![U32.into(), U32.into()],
-        Elements::TotalFee => vec![ExplicitAsset.into()],
-        Elements::Tappath => vec![U8.into()],
+        | Elements::IssuanceHash => SourceJetClassification::Unary,
+        Elements::OutputNullDatum => SourceJetClassification::Binary,
+        Elements::TotalFee => SourceJetClassification::Custom(vec![ExplicitAsset.into()]),
+        Elements::Tappath => SourceJetClassification::Unary,
     }
 }
 
-pub fn target_type(jet: Elements) -> AliasedType {
+pub fn source_type(jet: Elements) -> Vec<AliasedType> {
+    let source_class = source_jet_classification(jet);
+    if let SourceJetClassification::Custom(custom_type) = source_class {
+        return custom_type;
+    }
+
+    let divisor = source_class.divisor();
+    let component_bit_width = jet.source_ty().to_bit_width() / divisor;
+    if component_bit_width == 0 {
+        return Vec::new();
+    }
+
+    let pow_of_2 = Pow2Usize::new(component_bit_width)
+        .expect("the width of the source type should be power of 2");
+    let num_type =
+        UIntType::from_bit_width(pow_of_2).expect("the source type should be one of defined");
+
+    vec![AliasedType::from(num_type); divisor]
+}
+
+fn target_jet_classification(jet: Elements) -> TargetJetClassification {
     match jet {
         /*
          * ==============================
@@ -591,7 +735,7 @@ pub fn target_type(jet: Elements) -> AliasedType {
          *
          * Multi-bit logic
          */
-        Elements::Verify => AliasedType::unit(),
+        Elements::Verify => TargetJetClassification::Unary,
         Elements::Some1
         | Elements::Some8
         | Elements::Some16
@@ -606,7 +750,7 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::Eq16
         | Elements::Eq32
         | Elements::Eq64
-        | Elements::Eq256 => bool(),
+        | Elements::Eq256 => TargetJetClassification::Custom(bool()),
         Elements::Low1
         | Elements::High1
         | Elements::Complement1
@@ -623,7 +767,7 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::Leftmost32_1
         | Elements::Rightmost32_1
         | Elements::Leftmost64_1
-        | Elements::Rightmost64_1 => U1.into(),
+        | Elements::Rightmost64_1 => TargetJetClassification::Unary,
         Elements::Leftmost8_2
         | Elements::Rightmost8_2
         | Elements::Leftmost16_2
@@ -631,7 +775,7 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::Leftmost32_2
         | Elements::Rightmost32_2
         | Elements::Leftmost64_2
-        | Elements::Rightmost64_2 => U2.into(),
+        | Elements::Rightmost64_2 => TargetJetClassification::Unary,
         Elements::Leftmost8_4
         | Elements::Rightmost8_4
         | Elements::Leftmost16_4
@@ -639,7 +783,7 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::Leftmost32_4
         | Elements::Rightmost32_4
         | Elements::Leftmost64_4
-        | Elements::Rightmost64_4 => U4.into(),
+        | Elements::Rightmost64_4 => TargetJetClassification::Unary,
         Elements::Low8
         | Elements::High8
         | Elements::Complement8
@@ -665,7 +809,7 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::LeftShift8
         | Elements::RightShift8
         | Elements::LeftRotate8
-        | Elements::RightRotate8 => U8.into(),
+        | Elements::RightRotate8 => TargetJetClassification::Unary,
         Elements::Low16
         | Elements::High16
         | Elements::Complement16
@@ -695,7 +839,7 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::LeftShift16
         | Elements::RightShift16
         | Elements::LeftRotate16
-        | Elements::RightRotate16 => U16.into(),
+        | Elements::RightRotate16 => TargetJetClassification::Unary,
         Elements::Low32
         | Elements::High32
         | Elements::Complement32
@@ -729,7 +873,7 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::LeftShift32
         | Elements::RightShift32
         | Elements::LeftRotate32
-        | Elements::RightRotate32 => U32.into(),
+        | Elements::RightRotate32 => TargetJetClassification::Unary,
         Elements::Low64
         | Elements::High64
         | Elements::Complement64
@@ -767,43 +911,43 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::LeftShift64
         | Elements::RightShift64
         | Elements::LeftRotate64
-        | Elements::RightRotate64 => U64.into(),
-        Elements::FullLeftShift8_1 => tuple([U1, U8]),
-        Elements::FullLeftShift8_2 => tuple([U2, U8]),
-        Elements::FullLeftShift8_4 => tuple([U4, U8]),
-        Elements::FullLeftShift16_1 => tuple([U1, U16]),
-        Elements::FullLeftShift16_2 => tuple([U2, U16]),
-        Elements::FullLeftShift16_4 => tuple([U4, U16]),
-        Elements::FullLeftShift16_8 => tuple([U8, U16]),
-        Elements::FullLeftShift32_1 => tuple([U1, U32]),
-        Elements::FullLeftShift32_2 => tuple([U2, U32]),
-        Elements::FullLeftShift32_4 => tuple([U4, U32]),
-        Elements::FullLeftShift32_8 => tuple([U8, U32]),
-        Elements::FullLeftShift32_16 => tuple([U16, U32]),
-        Elements::FullLeftShift64_1 => tuple([U1, U64]),
-        Elements::FullLeftShift64_2 => tuple([U2, U64]),
-        Elements::FullLeftShift64_4 => tuple([U4, U64]),
-        Elements::FullLeftShift64_8 => tuple([U8, U64]),
-        Elements::FullLeftShift64_16 => tuple([U16, U64]),
-        Elements::FullLeftShift64_32 => tuple([U32, U64]),
-        Elements::FullRightShift8_1 => tuple([U8, U1]),
-        Elements::FullRightShift8_2 => tuple([U8, U2]),
-        Elements::FullRightShift8_4 => tuple([U8, U4]),
-        Elements::FullRightShift16_1 => tuple([U16, U1]),
-        Elements::FullRightShift16_2 => tuple([U16, U2]),
-        Elements::FullRightShift16_4 => tuple([U16, U4]),
-        Elements::FullRightShift16_8 => tuple([U16, U8]),
-        Elements::FullRightShift32_1 => tuple([U32, U1]),
-        Elements::FullRightShift32_2 => tuple([U32, U2]),
-        Elements::FullRightShift32_4 => tuple([U32, U4]),
-        Elements::FullRightShift32_8 => tuple([U32, U8]),
-        Elements::FullRightShift32_16 => tuple([U32, U16]),
-        Elements::FullRightShift64_1 => tuple([U64, U1]),
-        Elements::FullRightShift64_2 => tuple([U64, U2]),
-        Elements::FullRightShift64_4 => tuple([U64, U4]),
-        Elements::FullRightShift64_8 => tuple([U64, U8]),
-        Elements::FullRightShift64_16 => tuple([U64, U16]),
-        Elements::FullRightShift64_32 => tuple([U64, U32]),
+        | Elements::RightRotate64 => TargetJetClassification::Unary,
+        Elements::FullLeftShift8_1 => TargetJetClassification::Custom(tuple([U1, U8])),
+        Elements::FullLeftShift8_2 => TargetJetClassification::Custom(tuple([U2, U8])),
+        Elements::FullLeftShift8_4 => TargetJetClassification::Custom(tuple([U4, U8])),
+        Elements::FullLeftShift16_1 => TargetJetClassification::Custom(tuple([U1, U16])),
+        Elements::FullLeftShift16_2 => TargetJetClassification::Custom(tuple([U2, U16])),
+        Elements::FullLeftShift16_4 => TargetJetClassification::Custom(tuple([U4, U16])),
+        Elements::FullLeftShift16_8 => TargetJetClassification::Custom(tuple([U8, U16])),
+        Elements::FullLeftShift32_1 => TargetJetClassification::Custom(tuple([U1, U32])),
+        Elements::FullLeftShift32_2 => TargetJetClassification::Custom(tuple([U2, U32])),
+        Elements::FullLeftShift32_4 => TargetJetClassification::Custom(tuple([U4, U32])),
+        Elements::FullLeftShift32_8 => TargetJetClassification::Custom(tuple([U8, U32])),
+        Elements::FullLeftShift32_16 => TargetJetClassification::Custom(tuple([U16, U32])),
+        Elements::FullLeftShift64_1 => TargetJetClassification::Custom(tuple([U1, U64])),
+        Elements::FullLeftShift64_2 => TargetJetClassification::Custom(tuple([U2, U64])),
+        Elements::FullLeftShift64_4 => TargetJetClassification::Custom(tuple([U4, U64])),
+        Elements::FullLeftShift64_8 => TargetJetClassification::Custom(tuple([U8, U64])),
+        Elements::FullLeftShift64_16 => TargetJetClassification::Custom(tuple([U16, U64])),
+        Elements::FullLeftShift64_32 => TargetJetClassification::Custom(tuple([U32, U64])),
+        Elements::FullRightShift8_1 => TargetJetClassification::Custom(tuple([U8, U1])),
+        Elements::FullRightShift8_2 => TargetJetClassification::Custom(tuple([U8, U2])),
+        Elements::FullRightShift8_4 => TargetJetClassification::Custom(tuple([U8, U4])),
+        Elements::FullRightShift16_1 => TargetJetClassification::Custom(tuple([U16, U1])),
+        Elements::FullRightShift16_2 => TargetJetClassification::Custom(tuple([U16, U2])),
+        Elements::FullRightShift16_4 => TargetJetClassification::Custom(tuple([U16, U4])),
+        Elements::FullRightShift16_8 => TargetJetClassification::Custom(tuple([U16, U8])),
+        Elements::FullRightShift32_1 => TargetJetClassification::Custom(tuple([U32, U1])),
+        Elements::FullRightShift32_2 => TargetJetClassification::Custom(tuple([U32, U2])),
+        Elements::FullRightShift32_4 => TargetJetClassification::Custom(tuple([U32, U4])),
+        Elements::FullRightShift32_8 => TargetJetClassification::Custom(tuple([U32, U8])),
+        Elements::FullRightShift32_16 => TargetJetClassification::Custom(tuple([U32, U16])),
+        Elements::FullRightShift64_1 => TargetJetClassification::Custom(tuple([U64, U1])),
+        Elements::FullRightShift64_2 => TargetJetClassification::Custom(tuple([U64, U2])),
+        Elements::FullRightShift64_4 => TargetJetClassification::Custom(tuple([U64, U4])),
+        Elements::FullRightShift64_8 => TargetJetClassification::Custom(tuple([U64, U8])),
+        Elements::FullRightShift64_16 => TargetJetClassification::Custom(tuple([U64, U16])),
+        Elements::FullRightShift64_32 => TargetJetClassification::Custom(tuple([U64, U32])),
         /*
          * Arithmetic
          */
@@ -826,13 +970,13 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::Divides8
         | Elements::Divides16
         | Elements::Divides32
-        | Elements::Divides64 => bool(),
+        | Elements::Divides64 => TargetJetClassification::Custom(bool()),
         Elements::One8
         | Elements::Min8
         | Elements::Max8
         | Elements::Divide8
         | Elements::Modulo8
-        | Elements::Median8 => U8.into(),
+        | Elements::Median8 => TargetJetClassification::Unary,
         Elements::One16
         | Elements::Min16
         | Elements::Max16
@@ -840,7 +984,7 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::Modulo16
         | Elements::Multiply8
         | Elements::FullMultiply8
-        | Elements::Median16 => U16.into(),
+        | Elements::Median16 => TargetJetClassification::Unary,
         Elements::One32
         | Elements::Min32
         | Elements::Max32
@@ -848,7 +992,7 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::Modulo32
         | Elements::Multiply16
         | Elements::FullMultiply16
-        | Elements::Median32 => U32.into(),
+        | Elements::Median32 => TargetJetClassification::Unary,
         Elements::One64
         | Elements::Min64
         | Elements::Max64
@@ -856,8 +1000,8 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::Modulo64
         | Elements::Multiply32
         | Elements::FullMultiply32
-        | Elements::Median64 => U64.into(),
-        Elements::Multiply64 | Elements::FullMultiply64 => U128.into(),
+        | Elements::Median64 => TargetJetClassification::Unary,
+        Elements::Multiply64 | Elements::FullMultiply64 => TargetJetClassification::Unary,
         Elements::Increment8
         | Elements::Negate8
         | Elements::Decrement8
@@ -866,7 +1010,7 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::FullAdd8
         | Elements::FullSubtract8
         | Elements::FullIncrement8
-        | Elements::FullDecrement8 => tuple([bool(), U8.into()]),
+        | Elements::FullDecrement8 => TargetJetClassification::Custom(tuple([bool(), U8.into()])),
         Elements::Increment16
         | Elements::Negate16
         | Elements::Decrement16
@@ -875,7 +1019,7 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::FullAdd16
         | Elements::FullSubtract16
         | Elements::FullIncrement16
-        | Elements::FullDecrement16 => tuple([bool(), U16.into()]),
+        | Elements::FullDecrement16 => TargetJetClassification::Custom(tuple([bool(), U16.into()])),
         Elements::Increment32
         | Elements::Negate32
         | Elements::Decrement32
@@ -884,7 +1028,7 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::FullAdd32
         | Elements::FullSubtract32
         | Elements::FullIncrement32
-        | Elements::FullDecrement32 => tuple([bool(), U32.into()]),
+        | Elements::FullDecrement32 => TargetJetClassification::Custom(tuple([bool(), U32.into()])),
         Elements::Increment64
         | Elements::Negate64
         | Elements::Decrement64
@@ -893,16 +1037,18 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::FullAdd64
         | Elements::FullSubtract64
         | Elements::FullIncrement64
-        | Elements::FullDecrement64 => tuple([bool(), U64.into()]),
-        Elements::DivMod8 => tuple([U8, U8]),
-        Elements::DivMod16 => tuple([U16, U16]),
-        Elements::DivMod32 => tuple([U32, U32]),
-        Elements::DivMod64 => tuple([U64, U64]),
-        Elements::DivMod128_64 => tuple([U64, U64]),
+        | Elements::FullDecrement64 => TargetJetClassification::Custom(tuple([bool(), U64.into()])),
+        Elements::DivMod8 => TargetJetClassification::Custom(tuple([U8, U8])),
+        Elements::DivMod16 => TargetJetClassification::Custom(tuple([U16, U16])),
+        Elements::DivMod32 => TargetJetClassification::Custom(tuple([U32, U32])),
+        Elements::DivMod64 => TargetJetClassification::Custom(tuple([U64, U64])),
+        Elements::DivMod128_64 => TargetJetClassification::Custom(tuple([U64, U64])),
         /*
          * Hash functions
          */
-        Elements::Sha256Iv | Elements::Sha256Block | Elements::Sha256Ctx8Finalize => U256.into(),
+        Elements::Sha256Iv | Elements::Sha256Block | Elements::Sha256Ctx8Finalize => {
+            TargetJetClassification::Unary
+        }
         Elements::Sha256Ctx8Init
         | Elements::Sha256Ctx8Add1
         | Elements::Sha256Ctx8Add2
@@ -914,11 +1060,11 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::Sha256Ctx8Add128
         | Elements::Sha256Ctx8Add256
         | Elements::Sha256Ctx8Add512
-        | Elements::Sha256Ctx8AddBuffer511 => Ctx8.into(),
+        | Elements::Sha256Ctx8AddBuffer511 => TargetJetClassification::Custom(Ctx8.into()),
         /*
          * Elliptic curve functions
          */
-        Elements::PointVerify1 | Elements::LinearVerify1 => AliasedType::unit(),
+        Elements::PointVerify1 | Elements::LinearVerify1 => TargetJetClassification::Unary,
         Elements::GejIsInfinity
         | Elements::GejEquiv
         | Elements::GejGeEquiv
@@ -928,9 +1074,13 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::GeIsOnCurve
         | Elements::ScalarIsZero
         | Elements::FeIsZero
-        | Elements::FeIsOdd => bool(),
-        Elements::GeNegate | Elements::HashToCurve | Elements::Swu => Ge.into(),
-        Elements::Decompress | Elements::GejNormalize => option(Ge),
+        | Elements::FeIsOdd => TargetJetClassification::Custom(bool()),
+        Elements::GeNegate | Elements::HashToCurve | Elements::Swu => {
+            TargetJetClassification::Custom(Ge.into())
+        }
+        Elements::Decompress | Elements::GejNormalize => {
+            TargetJetClassification::Custom(option(Ge))
+        }
         Elements::LinearCombination1
         | Elements::Scale
         | Elements::Generate
@@ -939,33 +1089,35 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::GejDouble
         | Elements::GejAdd
         | Elements::GejGeAdd
-        | Elements::GejRescale => Gej.into(),
-        Elements::GejGeAddEx => tuple([Fe, Gej]),
+        | Elements::GejRescale => TargetJetClassification::Custom(Gej.into()),
+        Elements::GejGeAddEx => TargetJetClassification::Custom(tuple([Fe, Gej])),
         Elements::ScalarNormalize
         | Elements::ScalarNegate
         | Elements::ScalarAdd
         | Elements::ScalarSquare
         | Elements::ScalarMultiply
         | Elements::ScalarMultiplyLambda
-        | Elements::ScalarInvert => Scalar.into(),
+        | Elements::ScalarInvert => TargetJetClassification::Custom(Scalar.into()),
         Elements::FeNormalize
         | Elements::FeNegate
         | Elements::FeAdd
         | Elements::FeSquare
         | Elements::FeMultiply
         | Elements::FeMultiplyBeta
-        | Elements::FeInvert => Fe.into(),
-        Elements::FeSquareRoot => option(Fe),
+        | Elements::FeInvert => TargetJetClassification::Custom(Fe.into()),
+        Elements::FeSquareRoot => TargetJetClassification::Custom(option(Fe)),
         /*
          * Digital signatures
          */
-        Elements::CheckSigVerify | Elements::Bip0340Verify => AliasedType::unit(),
+        Elements::CheckSigVerify | Elements::Bip0340Verify => TargetJetClassification::Unary,
         /*
          * Bitcoin (without primitives)
          */
-        Elements::ParseLock => either(Height, Time),
-        Elements::ParseSequence => option(either(Distance, Duration)),
-        Elements::TapdataInit => Ctx8.into(),
+        Elements::ParseLock => TargetJetClassification::Custom(either(Height, Time)),
+        Elements::ParseSequence => {
+            TargetJetClassification::Custom(option(either(Distance, Duration)))
+        }
+        Elements::TapdataInit => TargetJetClassification::Custom(Ctx8.into()),
         /*
          * ==============================
          *         Elements jets
@@ -999,42 +1151,46 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::TappathHash
         | Elements::BuildTapleafSimplicity
         | Elements::BuildTapbranch
-        | Elements::BuildTaptweak => U256.into(),
+        | Elements::BuildTaptweak => TargetJetClassification::Unary,
         Elements::OutpointHash
         | Elements::AssetAmountHash
         | Elements::NonceHash
-        | Elements::AnnexHash => Ctx8.into(),
+        | Elements::AnnexHash => TargetJetClassification::Custom(Ctx8.into()),
         /*
          * Time locks
          */
         Elements::CheckLockTime
         | Elements::BrokenDoNotUseCheckLockDistance
         | Elements::BrokenDoNotUseCheckLockDuration
-        | Elements::CheckLockHeight => AliasedType::unit(),
-        Elements::TxIsFinal => bool(),
-        Elements::TxLockTime => Time.into(),
-        Elements::BrokenDoNotUseTxLockDistance => Distance.into(),
-        Elements::BrokenDoNotUseTxLockDuration => Duration.into(),
-        Elements::TxLockHeight => Height.into(),
+        | Elements::CheckLockHeight => TargetJetClassification::Unary,
+        Elements::TxIsFinal => TargetJetClassification::Custom(bool()),
+        Elements::TxLockTime => TargetJetClassification::Custom(Time.into()),
+        Elements::BrokenDoNotUseTxLockDistance => TargetJetClassification::Custom(Distance.into()),
+        Elements::BrokenDoNotUseTxLockDuration => TargetJetClassification::Custom(Duration.into()),
+        Elements::TxLockHeight => TargetJetClassification::Custom(Height.into()),
         /*
          * Issuance
          */
-        Elements::Issuance => option(option(bool())),
-        Elements::IssuanceAsset | Elements::IssuanceToken => option(option(ExplicitAsset)),
-        Elements::IssuanceEntropy => option(option(U256)),
-        Elements::CalculateIssuanceEntropy => U256.into(),
+        Elements::Issuance => TargetJetClassification::Custom(option(option(bool()))),
+        Elements::IssuanceAsset | Elements::IssuanceToken => {
+            TargetJetClassification::Custom(option(option(ExplicitAsset)))
+        }
+        Elements::IssuanceEntropy => TargetJetClassification::Custom(option(option(U256))),
+        Elements::CalculateIssuanceEntropy => TargetJetClassification::Unary,
         Elements::CalculateAsset
         | Elements::CalculateExplicitToken
-        | Elements::CalculateConfidentialToken => ExplicitAsset.into(),
+        | Elements::CalculateConfidentialToken => {
+            TargetJetClassification::Custom(ExplicitAsset.into())
+        }
         /*
          * Transaction
          */
-        Elements::TapleafVersion => U8.into(),
+        Elements::TapleafVersion => TargetJetClassification::Unary,
         Elements::CurrentIndex
         | Elements::NumInputs
         | Elements::NumOutputs
         | Elements::CurrentSequence
-        | Elements::Version => U32.into(),
+        | Elements::Version => TargetJetClassification::Unary,
         Elements::ScriptCMR
         | Elements::CurrentScriptHash
         | Elements::CurrentScriptSigHash
@@ -1042,13 +1198,13 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::CurrentIssuanceTokenProof
         | Elements::GenesisBlockHash
         | Elements::LbtcAsset
-        | Elements::TransactionId => U256.into(),
-        Elements::InternalKey => Pubkey.into(),
-        Elements::LockTime => Lock.into(),
-        Elements::InputSequence => option(U32),
-        Elements::OutputAsset => option(Asset1),
-        Elements::OutputAmount => option(tuple([Asset1, Amount1])),
-        Elements::OutputNonce => option(option(Nonce)),
+        | Elements::TransactionId => TargetJetClassification::Unary,
+        Elements::InternalKey => TargetJetClassification::Custom(Pubkey.into()),
+        Elements::LockTime => TargetJetClassification::Custom(Lock.into()),
+        Elements::InputSequence => TargetJetClassification::Custom(option(U32)),
+        Elements::OutputAsset => TargetJetClassification::Custom(option(Asset1)),
+        Elements::OutputAmount => TargetJetClassification::Custom(option(tuple([Asset1, Amount1]))),
+        Elements::OutputNonce => TargetJetClassification::Custom(option(option(Nonce))),
         Elements::OutputScriptHash
         | Elements::OutputSurjectionProof
         | Elements::OutputRangeProof
@@ -1064,27 +1220,53 @@ pub fn target_type(jet: Elements) -> AliasedType {
         | Elements::IssuanceAssetProof
         | Elements::IssuanceTokenProof
         | Elements::IssuanceHash
-        | Elements::Tappath => option(U256),
-        Elements::OutputNullDatum => option(option(either(tuple([U2, U256]), either(U1, U4)))),
-        Elements::OutputIsFee => option(bool()),
-        Elements::TotalFee => ExplicitAmount.into(),
-        Elements::CurrentPrevOutpoint => Outpoint.into(),
-        Elements::CurrentAsset => Asset1.into(),
-        Elements::CurrentAmount => tuple([Asset1, Amount1]),
-        Elements::CurrentReissuanceBlinding => option(ExplicitNonce),
-        Elements::CurrentIssuanceAssetAmount => option(Amount1),
-        Elements::CurrentIssuanceTokenAmount => option(TokenAmount1),
+        | Elements::Tappath => TargetJetClassification::Custom(option(U256)),
+        Elements::OutputNullDatum => TargetJetClassification::Custom(option(option(either(
+            tuple([U2, U256]),
+            either(U1, U4),
+        )))),
+        Elements::OutputIsFee => TargetJetClassification::Custom(option(bool())),
+        Elements::TotalFee => TargetJetClassification::Custom(ExplicitAmount.into()),
+        Elements::CurrentPrevOutpoint => TargetJetClassification::Custom(Outpoint.into()),
+        Elements::CurrentAsset => TargetJetClassification::Custom(Asset1.into()),
+        Elements::CurrentAmount => TargetJetClassification::Custom(tuple([Asset1, Amount1])),
+        Elements::CurrentReissuanceBlinding => {
+            TargetJetClassification::Custom(option(ExplicitNonce))
+        }
+        Elements::CurrentIssuanceAssetAmount => TargetJetClassification::Custom(option(Amount1)),
+        Elements::CurrentIssuanceTokenAmount => {
+            TargetJetClassification::Custom(option(TokenAmount1))
+        }
         Elements::InputPegin
         | Elements::InputAnnexHash
         | Elements::NewIssuanceContract
-        | Elements::ReissuanceEntropy => option(option(U256)),
-        Elements::InputPrevOutpoint => option(Outpoint),
-        Elements::InputAsset => option(Asset1),
-        Elements::InputAmount => option(tuple([Asset1, Amount1])),
-        Elements::ReissuanceBlinding => option(option(ExplicitNonce)),
-        Elements::IssuanceAssetAmount => option(option(Amount1)),
-        Elements::IssuanceTokenAmount => option(option(TokenAmount1)),
+        | Elements::ReissuanceEntropy => TargetJetClassification::Custom(option(option(U256))),
+        Elements::InputPrevOutpoint => TargetJetClassification::Custom(option(Outpoint)),
+        Elements::InputAsset => TargetJetClassification::Custom(option(Asset1)),
+        Elements::InputAmount => TargetJetClassification::Custom(option(tuple([Asset1, Amount1]))),
+        Elements::ReissuanceBlinding => {
+            TargetJetClassification::Custom(option(option(ExplicitNonce)))
+        }
+        Elements::IssuanceAssetAmount => TargetJetClassification::Custom(option(option(Amount1))),
+        Elements::IssuanceTokenAmount => {
+            TargetJetClassification::Custom(option(option(TokenAmount1)))
+        }
     }
+}
+
+pub fn target_type(jet: Elements) -> AliasedType {
+    if let TargetJetClassification::Custom(custom_type) = target_jet_classification(jet) {
+        return custom_type;
+    }
+
+    let bit_width = jet.target_ty().to_bit_width();
+    if bit_width == 0 {
+        return AliasedType::unit();
+    }
+
+    let pow_of_2 = Pow2Usize::new(bit_width).expect("should be fine");
+    let num_type = UIntType::from_bit_width(pow_of_2).expect("should exist");
+    AliasedType::from(num_type)
 }
 
 #[cfg(test)]
