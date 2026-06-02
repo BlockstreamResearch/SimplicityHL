@@ -13,35 +13,29 @@
 //! to build a Directed Acyclic Graph (DAG) of the project's dependencies. Because
 //! the final AST requires a flat array of items, the driver applies a deterministic
 //! linearization strategy to this DAG. This safely flattens the multi-file project
-//! into a single, logically ordered sequence, strictly enforcing visibility rules
-//! and preventing duplicate imports.
+//! into a single, logically ordered sequence.
 //!
 //! ## Project Structure & Entry Point
 //!
-//! SimplicityHL does not define a "project root" directory. Instead, the compiler
-//! relies on a single entry point: the file passed as the first positional argument.
-//! This file must contain the `main` function, which serves as the program's
-//! starting point.
+//! SimplicityHL programs begin execution at a single entry point file,
+//! which the driver registers internally as the root [`MAIN_MODULE`].
+//! This is typically the file passed as the root to the [`DependencyGraph::new`] function.
 //!
 //! External libraries are explicitly linked using the `--dep` flag. The driver
 //! resolves and parses these external files relative to the entry point during
 //! the dependency graph construction.
 
 mod linearization;
-pub(crate) mod resolve_order;
+mod resolve_order;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use chumsky::container::Container;
-
 use crate::error::{Error, ErrorCollector, RichError, Span};
 use crate::parse::{self, ParseFromStrWithErrors};
 use crate::resolution::{DependencyMap, ResolvedUse};
 use crate::source::{CanonPath, CanonSourceFile};
-
-pub use crate::driver::resolve_order::{FileScoped, Program, SymbolTable};
 
 /// The reserved identifier for the program's entry point.
 pub(crate) const MAIN_STR: &str = "main";
@@ -249,7 +243,7 @@ impl DependencyGraph {
     ///
     /// Results are cached in `use_cache` to avoid redundant filesystem lookups during
     /// later construction phases.
-    /// Note: This is a specialized helper designed exclusively for [`DependencyGraph::new()`].
+    /// Note: This is a specialized helper designed exclusively for [`DependencyGraph::new`].
     fn resolve_imports(
         current_program: &parse::Program,
         importer_source: &CanonSourceFile,
@@ -272,7 +266,7 @@ impl DependencyGraph {
     }
 
     /// PHASE 2 OF GRAPH CONSTRUCTION: Loads, parses, and registers new dependencies.
-    /// Note: This is a specialized helper designed exclusively for [`DependencyGraph::new()`].
+    /// Note: This is a specialized helper designed exclusively for [`DependencyGraph::new`].
     fn load_and_parse_dependencies(
         &mut self,
         current: &CurrentModule,
@@ -295,7 +289,7 @@ impl DependencyGraph {
             let Some(module) =
                 Self::parse_and_get_source_module(&path, current.source, import_span, ctx.handler)
             else {
-                ctx.invalid_imports.push(path);
+                ctx.invalid_imports.insert(path);
                 continue;
             };
 
@@ -366,7 +360,7 @@ impl<'a> ImportContext<'a> {
 }
 
 /// Shared mutable state threaded through dependency loading.
-/// Lives only for the duration of [`DependencyGraph::new()`].
+/// Lives only for the duration of [`DependencyGraph::new`].
 struct LoadContext<'a> {
     invalid_imports: &'a mut HashSet<CanonPath>,
     handler: &'a mut ErrorCollector,
