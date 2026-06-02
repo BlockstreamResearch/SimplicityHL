@@ -165,7 +165,7 @@ impl DependencyGraph {
         let mut invalid_imports = HashSet::new();
 
         while let Some(curr_id) = queue.pop_front() {
-            let Some(current_module) = graph.modules.get(curr_id) else {
+            let Some(current_source_module) = graph.modules.get(curr_id) else {
                 return Err(format!(
                     "Internal Driver Error: Module ID {} is in the queue but missing from the graph.modules.",
                     curr_id
@@ -173,11 +173,15 @@ impl DependencyGraph {
             };
 
             // We need this to report errors inside THIS file.
-            let importer_source = current_module.source.clone();
+            let importer_source = current_source_module.source.clone();
+            let current = CurrentModule {
+                id: curr_id,
+                source: importer_source,
+            };
 
             let valid_imports = Self::resolve_imports(
-                &current_module.program,
-                &importer_source,
+                &current_source_module.program,
+                &current,
                 &graph.dependency_map,
                 &mut use_cache,
                 handler,
@@ -187,10 +191,6 @@ impl DependencyGraph {
                 invalid_imports: &mut invalid_imports,
                 handler,
                 queue: &mut queue,
-            };
-            let current = CurrentModule {
-                id: curr_id,
-                source: &importer_source,
             };
             graph.load_and_parse_dependencies(&current, valid_imports, &mut ctx);
         }
@@ -246,13 +246,13 @@ impl DependencyGraph {
     /// Note: This is a specialized helper designed exclusively for [`DependencyGraph::new`].
     fn resolve_imports(
         current_program: &parse::Program,
-        importer_source: &CanonSourceFile,
+        current_module: &CurrentModule,
         dependency_map: &DependencyMap,
         use_cache: &mut HashMap<parse::UseDecl, ResolvedUse>,
         handler: &mut ErrorCollector,
     ) -> Vec<(CanonPath, Span)> {
         let mut ctx = ImportContext {
-            importer_source,
+            current: current_module.clone(),
             dependency_map,
             use_cache,
             handler,
@@ -287,9 +287,10 @@ impl DependencyGraph {
             }
 
             let Some(module) =
-                Self::parse_and_get_source_module(&path, current.source, import_span, ctx.handler)
+                Self::parse_and_get_source_module(&path, &current.source, import_span, ctx.handler)
             else {
-                ctx.invalid_imports.insert(path);
+                // Safe to ignore output: previous `.contains` check prevents collisions.
+                let _ = ctx.invalid_imports.insert(path);
                 continue;
             };
 
@@ -310,7 +311,7 @@ impl DependencyGraph {
 /// Groups all shared state for import resolution to avoid threading a lot of parameters
 /// through every recursive call. Lives only for the duration of [`resolve_imports`].
 struct ImportContext<'a> {
-    importer_source: &'a CanonSourceFile,
+    current: CurrentModule,
     dependency_map: &'a DependencyMap,
     use_cache: &'a mut HashMap<parse::UseDecl, ResolvedUse>,
     handler: &'a mut ErrorCollector,
@@ -321,21 +322,39 @@ impl<'a> ImportContext<'a> {
     /// later graph construction phases, and returns the resolved path and span.
     /// Returns `None` and reports to `handler` if resolution fails.
     fn resolve_single(&mut self, use_decl: &parse::UseDecl) -> Option<(CanonPath, Span)> {
-        match self
+        let resolved = match self
             .dependency_map
-            .resolve_path_internal(self.importer_source.name(), use_decl)
+            .resolve_path_internal(self.current.source.name(), use_decl)
         {
-            Ok(resolved) => {
-                let result = (resolved.path.clone(), *use_decl.span());
-                self.use_cache.insert(use_decl.clone(), resolved);
-                Some(result)
-            }
+            Ok(res) => res,
             Err(err) => {
                 self.handler
-                    .push(err.with_source(self.importer_source.clone()));
-                None
+                    .push(err.with_source(self.current.source.clone()));
+                return None;
             }
+        };
+
+        // We assign a file ID to prevent collisions between identical `use` statements across different files.
+        // For instance, `use crate::A::foo;` in the local workspace and in an external dependency
+        // might resolve to completely different implementations of the `foo` function.
+        let mut use_decl = use_decl.clone();
+        let span = *use_decl.span();
+        use_decl.set_file_id(self.current.id);
+
+        let result: (CanonPath, Span) = (resolved.path.clone(), span);
+
+        // Since we found an error, when we can reevalute the result, we do not want to break it again
+        // So, add error to prevent similar cases in the future
+        if let Some(old_value) = self.use_cache.insert(use_decl, resolved) {
+            let msg = format!(
+                "Reevaluated an existing use_decl. Old value was: {:?}",
+                old_value
+            );
+            let err = RichError::new(Error::Internal { msg }, span)
+                .with_source(self.current.source.clone());
+            self.handler.push(err);
         }
+        Some(result)
     }
 
     /// Recursively walks an item, collecting resolved imports.
@@ -369,9 +388,10 @@ struct LoadContext<'a> {
 
 /// The currently processed module and its source, used for error reporting
 /// and dependency registration.
-struct CurrentModule<'a> {
+#[derive(Debug, Clone)]
+struct CurrentModule {
     id: usize,
-    source: &'a CanonSourceFile,
+    source: CanonSourceFile,
 }
 
 #[cfg(test)]

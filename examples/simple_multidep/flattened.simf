@@ -1,0 +1,24 @@
+mod unit_1 {
+    pub fn add(a: u32, b: u32) -> u32 {
+        let (_, res): (bool, u32) = jet::add_32(a, b);
+        res
+    }
+}
+
+mod unit_2 {
+    pub fn sha256(data: u32) -> u256 {
+        let ctx: Ctx8 = jet::sha_256_ctx_8_init();
+        let ctx: Ctx8 = jet::sha_256_ctx_8_add_4(ctx, data);
+        jet::sha_256_ctx_8_finalize(ctx)
+    }
+}
+
+mod unit_0 {
+    use crate::unit_1::add;
+    use crate::unit_2::sha256;
+
+    fn main() {
+        let sum: u32 = add(2, 3);
+        let hash: u256 = sha256(sum);
+    }
+}
