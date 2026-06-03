@@ -752,9 +752,9 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "simplicity-lang"
-version = "0.7.1"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07f79806a665b34e4d8950edd053a991e57915e3924b8b21ac6f2bdd23d9e842"
+checksum = "13ed081e3046d66c146d7201bcbf3b655ca3436cb83f6efc26d7895bd2b79d06"
 dependencies = [
  "bitcoin",
  "bitcoin_hashes",
