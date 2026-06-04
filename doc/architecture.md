@@ -1,5 +1,40 @@
 # Architecture Notes
 
+## The effect of imports and flattening on the CMR
+
+Imports and the flattening phase have **no impact** on the CMR. The underlying order of calculation is strictly determined by the `main` function.
+
+For example, consider the following code:
+
+```rust
+fn a() -> u32 { 5 }
+fn b() -> u32 { 6 }
+
+fn main() {
+    let a: u32 = a();
+    let b: u32 = b();
+    let (_, c): (bool, u32) = jet::add_32(a, b);
+    assert!(jet::eq_32(c, 11));
+}
+```
+
+It does not matter whether `fn a()` or `fn b()` is declared first; the driver can reorder these declarations as it sees fit without affecting the CMR.
+
+The flattening phase behaves in the exact same way. While it wraps the file's contents into a `mod unit_N { ... }` block, it does not alter the execution order inside `main`. The CMR will change if and only if we explicitly modify the execution order (e.g., swapping the evaluation of `let a` and `let b`) within the `main` function itself.
+
+Below are three scenarios where resolution errors corrupt the CMR:
+
+1. Incorrect Aliasing or Function Substitution
+If the resolution phase maps an alias to the wrong function, the compiler silently substitutes one implementation for another. Since the program logic has changed, the resulting CMR will be entirely different.
+
+2. Entry Point Fallback (main hijacking)
+The CMR is rooted at the main function of the entry file. If the compiler does not enforce this, it may traverse the dependency graph and pick up a main from a dependency instead. This completely changes the execution graph.
+
+3. Resolution Cache Poisoning (use path collisions)
+When different package roots share structurally identical import paths (e.g., both a binary and a library declare `use crate::A::foo`), an improperly isolated resolution cache may link one context's import to the other's physical file. (See `functional_tests::identical_crate_uses_in_different_package_roots_do_not_poison_resolution_cache`.)
+
+*Note: The scenarios listed above reflect bugs discovered during current testing. The list is ***not exhaustive*** and may be expanded as further testing uncovers additional edge cases.*
+
 ## Crate and Module Paths
 
 The `crate` keyword is used to construct absolute paths where the path root is the current package's root directory. This provides an explicit and readable way to distinguish local imports from external library imports.
