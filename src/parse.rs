@@ -30,6 +30,7 @@ use crate::str::{
     SymbolName, WitnessName,
 };
 use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
+use crate::unstable::{FeatureUse, UnstableFeature, UnstableFeatureRequirements};
 
 /// A program is a sequence of items.
 #[derive(Clone, Debug)]
@@ -47,6 +48,14 @@ impl Program {
 
 impl_eq_hash!(Program; items);
 
+impl UnstableFeatureRequirements for Program {
+    fn unstable_feature_uses(&self, out: &mut Vec<FeatureUse>) {
+        for item in self.items() {
+            item.unstable_feature_uses(out);
+        }
+    }
+}
+
 /// An item is a component of a program.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -60,6 +69,15 @@ pub enum Item {
     Use(UseDecl),
     /// A module, which is ignored.
     Module,
+}
+
+impl UnstableFeatureRequirements for Item {
+    fn unstable_feature_uses(&self, out: &mut Vec<FeatureUse>) {
+        match self {
+            Item::Use(use_decl) => use_decl.unstable_feature_uses(out),
+            Item::TypeAlias(_) | Item::Function(_) | Item::Module => {}
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
@@ -139,6 +157,12 @@ impl UseDecl {
 }
 
 impl_eq_hash!(UseDecl; visibility, path, items);
+
+impl UnstableFeatureRequirements for UseDecl {
+    fn unstable_feature_uses(&self, out: &mut Vec<FeatureUse>) {
+        out.push(FeatureUse::new(UnstableFeature::Imports, self.span));
+    }
+}
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for UseDecl {

@@ -877,9 +877,20 @@ pub(crate) mod tests {
     }
 
     /// THE DEFAULT HELPER
+    fn all_unstable_features() -> Vec<UnstableFeature> {
+        UnstableFeature::all().to_vec()
+    }
+
     /// Automatically sets up the standard `lib` self-referencing dependency.
-    pub(crate) fn run_dependency_test<F>(root_path: &str, lib_alias: &str, features: F)
-    where
+    pub(crate) fn run_dependency_test(root_path: &str, lib_alias: &str) {
+        run_dependency_test_with_unstable(root_path, lib_alias, all_unstable_features());
+    }
+
+    pub(crate) fn run_dependency_test_with_unstable<F>(
+        root_path: &str,
+        lib_alias: &str,
+        features: F,
+    ) where
         F: IntoIterator<Item = UnstableFeature> + Clone,
     {
         let root_path = PathBuf::from(root_path);
@@ -899,8 +910,15 @@ pub(crate) mod tests {
     /// A helper function to run standard library dependency tests.
     /// `deps` expects an array of tuples: `(context_folder, alias, target_folder)`.
     /// Use `"."` for the `context_folder` if the context is the root test directory.
-    pub(crate) fn run_multidep_test<F>(root_path: &str, deps: &[(&str, &str, &str)], features: F)
-    where
+    pub(crate) fn run_multidep_test(root_path: &str, deps: &[(&str, &str, &str)]) {
+        run_multidep_test_with_unstable(root_path, deps, all_unstable_features());
+    }
+
+    pub(crate) fn run_multidep_test_with_unstable<F>(
+        root_path: &str,
+        deps: &[(&str, &str, &str)],
+        features: F,
+    ) where
         F: IntoIterator<Item = UnstableFeature> + Clone,
     {
         let root_path = PathBuf::from(root_path);
@@ -937,15 +955,7 @@ pub(crate) mod tests {
     /// ```
     #[test]
     fn single_dep() {
-        run_dependency_test(
-            "./examples/single_dep",
-            "temp",
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        run_dependency_test("./examples/single_dep", "temp");
     }
 
     /// Run with `simc` command:
@@ -960,7 +970,6 @@ pub(crate) mod tests {
         run_multidep_test(
             "./examples/simple_multidep",
             &[(".", "math", "math"), (".", "crypto", "crypto")],
-            [UnstableFeature::UseKeyword],
         );
     }
 
@@ -981,7 +990,6 @@ pub(crate) mod tests {
                 (".", "base_math", "math"),
                 ("merkle", "math", "math"),
             ],
-            [UnstableFeature::UseKeyword, UnstableFeature::AsKeyword],
         );
     }
 
@@ -992,15 +1000,11 @@ pub(crate) mod tests {
     /// ```
     #[test]
     fn local_crate() {
-        run_multidep_test(
-            "./examples/local_crate",
-            &[],
-            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
-        );
+        run_multidep_test("./examples/local_crate", &[]);
     }
 
     #[test]
-    fn test_crate_keyword_compilation_success() {
+    fn test_crate_import_compilation_success() {
         let ws = TempWorkspace::new("crate_success");
         let root = ws.create_dir("workspace");
         ws.create_file(
@@ -1020,7 +1024,7 @@ pub(crate) mod tests {
         TestCase::<TemplateProgram>::template_deps_with_unstable(
             &main_path,
             &dependency_map,
-            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
+            [UnstableFeature::Imports],
         )
         .with_arguments(Arguments::default())
         .with_witness_values(WitnessValues::default())
@@ -1552,10 +1556,7 @@ mod error_tests {
 
 #[cfg(test)]
 mod functional_tests {
-    use crate::{
-        tests::{run_dependency_test, run_multidep_test},
-        UnstableFeature,
-    };
+    use crate::tests::{run_dependency_test, run_multidep_test};
 
     const VALID_TESTS_DIR: &str = "./functional-tests/valid-test-cases";
     const ERROR_TESTS_DIR: &str = "./functional-tests/error-test-cases";
@@ -1563,11 +1564,7 @@ mod functional_tests {
     // Real test cases
     #[test]
     fn module_simple() {
-        run_dependency_test(
-            format!("{}/module-simple", VALID_TESTS_DIR).as_str(),
-            "lib",
-            [UnstableFeature::UseKeyword],
-        );
+        run_dependency_test(format!("{}/module-simple", VALID_TESTS_DIR).as_str(), "lib");
     }
 
     #[test]
@@ -1575,7 +1572,6 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/diamond-dependency-resolution", VALID_TESTS_DIR).as_str(),
             "lib",
-            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
         );
     }
 
@@ -1584,7 +1580,6 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/deep-reexport-chain", VALID_TESTS_DIR).as_str(),
             "lib",
-            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
         );
     }
 
@@ -1593,7 +1588,6 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/leaky-signature", VALID_TESTS_DIR).as_str(),
             "lib",
-            [UnstableFeature::UseKeyword],
         );
     }
 
@@ -1602,7 +1596,6 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/reexport-diamond", VALID_TESTS_DIR).as_str(),
             "lib",
-            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
         );
     }
 
@@ -1616,7 +1609,6 @@ mod functional_tests {
                 ("api", "crypto", "crypto"),
                 ("api", "math", "math"),
             ],
-            [UnstableFeature::UseKeyword],
         );
     }
 
@@ -1633,7 +1625,6 @@ mod functional_tests {
                 ("auth", "types", "types"),
                 ("auth", "db", "db"),
             ],
-            [UnstableFeature::UseKeyword],
         );
     }
 
@@ -1644,7 +1635,6 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/cyclic-dependency", ERROR_TESTS_DIR).as_str(),
             "lib",
-            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
         );
     }
 
@@ -1654,18 +1644,13 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/file-not-found", ERROR_TESTS_DIR).as_str(),
             "lib",
-            [UnstableFeature::UseKeyword],
         );
     }
 
     #[test]
     #[should_panic(expected = "DependencyPathNotFound")]
     fn lib_not_found_error() {
-        run_dependency_test(
-            format!("{}/lib-not-found", ERROR_TESTS_DIR).as_str(),
-            "lib",
-            [UnstableFeature::UseKeyword],
-        );
+        run_dependency_test(format!("{}/lib-not-found", ERROR_TESTS_DIR).as_str(), "lib");
     }
 
     #[test]
@@ -1674,7 +1659,6 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/private-visibility", ERROR_TESTS_DIR).as_str(),
             "lib",
-            [UnstableFeature::UseKeyword],
         );
     }
 
@@ -1684,7 +1668,6 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/name-collision", ERROR_TESTS_DIR).as_str(),
             "lib",
-            [UnstableFeature::UseKeyword],
         );
     }
 
@@ -1695,17 +1678,12 @@ mod functional_tests {
         run_dependency_test(
             format!("{}/type-alias-duplication", ERROR_TESTS_DIR).as_str(),
             "lib",
-            [UnstableFeature::UseKeyword],
         );
     }
 
     #[test]
     fn local_crate_resolution() {
-        run_multidep_test(
-            format!("{}/local-crate", VALID_TESTS_DIR).as_str(),
-            &[],
-            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
-        );
+        run_multidep_test(format!("{}/local-crate", VALID_TESTS_DIR).as_str(), &[]);
     }
 
     #[test]
@@ -1713,7 +1691,6 @@ mod functional_tests {
         run_multidep_test(
             format!("{}/local-crate-nested", VALID_TESTS_DIR).as_str(),
             &[],
-            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
         );
     }
 
@@ -1722,7 +1699,6 @@ mod functional_tests {
         run_multidep_test(
             format!("{}/external-library-uses-crate", VALID_TESTS_DIR).as_str(),
             &[(".", "ext_lib", "ext_lib")],
-            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
         );
     }
 
@@ -1732,7 +1708,6 @@ mod functional_tests {
         run_multidep_test(
             format!("{}/crate-file-not-found", ERROR_TESTS_DIR).as_str(),
             &[],
-            [UnstableFeature::UseKeyword, UnstableFeature::CrateKeyword],
         );
     }
 
@@ -1744,7 +1719,6 @@ mod functional_tests {
         run_multidep_test(
             format!("{}/local-file-as-external", ERROR_TESTS_DIR).as_str(),
             &[(".", "ext", ".")],
-            [UnstableFeature::UseKeyword],
         );
     }
 }

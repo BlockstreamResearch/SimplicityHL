@@ -343,7 +343,22 @@ pub(crate) mod tests {
     /// 3. `TempWorkspace`: The temporary directory instance. This must be kept in scope by the caller so
     ///    the OS doesn't delete the files before the test finishes.
     /// 4. `ErrorCollector`: The handler containing any logged errors, useful fo
+    fn all_unstable_features() -> impl Iterator<Item = UnstableFeature> {
+        UnstableFeature::all().iter().copied()
+    }
+
     pub(crate) fn setup_graph_raw(
+        files: Vec<(&str, &str)>,
+    ) -> (
+        Option<DependencyGraph>,
+        HashMap<String, usize>,
+        TempWorkspace,
+        ErrorCollector,
+    ) {
+        setup_graph_raw_with_features(files, all_unstable_features())
+    }
+
+    pub(crate) fn setup_graph_raw_with_features(
         files: Vec<(&str, &str)>,
         features: impl IntoIterator<Item = UnstableFeature>,
     ) -> (
@@ -449,9 +464,15 @@ pub(crate) mod tests {
     /// to standard error if the parser or graph builder encounters any issues.
     pub(crate) fn setup_graph(
         files: Vec<(&str, &str)>,
+    ) -> (DependencyGraph, HashMap<String, usize>, TempWorkspace) {
+        setup_graph_with_features(files, all_unstable_features())
+    }
+
+    pub(crate) fn setup_graph_with_features(
+        files: Vec<(&str, &str)>,
         features: impl IntoIterator<Item = UnstableFeature>,
     ) -> (DependencyGraph, HashMap<String, usize>, TempWorkspace) {
-        let (graph_option, file_ids, ws, handler) = setup_graph_raw(files, features);
+        let (graph_option, file_ids, ws, handler) = setup_graph_raw_with_features(files, features);
 
         let Some(graph) = graph_option else {
             panic!(
@@ -469,17 +490,10 @@ pub(crate) mod tests {
         // root.simf -> "use lib::math::some_func;"
         // libs/lib/math.simf -> ""
 
-        let (graph, ids, _ws) = setup_graph(
-            vec![
-                ("main.simf", "use lib::math::some_func;"),
-                ("libs/lib/math.simf", ""),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, ids, _ws) = setup_graph(vec![
+            ("main.simf", "use lib::math::some_func;"),
+            ("libs/lib/math.simf", ""),
+        ]);
 
         assert_eq!(graph.modules.len(), 2, "Should have Root and Math module");
 
@@ -503,19 +517,12 @@ pub(crate) mod tests {
         // B -> imports Common
         // Expected: Common loaded ONLY ONCE.
 
-        let (graph, ids, _ws) = setup_graph(
-            vec![
-                ("main.simf", "use lib::A::foo; use lib::B::bar;"),
-                ("libs/lib/A.simf", "use crate::Common::dummy1;"),
-                ("libs/lib/B.simf", "use crate::Common::dummy2;"),
-                ("libs/lib/Common.simf", ""),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, ids, _ws) = setup_graph(vec![
+            ("main.simf", "use lib::A::foo; use lib::B::bar;"),
+            ("libs/lib/A.simf", "use crate::Common::dummy1;"),
+            ("libs/lib/B.simf", "use crate::Common::dummy2;"),
+            ("libs/lib/Common.simf", ""),
+        ]);
 
         // Check strict deduplication (Unique modules count)
         assert_eq!(
@@ -555,18 +562,11 @@ pub(crate) mod tests {
         // A -> imports B
         // B -> imports A
 
-        let (graph, ids, _ws) = setup_graph(
-            vec![
-                ("main.simf", "use lib::A::entry;"),
-                ("libs/lib/A.simf", "use crate::B::func;"),
-                ("libs/lib/B.simf", "use crate::A::func;"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, ids, _ws) = setup_graph(vec![
+            ("main.simf", "use lib::A::entry;"),
+            ("libs/lib/A.simf", "use crate::B::func;"),
+            ("libs/lib/B.simf", "use crate::A::func;"),
+        ]);
 
         let a_id = ids["A"];
         let b_id = ids["B"];
@@ -593,14 +593,8 @@ pub(crate) mod tests {
         // Setup: root imports from "unknown", which is not in our dependency map.
         // We use `setup_graph_raw` because we expect graph generation to fail and
         // emit an error, rather than panicking the standard test helper.
-        let (graph_option, _ids, _ws, handler) = setup_graph_raw(
-            vec![("main.simf", "use unknown::library::item;")],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph_option, _ids, _ws, handler) =
+            setup_graph_raw(vec![("main.simf", "use unknown::library::item;")]);
 
         assert!(
             graph_option.is_none(),
@@ -618,18 +612,11 @@ pub(crate) mod tests {
         // Goal: Verify that a simple chain (main -> a -> b) correctly pushes items
         // into the vectors and builds the adjacency list in BFS order.
 
-        let (graph, ids, _ws) = setup_graph(
-            vec![
-                ("main.simf", "use lib::A::mock_item;"),
-                ("libs/lib/A.simf", "use crate::B::mock_item;"),
-                ("libs/lib/B.simf", ""),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, ids, _ws) = setup_graph(vec![
+            ("main.simf", "use lib::A::mock_item;"),
+            ("libs/lib/A.simf", "use crate::B::mock_item;"),
+            ("libs/lib/B.simf", ""),
+        ]);
 
         // Assert: Size checks
         assert_eq!(graph.modules.len(), 3);
@@ -665,11 +652,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_unstable_feature_use_keyword_disabled_in_dependencies() {
-        // We use setup_graph_raw because it intentionally bypasses the early-exit in
+    fn test_unstable_feature_imports_disabled_in_dependencies() {
+        // We use setup_graph_raw_with_features because it intentionally bypasses the early-exit in
         // TemplateProgram::new_with_dep, allowing us to test how the graph builder
         // deeply checks for unstable feature errors in loaded dependency files.
-        let (graph_option, _ids, _ws, handler) = setup_graph_raw(
+        let (graph_option, _ids, _ws, handler) = setup_graph_raw_with_features(
             vec![
                 ("main.simf", "use lib::A::foo;\nfn main() {}"),
                 ("libs/lib/A.simf", "use crate::B::bar;\npub fn foo() {}"),
@@ -695,7 +682,7 @@ pub(crate) mod tests {
             "Should report error in dependency A.simf"
         );
 
-        // Three occurrences of the error message total (1 for main.simf `use`, 2 for A.simf `use` and `crate`)
-        assert_eq!(errors.matches("feature is not enabled").count(), 3);
+        // Two occurrences of the error message total (one for each disabled `use` declaration).
+        assert_eq!(errors.matches("feature is not enabled").count(), 2);
     }
 }

@@ -5,25 +5,18 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::error::{Error, ErrorCollector, RichError, Span};
-use crate::parse::{Item, Program, UseItems};
 
 /// Keeps track of unstable features available in the compiler.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum UnstableFeature {
-    /// The `use` keyword for including multiple source files.
-    UseKeyword,
-    /// The `crate` keyword for referencing the local project root.
-    CrateKeyword,
-    /// The `as` keyword for aliasing imports.
-    AsKeyword,
+    /// Import and module syntax, including `use`, `crate::`, and import aliases.
+    Imports,
 }
 
 impl fmt::Display for UnstableFeature {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UseKeyword => write!(f, "use-keyword"),
-            Self::CrateKeyword => write!(f, "crate-keyword"),
-            Self::AsKeyword => write!(f, "as-keyword"),
+            Self::Imports => write!(f, "imports"),
         }
     }
 }
@@ -33,9 +26,7 @@ impl FromStr for UnstableFeature {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "use-keyword" => Ok(UnstableFeature::UseKeyword),
-            "crate-keyword" => Ok(UnstableFeature::CrateKeyword),
-            "as-keyword" => Ok(UnstableFeature::AsKeyword),
+            "imports" => Ok(UnstableFeature::Imports),
             _ => Err(format!("Unknown unstable feature: '{}'", s)),
         }
     }
@@ -44,73 +35,33 @@ impl FromStr for UnstableFeature {
 impl UnstableFeature {
     pub fn description(&self) -> &'static str {
         match self {
-            Self::UseKeyword => "The 'use' keyword for using dependencies",
-            Self::CrateKeyword => "The 'crate' keyword for referencing the local project root",
-            Self::AsKeyword => "The 'as' keyword for aliasing imports",
+            Self::Imports => "Import syntax: 'use', 'crate::', and import aliases",
         }
     }
 
     pub fn all() -> &'static [UnstableFeature] {
-        &[Self::UseKeyword, Self::CrateKeyword, Self::AsKeyword]
-    }
-
-    fn detect_feature_in_item(self, item: &Item) -> Vec<Span> {
-        match self {
-            Self::UseKeyword => Self::detect_use_keyword(item),
-            Self::CrateKeyword => Self::detect_crate_keyword(item),
-            Self::AsKeyword => Self::detect_as_keyword(item),
-        }
-    }
-
-    fn detect_use_keyword(item: &Item) -> Vec<Span> {
-        match item {
-            Item::Use(use_decl) => vec![*use_decl.span()],
-            _ => vec![],
-        }
-    }
-
-    fn detect_crate_keyword(item: &Item) -> Vec<Span> {
-        match item {
-            Item::Use(use_decl)
-                if use_decl
-                    .drp_name()
-                    .is_ok_and(|drp| drp == crate::driver::CRATE_STR) =>
-            {
-                vec![*use_decl.span()]
-            }
-            _ => vec![],
-        }
-    }
-
-    fn detect_as_keyword(item: &Item) -> Vec<Span> {
-        match item {
-            Item::Use(use_decl) => {
-                let has_alias = match use_decl.items() {
-                    UseItems::Single((_, alias)) => alias.is_some(),
-                    UseItems::List(items) => items.iter().any(|(_, alias)| alias.is_some()),
-                };
-                if has_alias {
-                    vec![*use_decl.span()]
-                } else {
-                    vec![]
-                }
-            }
-            _ => vec![],
-        }
-    }
-
-    fn used_features(item: &Item) -> Vec<(UnstableFeature, Span)> {
-        let mut features = Vec::new();
-        for &feature in Self::all() {
-            for span in feature.detect_feature_in_item(item) {
-                features.push((feature, span));
-            }
-        }
-        features
+        &[Self::Imports]
     }
 }
 
-// TODO: Consider the possibility to optimize this structure with traits
+/// An unstable feature required by a parsed syntax node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeatureUse {
+    feature: UnstableFeature,
+    span: Span,
+}
+
+impl FeatureUse {
+    pub fn new(feature: UnstableFeature, span: Span) -> Self {
+        Self { feature, span }
+    }
+}
+
+/// Implemented by parsed syntax nodes that can require unstable compiler features.
+pub trait UnstableFeatureRequirements {
+    fn unstable_feature_uses(&self, out: &mut Vec<FeatureUse>);
+}
+
 /// Manages the state of unstable features during compilation.
 /// This struct tracks which unstable features are enabled and provides
 /// validation methods for checking feature availability.
@@ -141,12 +92,17 @@ impl UnstableFeatureManager {
         Ok(())
     }
 
-    pub fn check_program(&self, program: &Program, handler: &mut ErrorCollector) {
-        for item in program.items() {
-            for (feature, span) in UnstableFeature::used_features(item) {
-                if let Err(error) = self.check_feature(feature) {
-                    handler.push(RichError::new(error, span));
-                }
+    pub fn check_program(
+        &self,
+        program: &(impl UnstableFeatureRequirements + ?Sized),
+        handler: &mut ErrorCollector,
+    ) {
+        let mut feature_uses = Vec::new();
+        program.unstable_feature_uses(&mut feature_uses);
+
+        for feature_use in feature_uses {
+            if let Err(error) = self.check_feature(feature_use.feature) {
+                handler.push(RichError::new(error, feature_use.span));
             }
         }
     }

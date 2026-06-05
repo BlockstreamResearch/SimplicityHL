@@ -520,7 +520,6 @@ impl AsRef<Span> for Program {
 #[cfg(test)]
 mod resolve_order_tests {
     use crate::driver::tests::setup_graph;
-    use crate::unstable::UnstableFeature;
 
     use super::*;
 
@@ -529,14 +528,10 @@ mod resolve_order_tests {
         // main.simf defines a private function and a public function.
         // Expected: Both should appear in the scope with correct visibility.
 
-        let (graph, ids, _dir) = setup_graph(
-            vec![("main.simf", "fn private_fn() {} pub fn public_fn() {}")],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, ids, _dir) = setup_graph(vec![(
+            "main.simf",
+            "fn private_fn() {} pub fn public_fn() {}",
+        )]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -565,18 +560,11 @@ mod resolve_order_tests {
         // 3. main.simf imports it from B.
         // Expected: B's scope must contain `foo` marked as Public.
 
-        let (graph, ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "pub fn foo() {}"),
-                ("libs/lib/B.simf", "pub use crate::A::foo;"),
-                ("main.simf", "use lib::B::foo;"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn foo() {}"),
+            ("libs/lib/B.simf", "pub use crate::A::foo;"),
+            ("main.simf", "use lib::B::foo;"),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -607,18 +595,11 @@ mod resolve_order_tests {
         // 3. main.simf tries to import `foo` from B.
         // Expected: Error, because B did not re-export foo.
 
-        let (graph, _ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "pub fn foo() {}"),
-                ("libs/lib/B.simf", "use crate::A::foo;"), // <--- Private binding!
-                ("main.simf", "use lib::B::foo;"),         // <--- Should fail
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, _ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn foo() {}"),
+            ("libs/lib/B.simf", "use crate::A::foo;"), // <--- Private binding!
+            ("main.simf", "use lib::B::foo;"),         // <--- Should fail
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -635,17 +616,10 @@ mod resolve_order_tests {
 
     #[test]
     fn test_separated_type_aliases_and_functions() {
-        let (graph, ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "pub type bar = u32; pub fn bar() {}"),
-                ("main.simf", "use lib::A::bar;"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub type bar = u32; pub fn bar() {}"),
+            ("main.simf", "use lib::A::bar;"),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -673,18 +647,11 @@ mod resolve_order_tests {
         // main.simf: load function `foo` from A.simf.
         // Then try to load both `fn foo` and `type foo`.
         // However, we have already loade `fn foo` and `type foo` is private, so an error occurs.
-        let (graph, _ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "pub fn foo() {}"),
-                ("libs/lib/B.simf", "pub fn foo() {} type foo = u32;"),
-                ("main.simf", "use lib::A::foo; use lib::B::foo;"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, _ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn foo() {}"),
+            ("libs/lib/B.simf", "pub fn foo() {} type foo = u32;"),
+            ("main.simf", "use lib::A::foo; use lib::B::foo;"),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -701,14 +668,7 @@ mod resolve_order_tests {
         // Scenario: A user tries to declare the entry point as `pub fn main`.
         // Expected: The compiler must reject this because `main` must be private.
 
-        let (graph, _ids, _dir) = setup_graph(
-            vec![("main.simf", "pub fn main() {}")],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, _ids, _dir) = setup_graph(vec![("main.simf", "pub fn main() {}")]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -731,17 +691,10 @@ mod resolve_order_tests {
         // Scenario: A user tries to bypass entry point rules by renaming an import to `main`.
         // Expected: The compiler must reject this because `main` is a reserved identifier.
 
-        let (graph, _ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "pub type bar = u32;"),
-                ("main.simf", "use lib::A::bar as main;"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, _ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub type bar = u32;"),
+            ("main.simf", "use lib::A::bar as main;"),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -764,7 +717,6 @@ mod resolve_order_tests {
 mod alias_tests {
     use super::*;
     use crate::driver::tests::setup_graph;
-    use crate::unstable::UnstableFeature;
 
     #[test]
     fn test_renaming_with_use() {
@@ -772,17 +724,10 @@ mod alias_tests {
         // main.simf: use lib::A::foo as bar;
         // Expected: Scope should contain "bar", but not "foo".
 
-        let (graph, ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "pub fn foo() {}"),
-                ("main.simf", "use lib::A::foo as bar;"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn foo() {}"),
+            ("main.simf", "use lib::A::foo as bar;"),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -811,17 +756,10 @@ mod alias_tests {
     #[test]
     fn test_multiple_aliases_in_list() {
         // Scenario: Renaming multiple imports inside brackets.
-        let (graph, ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "pub fn foo() {} pub fn baz() {}"),
-                ("main.simf", "use lib::A::{foo as bar, baz as qux};"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn foo() {} pub fn baz() {}"),
+            ("main.simf", "use lib::A::{foo as bar, baz as qux};"),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -853,17 +791,10 @@ mod alias_tests {
     #[test]
     fn test_alias_private_item_fails() {
         // Scenario: Attempting to alias a private item should fail.
-        let (graph, _ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "fn secret() {}"), // Note: Missing `pub`
-                ("main.simf", "use lib::A::secret as my_secret;"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, _ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "fn secret() {}"), // Note: Missing `pub`
+            ("main.simf", "use lib::A::secret as my_secret;"),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -884,18 +815,11 @@ mod alias_tests {
     #[test]
     fn test_deep_reexport_with_aliases() {
         // Scenario: Chaining aliases across multiple files.
-        let (graph, ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "pub fn original() {}"),
-                ("libs/lib/B.simf", "pub use crate::A::original as middle;"),
-                ("main.simf", "use lib::B::middle as final_name;"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn original() {}"),
+            ("libs/lib/B.simf", "pub use crate::A::original as middle;"),
+            ("main.simf", "use lib::B::middle as final_name;"),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -935,19 +859,12 @@ mod alias_tests {
     #[test]
     fn test_deep_reexport_private_link_fails() {
         // Scenario: Main tries to import an alias from B, but B's alias is private!
-        let (graph, _ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "pub fn target() {}"),
-                // Note: Missing `pub` keyword here! This makes `hidden_alias` private to B.
-                ("libs/lib/B.simf", "use crate::A::target as hidden_alias;"),
-                ("main.simf", "use lib::B::hidden_alias;"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, _ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn target() {}"),
+            // Note: Missing `pub` keyword here! This makes `hidden_alias` private to B.
+            ("libs/lib/B.simf", "use crate::A::target as hidden_alias;"),
+            ("main.simf", "use lib::B::hidden_alias;"),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -968,19 +885,12 @@ mod alias_tests {
     #[test]
     fn test_alias_cycle_detection() {
         // Scenario: A malicious or confused user creates an infinite alias/import loop.
-        let (graph, _ids, _dir) = setup_graph(
-            vec![
-                // A imports from B, B imports from A. This creates a file-level cycle!
-                ("libs/lib/A.simf", "pub use crate::B::pong as ping;"),
-                ("libs/lib/B.simf", "pub use crate::A::ping as pong;"),
-                ("main.simf", "use lib::A::ping;"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, _ids, _dir) = setup_graph(vec![
+            // A imports from B, B imports from A. This creates a file-level cycle!
+            ("libs/lib/A.simf", "pub use crate::B::pong as ping;"),
+            ("libs/lib/B.simf", "pub use crate::A::ping as pong;"),
+            ("main.simf", "use lib::A::ping;"),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
 
@@ -1010,18 +920,11 @@ mod alias_tests {
 
     #[test]
     fn test_plain_import_and_alias_to_same_name_is_rejected() {
-        let (graph, _ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "pub fn foo() {}"),
-                ("libs/lib/B.simf", "pub fn foo() {}"),
-                ("main.simf", "use lib::A::foo; use lib::B::foo as foo;"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, _ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn foo() {}"),
+            ("libs/lib/B.simf", "pub fn foo() {}"),
+            ("main.simf", "use lib::A::foo; use lib::B::foo as foo;"),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -1040,21 +943,14 @@ mod alias_tests {
 
     #[test]
     fn test_failed_alias_import_does_not_poison_following_imports() {
-        let (graph, _ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "pub fn nope() {}"),
-                ("libs/lib/B.simf", "pub fn bar() {}"),
-                (
-                    "main.simf",
-                    "use lib::A::missing as foo; use lib::B::bar as foo;",
-                ),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, _ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn nope() {}"),
+            ("libs/lib/B.simf", "pub fn bar() {}"),
+            (
+                "main.simf",
+                "use lib::A::missing as foo; use lib::B::bar as foo;",
+            ),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -1073,17 +969,10 @@ mod alias_tests {
 
     #[test]
     fn test_alias_cannot_reuse_local_definition_name() {
-        let (graph, _ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "pub fn bar() {}"),
-                ("main.simf", "pub fn foo() {} use lib::A::bar as foo;"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, _ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn bar() {}"),
+            ("main.simf", "pub fn foo() {} use lib::A::bar as foo;"),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -1104,17 +993,10 @@ mod alias_tests {
 
     #[test]
     fn test_local_function_cannot_reuse_alias_name() {
-        let (graph, _ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "pub fn bar() {}"),
-                ("main.simf", "use lib::A::bar as foo; pub fn foo() {}"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, _ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn bar() {}"),
+            ("main.simf", "use lib::A::bar as foo; pub fn foo() {}"),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
@@ -1134,17 +1016,10 @@ mod alias_tests {
 
     #[test]
     fn test_local_type_alias_cannot_reuse_alias_name() {
-        let (graph, _ids, _dir) = setup_graph(
-            vec![
-                ("libs/lib/A.simf", "pub type bar = u32;"),
-                ("main.simf", "use lib::A::bar as foo; type foo = u64;"),
-            ],
-            [
-                UnstableFeature::UseKeyword,
-                UnstableFeature::CrateKeyword,
-                UnstableFeature::AsKeyword,
-            ],
-        );
+        let (graph, _ids, _dir) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub type bar = u32;"),
+            ("main.simf", "use lib::A::bar as foo; type foo = u64;"),
+        ]);
 
         let mut error_handler = ErrorCollector::new();
         let program_option = graph.linearize_and_build(&mut error_handler).unwrap();
