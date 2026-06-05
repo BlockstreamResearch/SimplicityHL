@@ -40,7 +40,7 @@ use crate::error::{Error, ErrorCollector, RichError, Span};
 use crate::parse::{self, ParseFromStrWithErrors};
 use crate::resolution::DependencyMap;
 use crate::source::{CanonPath, CanonSourceFile};
-use crate::UnstableFeatureManager;
+use crate::UnstableFeatures;
 
 pub use crate::driver::resolve_order::{FileScoped, Program, SymbolTable};
 
@@ -140,8 +140,13 @@ impl DependencyGraph {
         dependency_map: Arc<DependencyMap>,
         root_program: &parse::Program,
         handler: &mut ErrorCollector,
-        unstable_manager: &UnstableFeatureManager,
+        unstable_features: &UnstableFeatures,
     ) -> Result<Option<Self>, String> {
+        unstable_features.check_program(root_program, root_source.clone(), handler);
+        if handler.has_errors() {
+            return Ok(None);
+        }
+
         let mut graph = Self {
             modules: vec![Module {
                 source: root_source.clone(),
@@ -189,7 +194,7 @@ impl DependencyGraph {
                 &importer_source,
                 handler,
                 &mut queue,
-                unstable_manager,
+                unstable_features,
             );
         }
 
@@ -207,7 +212,7 @@ impl DependencyGraph {
         importer_source: &CanonSourceFile,
         span: Span,
         handler: &mut ErrorCollector,
-        unstable_manager: &UnstableFeatureManager,
+        unstable_features: &UnstableFeatures,
     ) -> Option<Module> {
         let Ok(content) = std::fs::read_to_string(path.as_path()) else {
             let err = RichError::new(
@@ -228,7 +233,7 @@ impl DependencyGraph {
         let ast = parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler);
 
         if let Some(ref p) = ast {
-            unstable_manager.check_program(p, &mut error_handler);
+            unstable_features.check_program(p, source.clone(), &mut error_handler);
         }
 
         if error_handler.has_errors() {
@@ -277,7 +282,7 @@ impl DependencyGraph {
         importer_source: &CanonSourceFile,
         handler: &mut ErrorCollector,
         queue: &mut VecDeque<usize>,
-        unstable_manager: &UnstableFeatureManager,
+        unstable_features: &UnstableFeatures,
     ) {
         for (path, import_span) in valid_imports {
             if inalid_imports.contains(&path) {
@@ -297,7 +302,7 @@ impl DependencyGraph {
                 importer_source,
                 import_span,
                 handler,
-                unstable_manager,
+                unstable_features,
             ) else {
                 inalid_imports.push(path);
                 continue;
@@ -399,16 +404,10 @@ pub(crate) mod tests {
         let main_canon_source = CanonSourceFile::new(root_p, Arc::from(root_content));
         let main_source = main_canon_source.clone();
 
-        let unstable_manager = UnstableFeatureManager::new(features);
+        let unstable_features = UnstableFeatures::new(features);
 
         let main_program_option =
             parse::Program::parse_from_str_with_errors(main_source.clone(), &mut handler);
-
-        if let Some(ref p) = main_program_option {
-            let mut unstable_errors = ErrorCollector::new();
-            unstable_manager.check_program(p, &mut unstable_errors);
-            handler.extend_with_handler(main_source.clone(), &unstable_errors);
-        }
 
         let Some(main_program) = main_program_option else {
             return (None, HashMap::new(), ws, handler);
@@ -419,7 +418,7 @@ pub(crate) mod tests {
             map,
             &main_program,
             &mut handler,
-            &unstable_manager,
+            &unstable_features,
         )
         .unwrap();
 
@@ -652,10 +651,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_unstable_feature_imports_disabled_in_dependencies() {
+    fn test_unstable_feature_imports_disabled_stops_before_dependency_resolution() {
         // We use setup_graph_raw_with_features because it intentionally bypasses the early-exit in
         // TemplateProgram::new_with_dep, allowing us to test how the graph builder
-        // deeply checks for unstable feature errors in loaded dependency files.
+        // handles disabled unstable features inside graph construction.
         let (graph_option, _ids, _ws, handler) = setup_graph_raw_with_features(
             vec![
                 ("main.simf", "use lib::A::foo;\nfn main() {}"),
@@ -672,17 +671,16 @@ pub(crate) mod tests {
 
         let errors = handler.to_string();
 
-        // Assert that both main.simf and A.simf reported unstable feature errors
         assert!(
             errors.contains("main.simf"),
             "Should report error in main.simf"
         );
         assert!(
-            errors.contains("A.simf"),
-            "Should report error in dependency A.simf"
+            !errors.contains("A.simf"),
+            "Should not load dependencies after disabled root import syntax"
         );
 
-        // Two occurrences of the error message total (one for each disabled `use` declaration).
-        assert_eq!(errors.matches("feature is not enabled").count(), 2);
+        // One occurrence of the error message: root feature validation stops before import resolution.
+        assert_eq!(errors.matches("feature is not enabled").count(), 1);
     }
 }

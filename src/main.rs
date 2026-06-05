@@ -5,7 +5,7 @@ use clap::{Arg, ArgAction, Command};
 use simplicityhl::ast::ElementsJetHinter;
 use simplicityhl::{
     resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
-    CompiledProgram, UnstableFeatureManager,
+    CompiledProgram, UnstableFeatures,
 };
 use std::path::Path;
 use std::{env, fmt};
@@ -38,22 +38,6 @@ impl fmt::Display for Output {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let max_len = simplicityhl::UnstableFeature::all()
-        .iter()
-        .map(|f| f.to_string().len())
-        .max()
-        .unwrap_or(0);
-
-    let mut unstable_help = String::from("Enable unstable features. Available features:\n");
-    for feature in simplicityhl::UnstableFeature::all() {
-        unstable_help.push_str(&format!(
-            "  {name:<width$} {desc}\n",
-            name = feature.to_string(),
-            width = max_len + 2,
-            desc = feature.description()
-        ));
-    }
-
     let command = {
         Command::new(env!("CARGO_BIN_NAME"))
             .about(
@@ -117,7 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .short('Z')
                     .value_name("FEATURE")
                     .action(ArgAction::Append)
-                    .help(unstable_help),
+                    .help(simplicityhl::UnstableFeature::help_message()),
             )
     };
 
@@ -131,15 +115,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let abi_param = matches.get_flag("abi");
 
     // Parse unstable features
-    let unstable_manager = if let Some(features) = matches.get_many::<String>("unstable_features") {
-        UnstableFeatureManager::from_feature_names(features.map(|s| s.as_str())).unwrap_or_else(
-            |e| {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            },
-        )
+    let unstable_features = if let Some(features) = matches.get_many::<String>("unstable_features")
+    {
+        UnstableFeatures::from_names(features.map(|s| s.as_str())).unwrap_or_else(|e| {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        })
     } else {
-        UnstableFeatureManager::default()
+        UnstableFeatures::none()
     };
 
     #[cfg(feature = "serde")]
@@ -209,7 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compiled = match CompiledProgram::with_unstable_and_dep(
         source,
         &dependencies,
-        &unstable_manager,
+        &unstable_features,
         args_opt,
         include_debug_symbols,
         Box::new(ElementsJetHinter::new()),

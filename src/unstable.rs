@@ -5,6 +5,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::error::{Error, ErrorCollector, RichError, Span};
+use crate::source::SourceFile;
 
 /// Keeps track of unstable features available in the compiler.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -42,74 +43,96 @@ impl UnstableFeature {
     pub fn all() -> &'static [UnstableFeature] {
         &[Self::Imports]
     }
+
+    pub fn help_message() -> String {
+        let max_len = Self::all()
+            .iter()
+            .map(|feature| feature.to_string().len())
+            .max()
+            .unwrap_or(0);
+
+        let mut help = String::from("Enable unstable features. Available features:\n");
+        for feature in Self::all() {
+            help.push_str(&format!(
+                "  {name:<width$} {desc}\n",
+                name = feature.to_string(),
+                width = max_len + 2,
+                desc = feature.description()
+            ));
+        }
+        help
+    }
 }
 
 /// An unstable feature required by a parsed syntax node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FeatureUse {
+pub(crate) struct FeatureUse {
     feature: UnstableFeature,
     span: Span,
 }
 
 impl FeatureUse {
-    pub fn new(feature: UnstableFeature, span: Span) -> Self {
+    pub(crate) fn new(feature: UnstableFeature, span: Span) -> Self {
         Self { feature, span }
     }
 }
 
 /// Implemented by parsed syntax nodes that can require unstable compiler features.
-pub trait UnstableFeatureRequirements {
+pub(crate) trait UnstableFeatureRequirements {
     fn unstable_feature_uses(&self, out: &mut Vec<FeatureUse>);
 }
 
-/// Manages the state of unstable features during compilation.
-/// This struct tracks which unstable features are enabled and provides
-/// validation methods for checking feature availability.
-/// In default mode, all features are disabled. Features can be enabled via command-line flags
+/// The unstable features enabled for this compiler invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct UnstableFeatureManager {
+pub struct UnstableFeatures {
     enabled_features: HashSet<UnstableFeature>,
 }
 
-impl UnstableFeatureManager {
-    /// Creates a manager with specific features enabled.
+impl UnstableFeatures {
+    /// Creates a feature set with all unstable features disabled.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Creates a feature set with all known unstable features enabled.
+    pub fn all() -> Self {
+        Self::new(UnstableFeature::all().iter().copied())
+    }
+
+    /// Creates a feature set with specific unstable features enabled.
     pub fn new(features: impl IntoIterator<Item = UnstableFeature>) -> Self {
         Self {
             enabled_features: features.into_iter().collect(),
         }
     }
 
-    pub fn is_enabled(&self, feature: UnstableFeature) -> bool {
+    fn is_enabled(&self, feature: UnstableFeature) -> bool {
         self.enabled_features.contains(&feature)
     }
 
-    pub fn check_feature(&self, feature: UnstableFeature) -> Result<(), Error> {
-        if !self.is_enabled(feature) {
-            return Err(Error::UnstableFeature {
-                feature_name: feature.to_string(),
-            });
-        }
-        Ok(())
+    fn disabled_feature_error(&self, feature: UnstableFeature) -> Option<Error> {
+        (!self.is_enabled(feature)).then(|| Error::UnstableFeature {
+            feature_name: feature.to_string(),
+        })
     }
 
-    pub fn check_program(
+    pub(crate) fn check_program(
         &self,
         program: &(impl UnstableFeatureRequirements + ?Sized),
+        source: impl Into<SourceFile> + Clone,
         handler: &mut ErrorCollector,
     ) {
         let mut feature_uses = Vec::new();
         program.unstable_feature_uses(&mut feature_uses);
 
         for feature_use in feature_uses {
-            if let Err(error) = self.check_feature(feature_use.feature) {
-                handler.push(RichError::new(error, feature_use.span));
+            if let Some(error) = self.disabled_feature_error(feature_use.feature) {
+                handler.push(RichError::new(error, feature_use.span).with_source(source.clone()));
             }
         }
     }
 
-    pub fn from_feature_names(
-        names: impl IntoIterator<Item = impl AsRef<str>>,
-    ) -> Result<Self, String> {
+    pub fn from_names(names: impl IntoIterator<Item = impl AsRef<str>>) -> Result<Self, String> {
         let mut features = HashSet::new();
 
         for name in names {
@@ -128,6 +151,9 @@ impl UnstableFeatureManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use crate::source::SourceFile;
 
     #[test]
     fn test_feature_display() {
@@ -169,10 +195,10 @@ mod tests {
     }
 
     #[test]
-    fn test_default_manager() {
-        let manager = UnstableFeatureManager::default();
+    fn test_no_features_enabled_by_default() {
+        let features = UnstableFeatures::none();
         for feature in UnstableFeature::all() {
-            assert!(!manager.is_enabled(*feature));
+            assert!(!features.is_enabled(*feature));
         }
     }
 
@@ -181,74 +207,82 @@ mod tests {
         let Some(&feature) = UnstableFeature::all().first() else {
             return;
         };
-        let manager = UnstableFeatureManager::new([feature]);
-        assert!(manager.is_enabled(feature));
+        let features = UnstableFeatures::new([feature]);
+        assert!(features.is_enabled(feature));
     }
 
     #[test]
-    fn test_check_feature_enabled() {
-        let Some(&feature) = UnstableFeature::all().first() else {
-            return;
-        };
-        let manager = UnstableFeatureManager::new([feature]);
-        assert!(manager.check_feature(feature).is_ok());
+    fn test_all_features_enabled() {
+        let features = UnstableFeatures::all();
+        for feature in UnstableFeature::all() {
+            assert!(features.is_enabled(*feature));
+        }
     }
 
     #[test]
-    fn test_check_feature_disabled() {
-        let manager = UnstableFeatureManager::default();
-        let Some(&feature) = UnstableFeature::all().first() else {
-            return;
-        };
-        let error = manager.check_feature(feature).unwrap_err().to_string();
-        assert!(error.contains(&feature.to_string()));
+    fn test_check_program_disabled() {
+        struct RequiresImports;
+
+        impl UnstableFeatureRequirements for RequiresImports {
+            fn unstable_feature_uses(&self, out: &mut Vec<FeatureUse>) {
+                out.push(FeatureUse::new(UnstableFeature::Imports, Span::new(0, 3)));
+            }
+        }
+
+        let mut handler = ErrorCollector::new();
+        UnstableFeatures::none().check_program(
+            &RequiresImports,
+            SourceFile::anonymous(Arc::from("use")),
+            &mut handler,
+        );
+
+        let error = handler.to_string();
+        assert!(error.contains("imports"));
         assert!(error.contains("not enabled"));
         assert!(error.contains("-Z"));
     }
 
     #[test]
-    fn test_from_feature_names_single() {
+    fn test_from_names_single() {
         let Some(&feature) = UnstableFeature::all().first() else {
             return;
         };
-        let manager =
-            UnstableFeatureManager::from_feature_names(vec![feature.to_string()]).unwrap();
-        assert!(manager.is_enabled(feature));
+        let features = UnstableFeatures::from_names(vec![feature.to_string()]).unwrap();
+        assert!(features.is_enabled(feature));
     }
 
     #[test]
-    fn test_from_feature_names_multiple() {
+    fn test_from_names_multiple() {
         let names: Vec<_> = UnstableFeature::all()
             .iter()
             .map(|f| f.to_string())
             .collect();
-        let manager = UnstableFeatureManager::from_feature_names(names).unwrap();
+        let features = UnstableFeatures::from_names(names).unwrap();
         for feature in UnstableFeature::all() {
-            assert!(manager.is_enabled(*feature));
+            assert!(features.is_enabled(*feature));
         }
     }
 
     #[test]
-    fn test_from_feature_names_empty() {
-        let manager = UnstableFeatureManager::from_feature_names(Vec::<&str>::new()).unwrap();
+    fn test_from_names_empty() {
+        let features = UnstableFeatures::from_names(Vec::<&str>::new()).unwrap();
         for feature in UnstableFeature::all() {
-            assert!(!manager.is_enabled(*feature));
+            assert!(!features.is_enabled(*feature));
         }
     }
 
     #[test]
-    fn test_from_feature_names_with_whitespace() {
+    fn test_from_names_with_whitespace() {
         let Some(&feature) = UnstableFeature::all().first() else {
             return;
         };
-        let manager =
-            UnstableFeatureManager::from_feature_names(vec![format!("  {}  ", feature)]).unwrap();
-        assert!(manager.is_enabled(feature));
+        let features = UnstableFeatures::from_names(vec![format!("  {}  ", feature)]).unwrap();
+        assert!(features.is_enabled(feature));
     }
 
     #[test]
-    fn test_from_feature_names_unknown() {
-        let result = UnstableFeatureManager::from_feature_names(vec!["unknown-feature"]);
+    fn test_from_names_unknown() {
+        let result = UnstableFeatures::from_names(vec!["unknown-feature"]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Unknown"));
     }

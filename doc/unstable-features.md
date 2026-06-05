@@ -42,7 +42,7 @@ impl UnstableFeatureRequirements for UseDecl {
 }
 ```
 
-`UnstableFeatureManager` only checks whether declared requirements are enabled. It should not know
+`UnstableFeatures` only checks whether declared requirements are enabled. It should not know
 how to rediscover every syntax shape that can use a feature.
 
 ## Developer guide: Adding a new unstable feature

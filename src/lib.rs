@@ -46,7 +46,7 @@ use crate::resolution::DependencyMap;
 use crate::source::CanonSourceFile;
 use crate::source::SourceFile;
 pub use crate::types::ResolvedType;
-pub use crate::unstable::{UnstableFeature, UnstableFeatureManager};
+pub use crate::unstable::{UnstableFeature, UnstableFeatures};
 pub use crate::value::Value;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 
@@ -74,7 +74,7 @@ impl TemplateProgram {
         Self::with_unstable_and_dep(
             source,
             dependency_map,
-            &UnstableFeatureManager::default(),
+            &UnstableFeatures::none(),
             jet_hinter,
         )
     }
@@ -87,28 +87,21 @@ impl TemplateProgram {
     pub fn with_unstable_and_dep(
         source: CanonSourceFile,
         dependency_map: &DependencyMap,
-        unstable_manager: &UnstableFeatureManager,
+        unstable_features: &UnstableFeatures,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
         let mut error_handler = ErrorCollector::new();
 
-        // 1. Parse root file
         let parsed_program =
             parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler)
                 .ok_or_else(|| error_handler.to_string())?;
 
-        // 2. Check unstable features and record errors with precise spans
-        let mut unstable_errors = ErrorCollector::new();
-        unstable_manager.check_program(&parsed_program, &mut unstable_errors);
-        error_handler.extend_with_handler(source.clone(), &unstable_errors);
-
-        // 3. Create the driver program
         let graph = DependencyGraph::new(
             source.clone(),
             Arc::from(dependency_map.clone()),
             &parsed_program,
             &mut error_handler,
-            unstable_manager,
+            unstable_features,
         )?
         .ok_or_else(|| error_handler.to_string())?;
 
@@ -116,7 +109,6 @@ impl TemplateProgram {
             .linearize_and_build(&mut error_handler)?
             .ok_or_else(|| error_handler.to_string())?;
 
-        // 4. AST Analysis
         let ast_program = ast::Program::analyze(&driver_program, jet_hinter.clone_box())
             .with_source(source.clone())?;
         Ok(Self {
@@ -135,7 +127,7 @@ impl TemplateProgram {
         s: Str,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        Self::with_unstable(s, &UnstableFeatureManager::default(), jet_hinter)
+        Self::with_unstable(s, &UnstableFeatures::none(), jet_hinter)
     }
 
     /// Parse the template of a SimplicityHL program with explicit unstable features enabled.
@@ -145,7 +137,7 @@ impl TemplateProgram {
     /// The string is not a valid SimplicityHL program.
     pub fn with_unstable<Str: Into<Arc<str>>>(
         s: Str,
-        unstable_manager: &UnstableFeatureManager,
+        unstable_features: &UnstableFeatures,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
         let file = s.into();
@@ -156,9 +148,10 @@ impl TemplateProgram {
             parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler)
                 .ok_or_else(|| error_handler.to_string())?;
 
-        let mut unstable_errors = ErrorCollector::new();
-        unstable_manager.check_program(&parsed_program, &mut unstable_errors);
-        error_handler.extend_with_handler(source.clone(), &unstable_errors);
+        unstable_features.check_program(&parsed_program, source.clone(), &mut error_handler);
+        if error_handler.has_errors() {
+            return Err(error_handler.to_string());
+        }
 
         let driver_program =
             driver::Program::from_parse(&parsed_program, file.clone(), &mut error_handler)
@@ -249,7 +242,7 @@ impl CompiledProgram {
         Self::with_unstable_and_dep(
             source,
             dependency_map,
-            &UnstableFeatureManager::default(),
+            &UnstableFeatures::none(),
             arguments,
             include_debug_symbols,
             jet_hinter,
@@ -260,7 +253,7 @@ impl CompiledProgram {
     pub fn with_unstable_and_dep(
         source: CanonSourceFile,
         dependency_map: &DependencyMap,
-        unstable_manager: &UnstableFeatureManager,
+        unstable_features: &UnstableFeatures,
         arguments: Arguments,
         include_debug_symbols: bool,
         jet_hinter: Box<dyn ast::JetHinter>,
@@ -268,7 +261,7 @@ impl CompiledProgram {
         TemplateProgram::with_unstable_and_dep(
             source,
             dependency_map,
-            unstable_manager,
+            unstable_features,
             jet_hinter.clone_box(),
         )
         .and_then(|template| template.instantiate(arguments, include_debug_symbols))
@@ -288,7 +281,7 @@ impl CompiledProgram {
     ) -> Result<Self, String> {
         Self::with_unstable(
             s,
-            &UnstableFeatureManager::default(),
+            &UnstableFeatures::none(),
             arguments,
             include_debug_symbols,
             jet_hinter,
@@ -298,12 +291,12 @@ impl CompiledProgram {
     /// Parse and compile a SimplicityHL program with explicit unstable features enabled.
     pub fn with_unstable<Str: Into<Arc<str>>>(
         s: Str,
-        unstable_manager: &UnstableFeatureManager,
+        unstable_features: &UnstableFeatures,
         arguments: Arguments,
         include_debug_symbols: bool,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        TemplateProgram::with_unstable(s, unstable_manager, jet_hinter.clone_box())
+        TemplateProgram::with_unstable(s, unstable_features, jet_hinter.clone_box())
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -391,7 +384,7 @@ impl SatisfiedProgram {
     ) -> Result<Self, String> {
         Self::with_unstable(
             s,
-            &UnstableFeatureManager::default(),
+            &UnstableFeatures::none(),
             arguments,
             witness_values,
             include_debug_symbols,
@@ -402,7 +395,7 @@ impl SatisfiedProgram {
     /// Parse, compile and satisfy a SimplicityHL program with explicit unstable features enabled.
     pub fn with_unstable<Str: Into<Arc<str>>>(
         s: Str,
-        unstable_manager: &UnstableFeatureManager,
+        unstable_features: &UnstableFeatures,
         arguments: Arguments,
         witness_values: WitnessValues,
         include_debug_symbols: bool,
@@ -410,7 +403,7 @@ impl SatisfiedProgram {
     ) -> Result<Self, String> {
         let compiled = CompiledProgram::with_unstable(
             s,
-            unstable_manager,
+            unstable_features,
             arguments,
             include_debug_symbols,
             jet_hinter,
@@ -553,7 +546,7 @@ pub(crate) mod tests {
             features: F,
         ) -> Self
         where
-            F: IntoIterator<Item = UnstableFeature> + Clone,
+            F: IntoIterator<Item = UnstableFeature>,
         {
             let program_text = std::fs::read_to_string(program_file_path).unwrap();
             Self::template_text_with_unstable(Cow::Owned(program_text), features)
@@ -575,9 +568,9 @@ pub(crate) mod tests {
             features: F,
         ) -> Self
         where
-            F: IntoIterator<Item = UnstableFeature> + Clone,
+            F: IntoIterator<Item = UnstableFeature>,
         {
-            let unstable_manager = UnstableFeatureManager::new(features);
+            let unstable_features = UnstableFeatures::new(features);
             let program_text = std::fs::read_to_string(prog_path).unwrap();
             let source = CanonSourceFile::new(
                 crate::source::CanonPath::canonicalize(prog_path).unwrap(),
@@ -587,7 +580,7 @@ pub(crate) mod tests {
             let program = match TemplateProgram::with_unstable_and_dep(
                 source,
                 dependency_map,
-                &unstable_manager,
+                &unstable_features,
                 Box::new(ElementsJetHinter::new()),
             ) {
                 Ok(x) => x,
@@ -608,28 +601,13 @@ pub(crate) mod tests {
 
         pub fn template_text_with_unstable<F>(program_text: Cow<str>, features: F) -> Self
         where
-            F: IntoIterator<Item = UnstableFeature> + Clone,
+            F: IntoIterator<Item = UnstableFeature>,
         {
-            let unstable_manager = UnstableFeatureManager::new(features.clone());
-
-            let features_vec: Vec<UnstableFeature> = features.into_iter().collect();
-            if !features_vec.is_empty() {
-                let result =
-                    TemplateProgram::new(program_text.as_ref(), Box::new(ElementsJetHinter::new()));
-                let err = result.expect_err("Program should fail without unstable flags");
-                for feature in features_vec {
-                    assert!(
-                        err.contains(&feature.to_string()),
-                        "Expected unstable feature error to mention '{}', got: {}",
-                        feature,
-                        err
-                    );
-                }
-            }
+            let unstable_features = UnstableFeatures::new(features);
 
             let program = match TemplateProgram::with_unstable(
                 program_text.as_ref(),
-                &unstable_manager,
+                &unstable_features,
                 Box::new(ElementsJetHinter::new()),
             ) {
                 Ok(x) => x,
@@ -683,7 +661,7 @@ pub(crate) mod tests {
             features: F,
         ) -> Self
         where
-            F: IntoIterator<Item = UnstableFeature> + Clone,
+            F: IntoIterator<Item = UnstableFeature>,
         {
             TestCase::<TemplateProgram>::template_file_with_unstable(program_file_path, features)
                 .with_arguments(Arguments::default())
@@ -698,7 +676,7 @@ pub(crate) mod tests {
         #[allow(dead_code)]
         pub fn program_text_with_unstable<F>(program_text: Cow<str>, features: F) -> Self
         where
-            F: IntoIterator<Item = UnstableFeature> + Clone,
+            F: IntoIterator<Item = UnstableFeature>,
         {
             TestCase::<TemplateProgram>::template_text_with_unstable(program_text, features)
                 .with_arguments(Arguments::default())
@@ -728,7 +706,7 @@ pub(crate) mod tests {
             P: AsRef<Path>,
             I: IntoIterator<Item = (P, K, P)>,
             K: Into<String>,
-            F: IntoIterator<Item = UnstableFeature> + Clone,
+            F: IntoIterator<Item = UnstableFeature>,
         {
             let parent = prog_path.as_ref().parent().unwrap();
             let canon_root = canon(parent);
@@ -742,30 +720,6 @@ pub(crate) mod tests {
             }
 
             let dependency_map = builder.build().unwrap();
-
-            let features_vec: Vec<UnstableFeature> = features.clone().into_iter().collect();
-            if !features_vec.is_empty() {
-                let program_text = std::fs::read_to_string(prog_path.as_ref()).unwrap();
-                let source = CanonSourceFile::new(
-                    crate::source::CanonPath::canonicalize(prog_path.as_ref()).unwrap(),
-                    Arc::from(program_text),
-                );
-                let result = TemplateProgram::new_with_dep(
-                    source,
-                    &dependency_map,
-                    Box::new(ElementsJetHinter::new()),
-                );
-                let err = result
-                    .expect_err("Program with dependencies should fail without unstable flags");
-                for feature in features_vec {
-                    assert!(
-                        err.contains(&feature.to_string()),
-                        "Expected unstable feature error to mention '{}', got: {}",
-                        feature,
-                        err
-                    );
-                }
-            }
 
             TestCase::<TemplateProgram>::template_deps_with_unstable(
                 prog_path.as_ref(),
@@ -891,7 +845,7 @@ pub(crate) mod tests {
         lib_alias: &str,
         features: F,
     ) where
-        F: IntoIterator<Item = UnstableFeature> + Clone,
+        F: IntoIterator<Item = UnstableFeature>,
     {
         let root_path = PathBuf::from(root_path);
         let lib_path = root_path.join(lib_alias);
@@ -919,7 +873,7 @@ pub(crate) mod tests {
         deps: &[(&str, &str, &str)],
         features: F,
     ) where
-        F: IntoIterator<Item = UnstableFeature> + Clone,
+        F: IntoIterator<Item = UnstableFeature>,
     {
         let root_path = PathBuf::from(root_path);
         let main_path = root_path.join("main.simf");
@@ -1029,6 +983,20 @@ pub(crate) mod tests {
         .with_arguments(Arguments::default())
         .with_witness_values(WitnessValues::default())
         .assert_run_success();
+    }
+
+    #[test]
+    fn imports_require_unstable_feature_in_single_file() {
+        let err = TemplateProgram::new(
+            "use lib::math::add;\nfn main() {}",
+            Box::new(ElementsJetHinter::new()),
+        )
+        .expect_err("imports should be rejected without -Z imports");
+
+        assert!(
+            err.contains("imports") && err.contains("not enabled"),
+            "expected unstable imports error, got:\n{err}"
+        );
     }
 
     #[test]
@@ -1484,12 +1452,12 @@ mod error_tests {
         );
 
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
-        let unstable_manager = UnstableFeatureManager::new(UnstableFeature::all().iter().copied());
+        let unstable_features = UnstableFeatures::all();
 
         let err = TemplateProgram::with_unstable_and_dep(
             source_file(&main_path),
             &dependencies,
-            &unstable_manager,
+            &unstable_features,
             Box::new(ElementsJetHinter::new()),
         )
         .expect_err("dependency body has a type error");
@@ -1517,11 +1485,11 @@ mod error_tests {
         ws.create_file("workspace/lib/base.simf", "pub fn one() -> u32 { 1 }\n");
 
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
-        let unstable_manager = UnstableFeatureManager::new(UnstableFeature::all().iter().copied());
+        let unstable_features = UnstableFeatures::all();
         let _err = TemplateProgram::with_unstable_and_dep(
             source_file(&main_path),
             &dependencies,
-            &unstable_manager,
+            &unstable_features,
             Box::new(ElementsJetHinter::new()),
         )
         .expect_err("omitted-context dependencies");
@@ -1537,12 +1505,12 @@ mod error_tests {
             "use lib::missing::Thing;\nfn main() {}\n",
         );
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
-        let unstable_manager = UnstableFeatureManager::new(UnstableFeature::all().iter().copied());
+        let unstable_features = UnstableFeatures::all();
 
         let err = TemplateProgram::with_unstable_and_dep(
             source_file(&main_path),
             &dependencies,
-            &unstable_manager,
+            &unstable_features,
             Box::new(ElementsJetHinter::new()),
         )
         .expect_err("missing imported module should fail");
