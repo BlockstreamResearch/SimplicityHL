@@ -29,7 +29,7 @@ check:
 
 # Run fuzz test for 30 seconds
 fuzz target:
-    cargo-fuzz run {{target}} -- -max_total_time=30 -max_len=50
+    cargo +nightly fuzz run {{target}} -- -max_total_time=30 -max_len=50
 
 # Check fuzz targets (CI; requires nightly)
 check_fuzz:
@@ -42,7 +42,7 @@ check_fuzz:
 
 # Build fuzz tests
 build_fuzz:
-    cargo-fuzz check
+    cargo +nightly fuzz check
 
 # Check the standalone fuzz crate compiles
 check_fuzz_crate:
