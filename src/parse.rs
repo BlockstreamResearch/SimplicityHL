@@ -15,11 +15,12 @@ use chumsky::prelude::{
 use chumsky::{extra, select, IterParser, Parser};
 
 use either::Either;
+use itertools::Itertools;
 use miniscript::iter::{Tree, TreeLike};
 
 use crate::driver::{CRATE_STR, MAIN_MODULE};
 use crate::error::ErrorCollector;
-use crate::error::{Error, RichError, Span};
+use crate::error::{RichError, Span};
 use crate::impl_eq_hash;
 use crate::lexer::Token;
 use crate::num::NonZeroPow2Usize;
@@ -30,6 +31,73 @@ use crate::str::{
     SymbolName, WitnessName,
 };
 use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
+
+#[derive(Debug, Clone)]
+pub struct SyntaxErrorInfo {
+    pub expected: Vec<String>,
+    pub label: Option<String>,
+    pub found: Option<String>,
+}
+
+impl fmt::Display for SyntaxErrorInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let found_text = self
+            .found
+            .clone()
+            .unwrap_or_else(|| "end of input".to_string());
+
+        match (&self.label, self.expected.len()) {
+            (Some(l), _) => write!(f, "Expected {}, found {}", l, found_text),
+            (None, 1) => {
+                let exp_text = self.expected.first().unwrap();
+                write!(f, "Expected '{}', found '{}'", exp_text, found_text)
+            }
+            (None, 0) => write!(f, "Unexpected {}", found_text),
+            (None, _) => {
+                let exp_text = self.expected.iter().map(|s| format!("'{}'", s)).join(", ");
+                write!(f, "Expected one of {}, found '{}'", exp_text, found_text)
+            }
+        }
+    }
+}
+
+impl std::error::Error for SyntaxErrorInfo {}
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum Error {
+    #[error("Grammar error: {msg}")]
+    Grammar { msg: String },
+
+    #[error("Cannot parse: {msg}")]
+    CannotParse { msg: String },
+
+    #[error(
+        "Expected a power of two greater than one (2, 4, 8, 16, 32, ...) as list bound, found {bound}"
+    )]
+    ListBoundPow2 { bound: usize },
+
+    #[error(transparent)]
+    SyntaxError(#[from] SyntaxErrorInfo),
+
+    #[error("Incompatible match arms: {first}, {second}")]
+    IncompatibleMatchArms {
+        first: MatchPattern,
+        second: MatchPattern,
+    },
+
+    #[error("Expected a non-negative integer as array size, found {size}")]
+    ArraySizeNonZero { size: usize },
+
+    #[error("Type alias `{name}` is already exists as built-in alias")]
+    RedefinedAliasAsBuiltin { name: AliasName },
+}
+
+impl Error {
+    /// Update the error with the affected span.
+    pub fn with_span(self, span: Span) -> RichError {
+        RichError::new(self.into(), span)
+    }
+}
 
 /// A program is a sequence of items.
 #[derive(Clone, Debug)]
@@ -2494,6 +2562,11 @@ mod test {
             .error()
             .to_string()
             .contains("Type alias `Ctx8` is already exists as built-in alias"));
+        matches!(
+            ty.error(),
+            &crate::error::Error::ParsingError(Error::RedefinedAliasAsBuiltin { ref name })
+            if name == &AliasName::from_str_unchecked("Ctx8")
+        );
     }
 
     #[test]

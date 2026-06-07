@@ -1,6 +1,9 @@
 //! Compile the parsed ast into a simplicity program
 
 mod builtins;
+mod error;
+
+pub use error::Error;
 
 use std::sync::Arc;
 
@@ -15,7 +18,7 @@ use crate::ast::{
     SingleExpressionInner, Statement,
 };
 use crate::debug::CallTracker;
-use crate::error::{Error, RichError, Span, WithSpan};
+use crate::error::{RichError, Span, WithSpan};
 use crate::named::{self, CoreExt, PairBuilder};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::pattern::{BasePattern, Pattern};
