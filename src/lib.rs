@@ -1001,6 +1001,7 @@ pub(crate) mod tests {
             ),
             Arguments::default(),
             false,
+            Box::new(ElementsJetHinter::new()),
         )
         .expect("program compiles");
 
