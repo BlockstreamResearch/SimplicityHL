@@ -214,10 +214,9 @@ impl crate::ArbitraryOfType for Arguments {
 mod tests {
     use super::*;
     use crate::ast::ElementsJetHinter;
-    use crate::error::ErrorCollector;
     use crate::parse::ParseFromStr;
     use crate::value::ValueConstructible;
-    use crate::{ast, driver, parse, CompiledProgram, SatisfiedProgram};
+    use crate::{ast, parse, CompiledProgram, SatisfiedProgram};
 
     #[test]
     fn witness_reuse() {
@@ -225,15 +224,7 @@ mod tests {
     assert!(jet::eq_32(witness::A, witness::A));
 }"#;
         let parse_program = parse::Program::parse_from_str(s).expect("parsing works");
-
-        let mut error_collector = ErrorCollector::new();
-        let driver_program = driver::resolve_order::Program::from_parse(
-            &parse_program,
-            Arc::from(s),
-            &mut error_collector,
-        )
-        .expect("driver works");
-        match ast::Program::analyze(&driver_program, Box::new(ElementsJetHinter::new()))
+        match ast::Program::analyze(&parse_program, Box::new(ElementsJetHinter::new()))
             .map_err(Error::from)
         {
             Ok(_) => panic!("Witness reuse was falsely accepted"),

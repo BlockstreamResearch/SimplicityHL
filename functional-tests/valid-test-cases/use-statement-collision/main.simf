@@ -1,0 +1,7 @@
+use crate::A::foo;
+
+use lib::B::bar;
+
+fn main() { 
+    assert!(jet::eq_32(foo(), 7)); 
+}

@@ -39,6 +39,14 @@ pub struct Program {
 }
 
 impl Program {
+    // Need for driver usage
+    pub(crate) fn new(items: &[Item], span: Span) -> Self {
+        Self {
+            items: Arc::from(items),
+            span,
+        }
+    }
+
     /// Access the items of the program.
     pub fn items(&self) -> &[Item] {
         &self.items
@@ -49,7 +57,6 @@ impl_eq_hash!(Program; items);
 
 /// An item is a component of a program.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum Item {
     /// A type alias.
     TypeAlias(TypeAlias),
@@ -58,8 +65,13 @@ pub enum Item {
     /// An import declaration (e.g., `use math::add`) that brings another
     /// [`Item`] into the current scope.
     Use(UseDecl),
-    /// A module, which is ignored.
-    Module,
+    /// A module containing a collection of nested [`Item`].
+    Module(Module),
+    /// A placeholder used exclusively for error recovery during parsing.
+    ///
+    /// When the parser encounters a syntax error, it skips the malformed tokens
+    /// until it reaches a valid top-level keyword and inserts `Ignored` into the AST.
+    Ignored,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
@@ -82,6 +94,8 @@ pub enum Visibility {
 /// ```
 #[derive(Clone, Debug)]
 pub struct UseDecl {
+    file_id: usize,
+
     /// The visibility of the import (e.g., `pub use` vs `use`).
     visibility: Visibility,
 
@@ -97,6 +111,19 @@ pub struct UseDecl {
 }
 
 impl UseDecl {
+    /// The driver uses this to ensure imports conform to the flattened program structure.
+    pub(crate) fn set_file_id(&mut self, file_id: usize) {
+        self.file_id = file_id;
+    }
+
+    pub(crate) fn set_path(&mut self, path: &[Identifier]) {
+        self.path = Vec::from(path)
+    }
+
+    pub fn file_id(&self) -> usize {
+        self.file_id
+    }
+
     pub fn visibility(&self) -> &Visibility {
         &self.visibility
     }
@@ -105,12 +132,12 @@ impl UseDecl {
     ///
     /// This includes the Dependency Root Path Name (the first segment)
     /// followed by all subsequent sub-module segments.
-    pub fn path(&self) -> Vec<&str> {
-        self.path.iter().map(|s| s.as_inner()).collect()
+    pub fn path(&self) -> &[Identifier] {
+        &self.path
     }
 
     pub fn str_path(&self) -> String {
-        let path: PathBuf = self.path.iter().map(|s| s.as_inner()).collect();
+        let path: PathBuf = self.path().iter().map(|iden| iden.as_inner()).collect();
         path.display().to_string()
     }
 
@@ -120,7 +147,7 @@ impl UseDecl {
     ///
     /// Returns a `RichError` if the use declaration path is completely empty.
     pub fn drp_name(&self) -> Result<&str, RichError> {
-        let parts = self.path();
+        let parts: Vec<&str> = self.path().iter().map(|iden| iden.as_inner()).collect();
         parts.first().copied().ok_or_else(|| {
             Error::CannotParse {
                 msg: "Empty use path".to_string(),
@@ -138,11 +165,15 @@ impl UseDecl {
     }
 }
 
-impl_eq_hash!(UseDecl; visibility, path, items);
+// `file_id` and `span` are required because `UseDecl` hashing is context-dependent.
+// For instance, identical `use crate::...` paths differ between binary and library roots.
+// Tested by: `functional_tests::identical_crate_uses_in_different_package_roots_do_not_poison_resolution_cache`.
+impl_eq_hash!(UseDecl; file_id, visibility, path, items, span);
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for UseDecl {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let file_id = u.int_in_range(0..=3)?;
         let visibility = Visibility::arbitrary(u)?;
         let path_len = u.int_in_range(2..=4)?;
         let path = (0..path_len)
@@ -151,6 +182,7 @@ impl<'a> arbitrary::Arbitrary<'a> for UseDecl {
         let items = UseItems::arbitrary(u)?;
 
         Ok(Self {
+            file_id,
             visibility,
             path,
             items,
@@ -199,7 +231,7 @@ impl Function {
         self.file_id
     }
 
-    pub fn set_file_id(&mut self, file_id: usize) {
+    pub(crate) fn set_file_id(&mut self, file_id: usize) {
         self.file_id = file_id;
     }
 
@@ -374,7 +406,7 @@ impl TypeAlias {
         self.file_id
     }
 
-    pub fn set_file_id(&mut self, file_id: usize) {
+    pub(crate) fn set_file_id(&mut self, file_id: usize) {
         self.file_id = file_id;
     }
 
@@ -621,50 +653,47 @@ impl MatchPattern {
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Module {
+    file_id: usize,
+    visibility: Visibility,
     name: ModuleName,
-    assignments: Arc<[ModuleAssignment]>,
+    items: Arc<[Item]>,
     span: Span,
 }
 
 impl Module {
+    /// Needed by the driver to wrap a single file into a module.
+    pub(crate) fn new(
+        file_id: usize,
+        visibility: Visibility,
+        name: ModuleName,
+        items: &[Item],
+    ) -> Module {
+        Self {
+            file_id,
+            visibility,
+            name,
+            items: Arc::from(items),
+            span: Span::new(0, 0),
+        }
+    }
+
+    pub fn visibility(&self) -> &Visibility {
+        &self.visibility
+    }
+
     /// Access the name of the module.
     pub fn name(&self) -> &ModuleName {
         &self.name
     }
 
     /// Access the assignments of the module.
-    pub fn assignments(&self) -> &[ModuleAssignment] {
-        &self.assignments
+    pub fn items(&self) -> &[Item] {
+        &self.items
     }
 
     /// Access the span of the module.
     pub fn span(&self) -> &Span {
         &self.span
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct ModuleAssignment {
-    name: WitnessName,
-    ty: AliasedType,
-    expression: Expression,
-    span: Span,
-}
-
-impl ModuleAssignment {
-    /// Access the assigned witness name.
-    pub fn name(&self) -> &WitnessName {
-        &self.name
-    }
-
-    /// Access the assigned witness type.
-    pub fn ty(&self) -> &AliasedType {
-        &self.ty
-    }
-
-    /// Access the assigned witness expression.
-    pub fn expression(&self) -> &Expression {
-        &self.expression
     }
 }
 
@@ -683,10 +712,8 @@ impl fmt::Display for Item {
             Self::TypeAlias(alias) => write!(f, "{alias}"),
             Self::Function(function) => write!(f, "{function}"),
             Self::Use(use_declaration) => write!(f, "{use_declaration}"),
-            // The parse tree contains no information about the contents of modules.
-            // We print a random empty module `mod witness {}` here
-            // so that `from_string(to_string(x)) = x` holds for all trees `x`.
-            Self::Module => write!(f, "mod witness {{}}"),
+            Self::Module(module) => write!(f, "{module}"),
+            Self::Ignored => Ok(()),
         }
     }
 }
@@ -726,6 +753,12 @@ impl fmt::Display for Function {
             write!(f, " -> {ty}")?;
         }
         write!(f, " {}", self.body())
+    }
+}
+
+impl fmt::Display for FunctionParam {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.identifier(), self.ty())
     }
 }
 
@@ -778,9 +811,19 @@ impl fmt::Display for UseItems {
     }
 }
 
-impl fmt::Display for FunctionParam {
+impl fmt::Display for Module {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.identifier(), self.ty())
+        writeln!(f, "{}mod {} {{", self.visibility(), self.name())?;
+
+        for item in self.items() {
+            let item_str = item.to_string();
+
+            for line in item_str.lines() {
+                writeln!(f, "    {line}")?;
+            }
+        }
+
+        write!(f, "}}")
     }
 }
 
@@ -847,6 +890,8 @@ impl TreeLike for ExprTree<'_> {
     }
 }
 
+// TODO: Fix indentation and formatting logic. The current flat iterator approach cannot
+// track AST depth, causing incorrect indentation for nested `Block` and `Match` nodes.
 impl fmt::Display for ExprTree<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use SingleExpressionInner as S;
@@ -1329,6 +1374,12 @@ impl ChumskyParse for AliasedType {
 }
 
 impl ChumskyParse for Program {
+    /// Parses a sequence of top-level [`Item`]s into a complete [`Program`].
+    ///
+    /// If an invalid item is encountered, it will safely skip the broken tokens
+    /// until it finds a synchronization point. This prevents the parser from
+    /// failing completely, allowing it to report multiple syntax errors across the file
+    /// while substituting the unparseable sections with [`Item::Ignored`].
     fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
@@ -1344,8 +1395,7 @@ impl ChumskyParse for Program {
                     })
                     .repeated(),
             )
-            // map to empty module
-            .map_with(|_, _| Item::Module);
+            .map_with(|_, _| Item::Ignored);
 
         Item::parser()
             .recover_with(via_parser(skip_until_next_item))
@@ -1363,12 +1413,16 @@ impl ChumskyParse for Item {
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
-        let func_parser = Function::parser().map(Item::Function);
-        let type_parser = TypeAlias::parser().map(Item::TypeAlias);
-        let use_parser = UseDecl::parser().map(Item::Use);
-        let mod_parser = Module::parser().map(|_| Item::Module);
+        recursive(|item| {
+            let func_parser = Function::parser().map(Item::Function);
+            let type_parser = TypeAlias::parser().map(Item::TypeAlias);
+            let use_parser = UseDecl::parser().map(Item::Use);
 
-        choice((func_parser, use_parser, type_parser, mod_parser))
+            // Lazy item here
+            let mod_parser = Module::parser_with_items(item).map(Item::Module);
+
+            choice((func_parser, use_parser, type_parser, mod_parser))
+        })
     }
 }
 
@@ -1420,7 +1474,7 @@ impl ChumskyParse for Function {
             .then(params)
             .then(ret)
             .then(body)
-            .map_with(move |((((visibility, name), params), ret), body), e| Self {
+            .map_with(|((((visibility, name), params), ret), body), e| Self {
                 file_id: MAIN_MODULE,
                 visibility,
                 name,
@@ -1442,21 +1496,23 @@ impl ChumskyParse for UseDecl {
             .or_not()
             .map(Option::unwrap_or_default);
 
-        // Parse the base path prefix (e.g., `dependency_root_path::file::`, `dependency_root_path::dir::file::`, or `crate::dir::file::`).
-        // We require at least 2 segments here because a valid import needs a minimum
-        // of 3 items total: the dependency root path (or `crate`), the file, and the specific item/function.
         let first_segment = select! {
             Token::Ident(ident) => Identifier::from_str_unchecked(ident),
             Token::Crate => Identifier::from_str_unchecked(CRATE_STR),
         };
 
+        // Parse the base path prefix (e.g., `dependency_root_path::file::`, `dependency_root_path::dir::file::`,
+        // or `crate::dir::file::`). We require at least 2 segments here because a valid import needs a minimum
+        // of 3 items total: the dependency root path (or `crate`), the file, and the specific item.
+        //
+        // With the introduction of `mod` keyword and single-file flattening, 2 total segments are now
+        // valid: `crate::item`, where `crate` is the program root.
         let path = first_segment
             .then_ignore(just(Token::DoubleColon))
             .then(
                 Identifier::parser()
                     .then_ignore(just(Token::DoubleColon))
                     .repeated()
-                    .at_least(1)
                     .collect::<Vec<_>>(),
             )
             .map(|(first, mut rest)| {
@@ -1484,6 +1540,7 @@ impl ChumskyParse for UseDecl {
             .then(items)
             .then_ignore(just(Token::Semi))
             .map_with(|((visibility, path), items), e| Self {
+                file_id: MAIN_MODULE,
                 visibility,
                 path,
                 items,
@@ -1771,7 +1828,7 @@ impl ChumskyParse for TypeAlias {
                     .then(AliasedType::parser())
                     .then_ignore(just(Token::Semi)),
             )
-            .map_with(move |(visibility, (name, ty)), e| Self {
+            .map_with(|(visibility, (name, ty)), e| Self {
                 file_id: MAIN_MODULE,
                 visibility,
                 name: name.0,
@@ -2082,14 +2139,21 @@ impl Match {
     }
 }
 
-impl ChumskyParse for Module {
-    fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
+impl Module {
+    pub fn parser_with_items<'tokens, 'src: 'tokens, I>(
+        item_parser: impl Parser<'tokens, I, Item, ParseError<'src>> + Clone + 'tokens,
+    ) -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
     where
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
+        let visibility = just(Token::Pub)
+            .to(Visibility::Public)
+            .or_not()
+            .map(Option::unwrap_or_default);
+
         let name = ModuleName::parser().map_with(|name, e| (name, e.span()));
 
-        let assignments = ModuleAssignment::parser()
+        let items = item_parser
             .repeated()
             .collect::<Vec<_>>()
             .delimited_by(just(Token::LBrace), just(Token::RBrace))
@@ -2104,35 +2168,13 @@ impl ChumskyParse for Module {
             )))
             .map(Arc::from);
 
-        just(Token::Mod)
-            .ignore_then(name)
-            .then(assignments)
-            .map_with(|(name, assignments), e| Self {
+        visibility
+            .then(just(Token::Mod).ignore_then(name).then(items))
+            .map_with(|(visibility, (name, items)), e| Self {
+                file_id: MAIN_MODULE,
+                visibility,
                 name: name.0,
-                assignments,
-                span: e.span(),
-            })
-    }
-}
-
-impl ChumskyParse for ModuleAssignment {
-    fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
-    where
-        I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
-    {
-        let name = WitnessName::parser();
-
-        just(Token::Const)
-            .ignore_then(name)
-            .then_ignore(just(Token::Colon))
-            .then(AliasedType::parser())
-            .then_ignore(just(Token::Eq))
-            .then(Expression::parser())
-            .then_ignore(just(Token::Semi))
-            .map_with(|((name, ty), expression), e| Self {
-                name,
-                ty,
-                expression,
+                items,
                 span: e.span(),
             })
     }
@@ -2192,26 +2234,37 @@ impl AsRef<Span> for Match {
     }
 }
 
+impl AsRef<Span> for UseDecl {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
 impl AsRef<Span> for Module {
     fn as_ref(&self) -> &Span {
         &self.span
     }
 }
 
-impl AsRef<Span> for ModuleAssignment {
-    fn as_ref(&self) -> &Span {
-        &self.span
+#[cfg(feature = "arbitrary")]
+pub(crate) fn generate_arbitrary_items<'a>(
+    u: &mut arbitrary::Unstructured<'a>,
+) -> arbitrary::Result<Vec<Item>> {
+    let mut items_vec = Vec::new();
+
+    let len = u.int_in_range(0..=2)?;
+    for _ in 0..len {
+        items_vec.push(<Item as arbitrary::Arbitrary>::arbitrary(u)?);
     }
+
+    Ok(items_vec)
 }
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for Program {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let mut items_vec: Vec<Item> = Vec::new();
-        let len = u.int_in_range(0..=2)?;
-        for _ in 0..len {
-            items_vec.push(Item::arbitrary(u)?);
-        }
+        let mut items_vec = generate_arbitrary_items(u)?;
+
         // Three equally-likely modes for how `fn main()` is injected:
         //   0 — no explicit main (arbitrary items only)
         //   1 — main with arbitrary params and return type
@@ -2237,6 +2290,19 @@ impl<'a> arbitrary::Arbitrary<'a> for Program {
             items,
             span: Span::DUMMY,
         })
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for Item {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        match u.int_in_range(0..=3)? {
+            0 => Ok(Item::TypeAlias(TypeAlias::arbitrary(u)?)),
+            1 => Ok(Item::Function(Function::arbitrary(u)?)),
+            2 => Ok(Item::Use(UseDecl::arbitrary(u)?)),
+            3 => Ok(Item::Module(Module::arbitrary(u)?)),
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -2268,6 +2334,26 @@ impl crate::ArbitraryRec for Function {
             params,
             ret,
             body,
+            span: Span::DUMMY,
+        })
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for Module {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // A small range allows us to test scenarios where two
+        // randomly generated modules end up in the same file.
+        let file_id = u.int_in_range(0..=3)?;
+        let visibility = Visibility::arbitrary(u)?;
+        let name = ModuleName::arbitrary(u)?;
+        let items_vec = generate_arbitrary_items(u)?;
+
+        Ok(Self {
+            file_id,
+            visibility,
+            name,
+            items: items_vec.into(),
             span: Span::DUMMY,
         })
     }
@@ -2477,6 +2563,7 @@ mod test {
         /// Creates a dummy `UseDecl` specifically for testing `DependencyMap` resolution.
         pub fn dummy_path(path: Vec<Identifier>) -> Self {
             Self {
+                file_id: MAIN_MODULE,
                 visibility: Visibility::default(),
                 path,
                 items: UseItems::List(Vec::new()),

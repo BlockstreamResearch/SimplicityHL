@@ -58,6 +58,11 @@ impl DependencyGraph {
             .map_or(&[] as &[usize], |v| v.as_slice());
 
         for &parent in parents {
+            // Ignore self-imports. Since the program is sequential and nodes are loaded
+            // sequentially during `AST::analyze`, forward declarations cannot be loaded at all.
+            if parent == module {
+                continue;
+            }
             self.dfs_linearize(parent, visited, visiting, order)?;
         }
 
