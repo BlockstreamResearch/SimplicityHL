@@ -1059,7 +1059,6 @@ impl Program {
         })
     }
 
-    // Put this helper function inside your impl block or just above your logic
     fn extract_single_main(items: &[Item]) -> Result<Option<Expression>, Error> {
         let mut main_expr = None;
 

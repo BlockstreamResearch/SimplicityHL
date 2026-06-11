@@ -135,7 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|p| CanonPath::canonicalize(p).ok())
         .ok_or("Failed to determine project root directory from entry file")?;
 
-    let mut builder = DependencyMapBuilder::new(canon_root.clone());
+    let mut builder = DependencyMapBuilder::new();
 
     for arg in dep_args {
         let (left_side, path_str) = arg.split_once('=').unwrap_or_else(|| {
@@ -157,11 +157,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let target_path = CanonPath::canonicalize(Path::new(path_str))?;
-
-        builder = builder.add_dependency(context_path, alias.to_string(), target_path);
+        builder.add_dependency(context_path, alias.to_string(), target_path);
     }
 
-    let dependencies = match builder.build() {
+    let dependencies = match builder.build(canon_root.clone()) {
         Ok(map) => map,
         Err(e) => {
             eprintln!("Error: {e}");

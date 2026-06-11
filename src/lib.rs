@@ -422,7 +422,7 @@ pub trait ArbitraryOfType: Sized {
 pub(crate) mod tests {
     use crate::ast::ElementsJetHinter;
     use crate::parse::ParseFromStr;
-    use crate::resolution::tests::canon;
+    use crate::resolution::tests::{build_map, canon};
     use crate::resolution::DependencyMapBuilder;
     use crate::source::CanonPath;
     use crate::test_utils::TempWorkspace;
@@ -471,15 +471,15 @@ pub(crate) mod tests {
     {
         let parent = prog_path.as_ref().parent().unwrap();
         let canon_root = canon(parent);
-        let mut builder = DependencyMapBuilder::new(canon_root);
+        let mut builder = DependencyMapBuilder::new();
 
         for (context, alias, target) in dependencies {
             let context = canon(context.as_ref());
             let target = canon(target.as_ref());
 
-            builder = builder.add_dependency(context, alias.into(), target);
+            builder.add_dependency(context, alias.into(), target);
         }
-        builder.build().unwrap()
+        builder.build(canon_root).unwrap()
     }
 
     pub(crate) struct TestCase<T> {
@@ -871,7 +871,7 @@ pub(crate) mod tests {
         let main_path = root.join(MAIN);
         let canon_root = CanonPath::canonicalize(&root).unwrap();
 
-        let dependency_map = DependencyMapBuilder::new(canon_root).build().unwrap();
+        let dependency_map = build_map(&canon_root, &[]).unwrap();
 
         TestCase::<TemplateProgram>::template_deps(&main_path, &dependency_map)
             .with_arguments(Arguments::default())
@@ -1304,8 +1304,7 @@ mod error_tests {
     use super::*;
 
     use crate::ast::ElementsJetHinter;
-    use crate::resolution::tests::canon;
-    use crate::resolution::DependencyMapBuilder;
+    use crate::resolution::tests::{build_map, canon};
     use crate::source::CanonPath;
     use crate::test_utils::TempWorkspace;
 
@@ -1313,10 +1312,7 @@ mod error_tests {
         let context = CanonPath::canonicalize(root_dir).unwrap();
         let target = CanonPath::canonicalize(lib_dir).unwrap();
 
-        DependencyMapBuilder::new(context.clone())
-            .add_dependency(context, drp.into(), target)
-            .build()
-            .unwrap()
+        build_map(&context, &[(&context, drp, &target)]).unwrap()
     }
 
     fn source_file(path: &Path) -> CanonSourceFile {
@@ -1407,7 +1403,8 @@ mod error_tests {
 #[cfg(test)]
 mod functional_tests {
     use crate::ast::ElementsJetHinter;
-    use crate::resolution::{DependencyMap, DependencyMapBuilder};
+    use crate::resolution::tests::build_map;
+    use crate::resolution::DependencyMap;
     use crate::source::{CanonPath, CanonSourceFile};
     use crate::tests::{flatten_multidep_test, run_dependency_test, run_multidep_test};
     use crate::{Arguments, CompiledProgram};
@@ -1616,12 +1613,9 @@ mod functional_tests {
         let lib_canon = CanonPath::canonicalize(&lib_dir).unwrap();
 
         // 3. Set up the dependency maps
-        let dependency_map = DependencyMapBuilder::new(root_canon.clone())
-            .add_dependency(root_canon.clone(), "lib".to_string(), lib_canon)
-            .build()
-            .unwrap();
+        let dependency_map = build_map(&root_canon, &[(&root_canon, "lib", &lib_canon)]).unwrap();
 
-        let no_dependency_map = DependencyMapBuilder::new(root_canon).build().unwrap();
+        let no_dependency_map = build_map(&root_canon, &[]).unwrap();
 
         // Compile both programs reading directly from the file system
         let poisoned = compile_with_deps(&poisoned_main, &dependency_map);
