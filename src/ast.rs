@@ -504,6 +504,8 @@ pub trait JetHinter: std::fmt::Debug + Send + Sync {
     fn parse_jet(&self, name: &str) -> Option<Box<dyn JetHL>>;
     /// Constructs an instance of the `verify` jet.
     fn construct_verify(&self) -> Box<dyn JetHL>;
+    /// Converts a runtime Simplicity jet back into this hinter's high-level jet.
+    fn conjure(&self, jet: &dyn Jet) -> Option<Box<dyn JetHL>>;
 
     /// Clones the `JetHinter` into a boxed trait object.
     fn clone_box(&self) -> Box<dyn JetHinter>;
@@ -529,6 +531,12 @@ macro_rules! impl_jet_hinter {
 
             fn construct_verify(&self) -> Box<dyn JetHL> {
                 Box::new($jet_type::Verify)
+            }
+
+            fn conjure(&self, jet: &dyn Jet) -> Option<Box<dyn JetHL>> {
+                jet.as_any()
+                    .downcast_ref::<$jet_type>()
+                    .map(|jet| Box::new(*jet) as Box<dyn JetHL>)
             }
 
             fn clone_box(&self) -> Box<dyn JetHinter> {

@@ -1,6 +1,7 @@
 # Unreleased
 
 * Remove ModuleProgram and the parsing of Arguments and Witnesses from the core compiler [#323](https://github.com/BlockstreamResearch/SimplicityHL/pull/323)
+* Deprecate the `DefaultTracker::new` [#355](https://github.com/BlockstreamResearch/SimplicityHL/pull/355)
 
 # 0.6.0-rc.0 - 2026-04-24
 

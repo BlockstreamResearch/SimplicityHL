@@ -1,12 +1,12 @@
 use simplicity::bit_machine::{ExecTracker, FrameIter, NodeOutput, PruneTracker, SetTracker};
-use simplicity::jet::{Elements, Jet};
 use simplicity::node::Inner;
 use simplicity::{Ihr, RedeemNode, Value as SimValue};
 
 use crate::array::Unfolder;
+use crate::ast::{ElementsJetHinter, JetHinter};
 use crate::debug::{DebugSymbols, TrackedCallName};
 use crate::either::Either;
-use crate::jet::{source_type, target_type};
+use crate::jet::{source_type, target_type, JetHL};
 use crate::str::AliasName;
 use crate::types::AliasedType;
 use crate::value::StructuralValue;
@@ -22,7 +22,7 @@ type DebugSink<'a> = Box<dyn FnMut(&str, &Value) + 'a>;
 ///
 /// Arguments are: the jet that was executed, its input arguments (if successfully parsed),
 /// and the result (`None` if the jet failed).
-type JetTraceSink<'a> = Box<dyn FnMut(Elements, Option<&[Value]>, Option<Value>) + 'a>;
+type JetTraceSink<'a> = Box<dyn FnMut(&dyn JetHL, Option<&[Value]>, Option<Value>) + 'a>;
 
 /// Callback signature for receiving warnings during execution.
 type WarningSink<'a> = Box<dyn Fn(&str) + 'a>;
@@ -43,7 +43,7 @@ fn default_debug_sink(label: &str, value: &Value) {
 }
 
 /// Default jet trace sink that prints jet calls to stderr.
-fn default_jet_trace_sink(jet: Elements, args: Option<&[Value]>, result: Option<Value>) {
+fn default_jet_trace_sink(jet: &dyn JetHL, args: Option<&[Value]>, result: Option<Value>) {
     print!("{jet:?}(");
     if let Some(args) = args {
         for (i, arg) in args.iter().enumerate() {
@@ -85,6 +85,7 @@ fn default_warning_sink(message: &str) {
 /// ```
 pub struct DefaultTracker<'a> {
     debug_symbols: &'a DebugSymbols,
+    jet_hinter: Box<dyn JetHinter>,
     debug_sink: Option<DebugSink<'a>>,
     jet_trace_sink: Option<JetTraceSink<'a>>,
     warning_sink: Option<WarningSink<'a>>,
@@ -93,9 +94,20 @@ pub struct DefaultTracker<'a> {
 
 impl<'a> DefaultTracker<'a> {
     /// Creates a new tracker bound to the given debug symbol table.
+    ///
+    /// This constructor is deprecated in favor of more flexible tracker setup.
+    /// The deprecation is necessary to show the direction in which the SimplicityHL is moving
+    /// (i.e. different targets and support for possible custom Jets)  
+    #[deprecated(since = "0.6.0", note = "Please use `build` instead")]
     pub fn new(debug_symbols: &'a DebugSymbols) -> Self {
+        Self::build(debug_symbols, Box::new(ElementsJetHinter::new()))
+    }
+
+    /// Creates a new tracker bound to a custom jet family.
+    pub fn build(debug_symbols: &'a DebugSymbols, jet_hinter: Box<dyn JetHinter>) -> Self {
         Self {
             debug_symbols,
+            jet_hinter,
             debug_sink: None,
             jet_trace_sink: None,
             warning_sink: None,
@@ -120,7 +132,7 @@ impl<'a> DefaultTracker<'a> {
     /// Enables forwarding of jet call traces to the provided sink.
     pub fn with_jet_trace_sink<F>(mut self, sink: F) -> Self
     where
-        F: FnMut(Elements, Option<&[Value]>, Option<Value>) + 'a,
+        F: FnMut(&dyn JetHL, Option<&[Value]>, Option<Value>) + 'a,
     {
         self.jet_trace_sink = Some(Box::new(sink));
         self
@@ -175,7 +187,7 @@ impl<'a> DefaultTracker<'a> {
     fn handle_jet(
         &mut self,
         node: &RedeemNode,
-        jet: Elements,
+        jet: &dyn JetHL,
         input: &FrameIter,
         output: &NodeOutput,
     ) {
@@ -208,11 +220,11 @@ impl<'a> DefaultTracker<'a> {
     }
 
     /// Parses the result of a jet execution from the output frame.
-    fn parse_jet_result(node: &RedeemNode, jet: Elements, output: &NodeOutput) -> Option<Value> {
+    fn parse_jet_result(node: &RedeemNode, jet: &dyn JetHL, output: &NodeOutput) -> Option<Value> {
         match output.clone() {
             NodeOutput::Success(mut output_frame) => {
                 let target_ty = &node.arrow().target;
-                let jet_target_ty = resolve_jet_type(&target_type(&jet));
+                let jet_target_ty = resolve_jet_type(&target_type(jet));
 
                 let output_value = SimValue::from_padded_bits(&mut output_frame, target_ty)
                     .expect("output from bit machine is always well-formed");
@@ -303,10 +315,10 @@ impl ExecTracker for DefaultTracker<'_> {
     fn visit_node(&mut self, node: &RedeemNode, input: FrameIter, output: NodeOutput) {
         match node.inner() {
             Inner::Jet(jet) => {
-                if let Some(&elements_jet) = jet.as_any().downcast_ref::<Elements>() {
-                    self.handle_jet(node, elements_jet, &input, &output);
+                if let Some(jet) = self.jet_hinter.conjure(jet.as_ref()) {
+                    self.handle_jet(node, jet.as_ref(), &input, &output);
                 } else {
-                    panic!("Expected an Elements jet, found a different type of jet: {jet:?}");
+                    self.warn(&format!("Unexpected jet type for tracker: {jet:?}"));
                 }
             }
             Inner::AssertL(_, cmr) => self.handle_debug(node, &input, cmr),
@@ -318,8 +330,8 @@ impl ExecTracker for DefaultTracker<'_> {
 }
 
 /// Parses jet input arguments from the bit machine's read frame.
-fn parse_jet_arguments(jet: Elements, input_frame: &mut FrameIter) -> Result<Vec<Value>, String> {
-    let source_types = source_type(&jet);
+fn parse_jet_arguments(jet: &dyn JetHL, input_frame: &mut FrameIter) -> Result<Vec<Value>, String> {
+    let source_types = source_type(jet);
     if source_types.is_empty() {
         return Ok(vec![]);
     }
@@ -389,7 +401,7 @@ mod tests {
     type DebugStore = Rc<RefCell<HashMap<String, String>>>;
     type JetStore = Rc<RefCell<HashMap<String, (Option<Vec<String>>, Option<String>)>>>;
 
-    fn create_test_tracker(
+    fn create_test_elements_tracker(
         debug_symbols: &DebugSymbols,
     ) -> (DefaultTracker<'_>, DebugStore, JetStore) {
         let debug_store: DebugStore = Rc::default();
@@ -398,7 +410,7 @@ mod tests {
         let debug_clone = debug_store.clone();
         let jet_clone = jet_store.clone();
 
-        let tracker = DefaultTracker::new(debug_symbols)
+        let tracker = DefaultTracker::build(debug_symbols, Box::new(ElementsJetHinter::new()))
             .with_debug_sink(move |label, value| {
                 debug_clone
                     .borrow_mut()
@@ -444,7 +456,8 @@ mod tests {
         let program = program.instantiate(Arguments::default(), true).unwrap();
         let satisfied = program.satisfy(WitnessValues::default()).unwrap();
 
-        let (mut tracker, debug_store, jet_store) = create_test_tracker(&satisfied.debug_symbols);
+        let (mut tracker, debug_store, jet_store) =
+            create_test_elements_tracker(&satisfied.debug_symbols);
         let env = create_test_env();
 
         let _ = satisfied
@@ -514,7 +527,7 @@ mod tests {
         let program = program.instantiate(Arguments::default(), true).unwrap();
         let satisfied = program.satisfy(WitnessValues::default()).unwrap();
 
-        let (mut tracker, _, jet_store) = create_test_tracker(&satisfied.debug_symbols);
+        let (mut tracker, _, jet_store) = create_test_elements_tracker(&satisfied.debug_symbols);
 
         let _ = satisfied.redeem().prune_with_tracker(&env, &mut tracker);
 
@@ -570,7 +583,7 @@ mod tests {
         let program = program.instantiate(Arguments::default(), true).unwrap();
         let satisfied = program.satisfy(WitnessValues::default()).unwrap();
 
-        let (mut tracker, _, jet_store) = create_test_tracker(&satisfied.debug_symbols);
+        let (mut tracker, _, jet_store) = create_test_elements_tracker(&satisfied.debug_symbols);
 
         let _ = satisfied.redeem().prune_with_tracker(&env, &mut tracker);
 
