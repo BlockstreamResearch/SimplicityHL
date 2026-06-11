@@ -420,7 +420,7 @@ pub trait ArbitraryOfType: Sized {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::ast::ElementsJetHinter;
+    use crate::ast::{CoreJetHinter, ElementsJetHinter, JetHinter};
     use crate::parse::ParseFromStr;
     use crate::resolution::tests::canon;
     use crate::resolution::DependencyMapBuilder;
@@ -1143,6 +1143,54 @@ fn main() {
         TestCase::program_text(Cow::Borrowed(prog_text))
             .with_witness_values(WitnessValues::default())
             .assert_run_success();
+    }
+
+    #[test]
+    fn test_compilation_against_different_jet_hinters() {
+        let code = r#"fn main() {
+    let (_, sum): (bool, u32) = jet::add_32(10, 20);
+    assert!(jet::eq_32(sum, 30));
+    let and_result: u32 = jet::and_32(0xFF00FF00, 0x0F0F0F0F);
+    assert!(jet::eq_32(and_result, 0x0F000F00));
+}"#;
+
+        let hinters: Vec<Box<dyn JetHinter>> = vec![
+            Box::new(CoreJetHinter::new()),
+            Box::new(ElementsJetHinter::new()),
+        ];
+
+        for hinter in hinters {
+            let program = TemplateProgram::new(code, hinter);
+            assert!(
+                program.is_ok(),
+                "TemplateProgram::new should successfully compile the same program with different jet hinters: {:?}",
+                program.err(),
+            );
+        }
+    }
+
+    #[test]
+    fn test_fail_with_different_jet_hinters() {
+        // Uses jets that exist only in Elements (not in Core).
+        let code = r#"fn main() {
+    let v: u32 = jet::version();
+    let idx: u32 = jet::current_index();
+    assert!(jet::eq_32(v, v));
+    assert!(jet::eq_32(idx, idx));
+}"#;
+
+        let elements_result = TemplateProgram::new(code, Box::new(ElementsJetHinter::new()));
+        assert!(
+            elements_result.is_ok(),
+            "ElementsJetHinter should compile Elements-specific jets: {:?}",
+            elements_result.err(),
+        );
+
+        let core_result = TemplateProgram::new(code, Box::new(CoreJetHinter::new()));
+        assert!(
+            core_result.is_err(),
+            "CoreJetHinter should fail to compile Elements-specific jets",
+        );
     }
 
     #[cfg(feature = "serde")]
