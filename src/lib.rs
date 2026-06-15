@@ -38,7 +38,7 @@ pub extern crate simplicity;
 pub use simplicity::elements;
 
 use crate::debug::DebugSymbols;
-use crate::driver::DependencyGraph;
+use crate::driver::{DependencyGraph, SourceMap};
 use crate::error::{ErrorCollector, WithContent, WithSource as _};
 use crate::parse::ParseFromStrWithErrors;
 use crate::resolution::DependencyMap;
@@ -56,6 +56,7 @@ pub struct TemplateProgram {
     simfony: ast::Program,
     file: Arc<str>,
     jet_hinter: Box<dyn ast::JetHinter>,
+    source_map: SourceMap,
 }
 
 impl TemplateProgram {
@@ -71,6 +72,7 @@ impl TemplateProgram {
     ) -> Result<String, String> {
         let mut error_handler = ErrorCollector::new();
         Self::dependency_helper(source, dependency_map, &mut error_handler)?
+            .0
             .ok_or_else(|| error_handler.to_string())
             .map(|p| p.to_string())
     }
@@ -87,9 +89,9 @@ impl TemplateProgram {
     ) -> Result<Self, String> {
         let mut error_handler = ErrorCollector::new();
 
-        let driver_program =
-            Self::dependency_helper(source.clone(), dependency_map, &mut error_handler)?
-                .ok_or_else(|| error_handler.to_string())?;
+        let (driver_program, source_map) =
+            Self::dependency_helper(source.clone(), dependency_map, &mut error_handler)?;
+        let driver_program = driver_program.ok_or_else(|| error_handler.to_string())?;
 
         let ast_program = ast::Program::analyze(&driver_program, jet_hinter.clone_box())
             .with_source(source.clone())?;
@@ -97,6 +99,7 @@ impl TemplateProgram {
             simfony: ast_program,
             file: source.content(),
             jet_hinter,
+            source_map,
         })
     }
 
@@ -121,6 +124,7 @@ impl TemplateProgram {
                 simfony: ast_program,
                 file,
                 jet_hinter,
+                source_map: SourceMap::default(),
             })
         } else {
             Err(error_handler.to_string())?
@@ -131,13 +135,16 @@ impl TemplateProgram {
         source: CanonSourceFile,
         dependency_map: &DependencyMap,
         handler: &mut ErrorCollector,
-    ) -> Result<Option<parse::Program>, String> {
+    ) -> Result<(Option<parse::Program>, SourceMap), String> {
         let program = parse::Program::parse_from_str_with_errors(source.clone(), handler)
             .ok_or_else(|| handler.to_string())?;
         let graph =
             DependencyGraph::new(source, Arc::from(dependency_map.clone()), &program, handler)?
                 .ok_or_else(|| handler.to_string())?;
-        graph.linearize_and_build(handler)
+
+        let program = graph.linearize_and_build(handler);
+
+        program.map(|opt| (opt, graph.source_map().clone()))
     }
 
     /// Access the parameters of the program.
@@ -187,6 +194,10 @@ impl TemplateProgram {
             witness_types: self.simfony.witness_types().shallow_clone(),
             param_types: self.parameters().shallow_clone(),
         })
+    }
+
+    pub fn source_map(&self) -> &SourceMap {
+        &self.source_map
     }
 }
 
