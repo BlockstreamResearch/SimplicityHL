@@ -397,8 +397,7 @@ struct CurrentModule {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::resolution::tests::canon;
-    use crate::resolution::DependencyMapBuilder;
+    use crate::resolution::tests::{build_map, canon};
     use crate::test_utils::TempWorkspace;
 
     /// Initializes a raw graph environment for testing, explicitly allowing for and capturing failure states.
@@ -437,11 +436,8 @@ pub(crate) mod tests {
         let lib_dir = canon(&ws.create_dir("workspace/libs/lib"));
 
         // Set up the dependency map for imports (e.g. `use lib::...`)
-        let map = DependencyMapBuilder::new(workspace_dir.clone())
-            .add_dependency(workspace_dir.clone(), "lib".to_string(), lib_dir.clone())
-            .build()
-            .expect("Failed to create dependency map");
-        let map = Arc::new(map);
+        let map =
+            Arc::new(build_map(&workspace_dir, &[(&workspace_dir, "lib", &lib_dir)]).unwrap());
 
         let mut root_file_path = None;
         let mut root_content = String::new();
