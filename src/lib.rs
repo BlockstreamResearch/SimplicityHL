@@ -57,6 +57,7 @@ pub struct TemplateProgram {
     file: Arc<str>,
     jet_hinter: Box<dyn ast::JetHinter>,
     source_map: SourceMap,
+    resolved_program: parse::Program,
 }
 
 impl TemplateProgram {
@@ -71,8 +72,10 @@ impl TemplateProgram {
         dependency_map: &DependencyMap,
     ) -> Result<String, String> {
         let mut error_handler = ErrorCollector::new();
-        Self::dependency_helper(source, dependency_map, &mut error_handler)?
-            .0
+        let (resolved_program, _) =
+            Self::dependency_helper(source, dependency_map, &mut error_handler)?;
+
+        resolved_program
             .ok_or_else(|| error_handler.to_string())
             .map(|p| p.to_string())
     }
@@ -89,17 +92,18 @@ impl TemplateProgram {
     ) -> Result<Self, String> {
         let mut error_handler = ErrorCollector::new();
 
-        let (driver_program, source_map) =
+        let (resolved_program, source_map) =
             Self::dependency_helper(source.clone(), dependency_map, &mut error_handler)?;
-        let driver_program = driver_program.ok_or_else(|| error_handler.to_string())?;
+        let resolved_program = resolved_program.ok_or_else(|| error_handler.to_string())?;
 
-        let ast_program = ast::Program::analyze(&driver_program, jet_hinter.clone_box())
+        let ast_program = ast::Program::analyze(&resolved_program, jet_hinter.clone_box())
             .with_source(source.clone())?;
         Ok(Self {
             simfony: ast_program,
             file: source.content(),
             jet_hinter,
             source_map,
+            resolved_program,
         })
     }
 
@@ -125,6 +129,7 @@ impl TemplateProgram {
                 file,
                 jet_hinter,
                 source_map: SourceMap::default(),
+                resolved_program: program,
             })
         } else {
             Err(error_handler.to_string())?
@@ -198,6 +203,10 @@ impl TemplateProgram {
 
     pub fn source_map(&self) -> &SourceMap {
         &self.source_map
+    }
+
+    pub fn resolved_program(&self) -> &parse::Program {
+        &self.resolved_program
     }
 }
 
