@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use crate::driver::MAIN_STR;
+
 /// Implementations for newtypes that wrap [`Arc<str>`].
 macro_rules! wrapped_string {
     ($wrapper:ident, $name:expr) => {
@@ -77,7 +79,7 @@ pub struct FunctionName(Arc<str>);
 impl FunctionName {
     /// Return the name of the main function.
     pub fn main() -> Self {
-        Self(Arc::from("main"))
+        Self(Arc::from(MAIN_STR))
     }
 }
 
