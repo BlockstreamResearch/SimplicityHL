@@ -89,22 +89,33 @@ impl TemplateProgram {
         source: CanonSourceFile,
         dependency_map: &DependencyMap,
         jet_hinter: Box<dyn ast::JetHinter>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, ErrorCollector> {
         let mut error_handler = ErrorCollector::new();
 
-        let (resolved_program, source_map) =
-            Self::dependency_helper(source.clone(), dependency_map, &mut error_handler)?;
-        let resolved_program = resolved_program.ok_or_else(|| error_handler.to_string())?;
+        let build_program = || -> Result<Self, ()> {
+            let (resolved_program, source_map) =
+                Self::dependency_helper(source.clone(), dependency_map, &mut error_handler)
+                    .map_err(|_| ())?;
 
-        let ast_program = ast::Program::analyze(&resolved_program, jet_hinter.clone_box())
-            .with_source(source.clone())?;
-        Ok(Self {
-            simfony: ast_program,
-            file: source.content(),
-            jet_hinter,
-            source_map,
-            resolved_program,
-        })
+            let resolved_program = resolved_program.ok_or(())?;
+
+            let ast_program = ast::Program::analyze(&resolved_program, jet_hinter.clone_box())
+                .with_source(source.clone())
+                .map_err(|e| error_handler.push(e))?;
+
+            Ok(Self {
+                simfony: ast_program,
+                file: source.content(),
+                jet_hinter,
+                source_map,
+                resolved_program,
+            })
+        };
+
+        match build_program() {
+            Ok(instance) => Ok(instance),
+            Err(()) => Err(error_handler),
+        }
     }
 
     /// Parse the template of a SimplicityHL program.
@@ -115,15 +126,21 @@ impl TemplateProgram {
     pub fn new<Str: Into<Arc<str>>>(
         s: Str,
         jet_hinter: Box<dyn ast::JetHinter>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, ErrorCollector> {
         let file = s.into();
         let source = SourceFile::anonymous(file.clone());
         let mut error_handler = ErrorCollector::new();
+
         let parse_program = parse::Program::parse_from_str_with_errors(source, &mut error_handler);
 
         if let Some(program) = parse_program {
-            let ast_program = ast::Program::analyze(&program, jet_hinter.clone_box())
-                .with_content(Arc::clone(&file))?;
+            let Ok(ast_program) = ast::Program::analyze(&program, jet_hinter.clone_box())
+                .with_content(Arc::clone(&file))
+                .map_err(|e| error_handler.push(e))
+            else {
+                Err(error_handler)?
+            };
+
             Ok(Self {
                 simfony: ast_program,
                 file,
@@ -132,7 +149,7 @@ impl TemplateProgram {
                 resolved_program: program,
             })
         } else {
-            Err(error_handler.to_string())?
+            Err(error_handler)?
         }
     }
 
@@ -143,13 +160,20 @@ impl TemplateProgram {
     ) -> Result<(Option<parse::Program>, SourceMap), String> {
         let program = parse::Program::parse_from_str_with_errors(source.clone(), handler)
             .ok_or_else(|| handler.to_string())?;
+        // TODO: we should remove this errors push after refactoring errors
         let graph =
-            DependencyGraph::new(source, Arc::from(dependency_map.clone()), &program, handler)?
+            DependencyGraph::new(source, Arc::from(dependency_map.clone()), &program, handler)
+                .map_err(|e| {
+                    handler.push(error::RichError::parsing_error(&e));
+                    handler.to_string()
+                })?
                 .ok_or_else(|| handler.to_string())?;
 
         let program = graph.linearize_and_build(handler);
 
-        program.map(|opt| (opt, graph.source_map().clone()))
+        program
+            .map(|opt| (opt, graph.source_map().clone()))
+            .inspect_err(|e| handler.push(error::RichError::parsing_error(e)))
     }
 
     /// Access the parameters of the program.
@@ -234,6 +258,7 @@ impl CompiledProgram {
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
         TemplateProgram::new_with_dep(source, dependency_map, jet_hinter.clone_box())
+            .map_err(|e| e.to_string())
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -250,6 +275,7 @@ impl CompiledProgram {
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
         TemplateProgram::new(s, jet_hinter.clone_box())
+            .map_err(|e| e.to_string())
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -1414,7 +1440,7 @@ mod error_tests {
         let dependency_source = canon(&bad_path).as_path().display().to_string();
 
         assert!(
-            err.contains(&dependency_source),
+            err.to_string().contains(&dependency_source),
             "expected diagnostic to point at dependency source {dependency_source}, got:\n{err}"
         );
     }
@@ -1462,7 +1488,7 @@ mod error_tests {
         .expect_err("missing imported module should fail");
 
         assert!(
-            err.contains("missing.simf"),
+            err.to_string().contains("missing.simf"),
             "diagnostic should mention the missing module path, got:\n{err}"
         );
     }
