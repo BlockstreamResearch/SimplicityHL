@@ -56,6 +56,53 @@ struct SourceModule {
     program: parse::Program,
 }
 
+/// Record of all modules that was discovered.
+#[derive(Debug, Clone, Default)]
+pub struct SourceMap {
+    /// Fast lookup: `CanonPath` -> Module ID.
+    /// A reverse index mapping absolute file paths to their internal IDs.
+    /// This solves the duplication problem, ensuring each file is only parsed once.
+    ids: HashMap<CanonPath, usize>,
+
+    /// Fast lookup: Module ID -> `CanonPath`.
+    ///
+    /// A direct index mapping internal IDs back to their absolute file paths.
+    /// This serves as the exact inverse of the `lookup` map.
+    ///
+    /// This is highly useful for error reporting and diagnostics.
+    paths: Vec<CanonPath>,
+}
+
+impl SourceMap {
+    fn new(root_source: CanonSourceFile) -> Self {
+        let mut ids = HashMap::new();
+        ids.insert(root_source.name().clone(), MAIN_MODULE);
+        Self {
+            ids,
+            paths: vec![root_source.name().clone()],
+        }
+    }
+
+    fn insert(&mut self, path: CanonPath) -> usize {
+        let id = self.paths.len();
+        self.ids.insert(path.clone(), id);
+        self.paths.push(path);
+        id
+    }
+
+    pub fn get_id(&self, path: &CanonPath) -> Option<usize> {
+        self.ids.get(path).copied()
+    }
+
+    pub fn get_path(&self, id: usize) -> Option<&CanonPath> {
+        self.paths.get(id)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&CanonPath, &usize)> {
+        self.ids.iter()
+    }
+}
+
 /// An Intermediate Representation that helps transform isolated files into a global program.
 ///
 /// While an AST only understands a single file, the `DependencyGraph` links multiple
@@ -85,18 +132,8 @@ pub(crate) struct DependencyGraph {
     /// Used to resolve external library dependencies and invoke their associated functions.
     dependency_map: Arc<DependencyMap>,
 
-    /// Fast lookup: `CanonPath` -> Module ID.
-    /// A reverse index mapping absolute file paths to their internal IDs.
-    /// This solves the duplication problem, ensuring each file is only parsed once.
-    lookup: HashMap<CanonPath, usize>,
-
-    /// Fast lookup: Module ID -> `CanonPath`.
-    ///
-    /// A direct index mapping internal IDs back to their absolute file paths.
-    /// This serves as the exact inverse of the `lookup` map.
-    ///
-    /// This is highly useful for error reporting and diagnostics.
-    paths: Vec<CanonPath>,
+    /// Fast bidirectional lookup between `CanonPath` and Module IDs.
+    source_map: SourceMap,
 
     /// Memoized results of [`crate::resolution::DependencyMap::resolve_path`] to avoid
     /// resolving the same [`parse::UseDecl`] twice — once during the driver phase
@@ -148,13 +185,11 @@ impl DependencyGraph {
                 program: root_program.clone(),
             }],
             dependency_map,
-            lookup: HashMap::new(),
-            paths: vec![root_source.name().clone()],
+            source_map: SourceMap::new(root_source),
             use_cache: HashMap::new(),
             dependencies: HashMap::new(),
         };
 
-        graph.lookup.insert(root_source.name().clone(), MAIN_MODULE);
         graph.dependencies.insert(MAIN_MODULE, Vec::new());
 
         let mut use_cache = HashMap::new();
@@ -278,7 +313,7 @@ impl DependencyGraph {
                 continue;
             }
 
-            if let Some(&existing_id) = self.lookup.get(&path) {
+            if let Some(existing_id) = self.source_map.get_id(&path) {
                 let deps = self.dependencies.entry(current.id).or_default();
                 if !deps.contains(&existing_id) {
                     deps.push(existing_id);
@@ -294,17 +329,19 @@ impl DependencyGraph {
                 continue;
             };
 
-            let last_ind = self.modules.len();
+            let new_id = self.source_map.insert(path.clone());
             self.modules.push(module);
 
-            self.lookup.insert(path.clone(), last_ind);
-            self.paths.push(path.clone());
             self.dependencies
                 .entry(current.id)
                 .or_default()
-                .push(last_ind);
-            ctx.queue.push_back(last_ind);
+                .push(new_id);
+            ctx.queue.push_back(new_id);
         }
+    }
+
+    pub fn source_map(&self) -> &SourceMap {
+        &self.source_map
     }
 }
 
@@ -469,7 +506,7 @@ pub(crate) mod tests {
         let mut file_ids = HashMap::new();
 
         if let Some(ref graph) = graph_option {
-            for (path, id) in &graph.lookup {
+            for (path, id) in graph.source_map.iter() {
                 let file_stem = path
                     .as_path()
                     .file_stem()
@@ -656,7 +693,7 @@ pub(crate) mod tests {
 
         // Assert: Size checks
         assert_eq!(graph.modules.len(), 3);
-        assert_eq!(graph.paths.len(), 3);
+        assert_eq!(graph.source_map.paths.len(), 3);
 
         // Assert: Ensure BFS assigned the IDs in the exact correct order
         let main_id = ids["main"];

@@ -107,7 +107,10 @@ impl DependencyGraph {
         let mut use_decl = use_decl.clone();
         use_decl.set_file_id(source_id);
         let resolved = &self.use_cache[&use_decl];
-        let target_id = self.lookup[&resolved.path];
+        let target_id = self
+            .source_map
+            .get_id(&resolved.path)
+            .expect("resolved path must be registered");
 
         let mut new_path = Vec::with_capacity(resolved.mod_path.len() + 2);
         new_path.push(Identifier::from_str_unchecked(CRATE_STR));
