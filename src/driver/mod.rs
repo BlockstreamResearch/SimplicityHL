@@ -37,6 +37,7 @@ use crate::error::{Error, ErrorCollector, RichError, Span};
 use crate::parse::{self, ParseFromStrWithErrors};
 use crate::resolution::{DependencyMap, ResolvedUse};
 use crate::source::{CanonPath, CanonSourceFile};
+use crate::unstable::UnstableFeatures;
 
 /// The reserved identifier for the program's entry point.
 pub(crate) const MAIN_STR: &str = "main";
@@ -179,6 +180,7 @@ impl DependencyGraph {
         dependency_map: Arc<DependencyMap>,
         root_program: &parse::Program,
         handler: &mut ErrorCollector,
+        unstable_features: &UnstableFeatures,
     ) -> Result<Option<Self>, String> {
         let mut graph = Self {
             modules: vec![SourceModule {
@@ -227,6 +229,7 @@ impl DependencyGraph {
                 invalid_imports: &mut invalid_imports,
                 handler,
                 queue: &mut queue,
+                unstable_features,
             };
             graph.load_and_parse_dependencies(&current, valid_imports, &mut ctx);
         }
@@ -247,6 +250,7 @@ impl DependencyGraph {
         importer_source: &CanonSourceFile,
         span: Span,
         handler: &mut ErrorCollector,
+        unstable_features: &UnstableFeatures,
     ) -> Option<SourceModule> {
         let Ok(content) = std::fs::read_to_string(path.as_path()) else {
             let err = RichError::new(
@@ -264,7 +268,11 @@ impl DependencyGraph {
         let mut error_handler = ErrorCollector::new();
         let source = CanonSourceFile::new(path.clone(), Arc::from(content));
 
-        let ast = parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler);
+        let ast = parse::Program::parse_from_str_with_errors(
+            source.clone(),
+            unstable_features,
+            &mut error_handler,
+        );
 
         if error_handler.has_errors() {
             handler.extend_with_handler(source, &error_handler);
@@ -322,9 +330,13 @@ impl DependencyGraph {
                 continue;
             }
 
-            let Some(module) =
-                Self::parse_and_get_source_module(&path, &current.source, import_span, ctx.handler)
-            else {
+            let Some(module) = Self::parse_and_get_source_module(
+                &path,
+                &current.source,
+                import_span,
+                ctx.handler,
+                ctx.unstable_features,
+            ) else {
                 // Safe to ignore output: previous `.contains` check prevents collisions.
                 let _ = ctx.invalid_imports.insert(path);
                 continue;
@@ -422,6 +434,7 @@ struct LoadContext<'a> {
     invalid_imports: &'a mut HashSet<CanonPath>,
     handler: &'a mut ErrorCollector,
     queue: &'a mut VecDeque<usize>,
+    unstable_features: &'a UnstableFeatures,
 }
 
 /// The currently processed module and its source, used for error reporting
@@ -494,15 +507,24 @@ pub(crate) mod tests {
         let root_p = root_file_path.expect("main.simf must be defined in file list");
         let main_canon_source = CanonSourceFile::new(root_p, Arc::from(root_content));
 
-        let main_program_option =
-            parse::Program::parse_from_str_with_errors(main_canon_source.clone(), &mut handler);
+        let main_program_option = parse::Program::parse_from_str_with_errors(
+            main_canon_source.clone(),
+            &UnstableFeatures::all(),
+            &mut handler,
+        );
 
         let Some(main_program) = main_program_option else {
             return (None, HashMap::new(), ws, handler);
         };
 
-        let graph_option =
-            DependencyGraph::new(main_canon_source, map, &main_program, &mut handler).unwrap();
+        let graph_option = DependencyGraph::new(
+            main_canon_source,
+            map,
+            &main_program,
+            &mut handler,
+            &UnstableFeatures::all(),
+        )
+        .unwrap();
 
         let mut file_ids = HashMap::new();
 

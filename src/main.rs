@@ -7,6 +7,7 @@ use simplicityhl::{
     resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
     CompiledProgram,
 };
+use simplicityhl::{UnstableFeature, UnstableFeatures};
 use std::path::Path;
 use std::{env, fmt};
 
@@ -95,6 +96,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .action(ArgAction::SetTrue)
                     .help("Additional ABI .simf contract types"),
             )
+            .arg(
+                Arg::new("unstable_features")
+                    .long("unstable-feature")
+                    .short('Z')
+                    .value_name("FEATURE")
+                    .action(ArgAction::Append)
+                    .value_parser(clap::value_parser!(UnstableFeature))
+                    .help(simplicityhl::UnstableFeature::help_message()),
+            )
     };
 
     let matches = command.get_matches();
@@ -105,6 +115,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let include_debug_symbols = matches.get_flag("debug");
     let output_json = matches.get_flag("json");
     let abi_param = matches.get_flag("abi");
+
+    let unstable_features = matches
+        .get_many::<UnstableFeature>("unstable_features")
+        .map_or_else(UnstableFeatures::none, |features| {
+            UnstableFeatures::new(features.copied())
+        });
 
     #[cfg(feature = "serde")]
     let args_opt: simplicityhl::Arguments = match matches.get_one::<String>("args_file") {
@@ -172,6 +188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compiled = match CompiledProgram::new_with_dep(
         source,
         &dependencies,
+        &unstable_features,
         args_opt,
         include_debug_symbols,
         Box::new(ElementsJetHinter::new()),
