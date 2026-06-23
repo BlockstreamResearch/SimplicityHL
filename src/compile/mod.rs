@@ -63,7 +63,6 @@ struct Scope<'brand> {
     ///
     /// Inner scopes occur higher in the tree than outer scopes.
     /// Later assignments occur higher in the tree than earlier assignments.
-    /// ```
     variables: Vec<Vec<Pattern>>,
     ctx: simplicity::types::Context<'brand>,
     /// Tracker of function calls.

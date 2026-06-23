@@ -17,6 +17,7 @@ pub mod parse;
 pub mod pattern;
 pub mod resolution;
 pub mod source;
+pub mod unstable;
 
 #[cfg(feature = "serde")]
 mod serde;

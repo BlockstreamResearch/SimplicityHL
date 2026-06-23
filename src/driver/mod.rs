@@ -1,3 +1,4 @@
+#![allow(rustdoc::private_intra_doc_links)]
 //! The `driver` module is responsible for module resolution and dependency management.
 //!
 //! Our compiler operates in a strict pipeline: `Lexer -> Parser -> Driver -> AST`.
@@ -346,7 +347,7 @@ impl DependencyGraph {
 }
 
 /// Groups all shared state for import resolution to avoid threading a lot of parameters
-/// through every recursive call. Lives only for the duration of [`resolve_imports`].
+/// through every recursive call. Lives only for the duration of [`DependencyGraph::resolve_imports`].
 struct ImportContext<'a> {
     current: CurrentModule,
     dependency_map: &'a DependencyMap,
