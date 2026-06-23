@@ -8,6 +8,7 @@ use simplicity::types::{CompleteBound, Final};
 use crate::array::{BTreeSlice, Partition};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::str::AliasName;
+use crate::unstable::impl_require_feature;
 
 /// Primitives of the SimplicityHL type system, excluding type aliases.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -632,6 +633,28 @@ impl AliasedType {
         self.resolve(|name: &AliasName| Err(name.clone()))
     }
 }
+
+impl_require_feature!(AliasedType {
+    recurse: 0;
+});
+
+impl_require_feature!(AliasedInner {
+    variants:
+        Alias(_),
+        Builtin(_),
+        Inner(inner),
+});
+
+impl_require_feature!(TypeInner<Arc<AliasedType>> {
+    variants:
+        Either(left, right),
+        Option(element),
+        Boolean,
+        UInt(_),
+        Tuple(elements),
+        Array(element, _),
+        List(element, _),
+});
 
 impl TypeConstructible for AliasedType {
     fn either(left: Self, right: Self) -> Self {

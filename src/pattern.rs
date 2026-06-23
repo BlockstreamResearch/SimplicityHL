@@ -10,6 +10,7 @@ use crate::error::Error;
 use crate::named::{CoreExt, PairBuilder, SelectorBuilder};
 use crate::str::Identifier;
 use crate::types::{ResolvedType, TypeInner};
+use crate::unstable::impl_require_feature;
 
 /// Pattern for binding values to variables.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -74,6 +75,14 @@ impl Pattern {
         Ok(output)
     }
 }
+
+impl_require_feature!(Pattern {
+    variants:
+        Identifier(_),
+        Ignore,
+        Tuple(elements),
+        Array(elements),
+});
 
 impl TreeLike for &Pattern {
     fn as_node(&self) -> Tree<Self> {

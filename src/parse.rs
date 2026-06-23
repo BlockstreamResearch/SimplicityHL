@@ -30,6 +30,7 @@ use crate::str::{
     SymbolName, WitnessName,
 };
 use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
+use crate::unstable::{impl_require_feature, UnstableFeature, UnstableFeatures};
 
 /// A program is a sequence of items.
 #[derive(Clone, Debug)]
@@ -55,6 +56,8 @@ impl Program {
 
 impl_eq_hash!(Program; items);
 
+impl_require_feature!(Program { recurse: items; });
+
 /// An item is a component of a program.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Item {
@@ -73,6 +76,15 @@ pub enum Item {
     /// until it reaches a valid top-level keyword and inserts `Ignored` into the AST.
     Ignored,
 }
+
+impl_require_feature!(Item {
+    variants:
+        TypeAlias(alias),
+        Function(function),
+        Use(use_decl),
+        Module(module),
+        Ignored,
+});
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -109,6 +121,17 @@ pub struct UseDecl {
     items: UseItems,
     span: Span,
 }
+
+impl_require_feature!(UseDecl {
+    requires: UnstableFeature::Imports, span: span;
+    recurse: items;
+});
+
+impl_require_feature!(UseItems {
+    variants:
+        Single(_),
+        List(_),
+});
 
 impl UseDecl {
     /// The driver uses this to ensure imports conform to the flattened program structure.
@@ -269,6 +292,8 @@ impl Function {
 
 impl_eq_hash!(Function; visibility, name, params, ret, body);
 
+impl_require_feature!(Function { recurse: params, ret, body; });
+
 /// Parameter of a function.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -289,6 +314,8 @@ impl FunctionParam {
     }
 }
 
+impl_require_feature!(FunctionParam { recurse: ty; });
+
 /// A statement is a component of a block expression.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Statement {
@@ -297,6 +324,12 @@ pub enum Statement {
     /// An expression that returns nothing (the unit value).
     Expression(Expression),
 }
+
+impl_require_feature!(Statement {
+    variants:
+        Assignment(assignment),
+        Expression(expr),
+});
 
 /// The output of an expression is assigned to a pattern.
 #[derive(Clone, Debug)]
@@ -331,6 +364,8 @@ impl Assignment {
 
 impl_eq_hash!(Assignment; pattern, ty, expression);
 
+impl_require_feature!(Assignment { recurse: pattern, ty, expression; });
+
 /// Call expression.
 #[derive(Clone, Debug)]
 pub struct Call {
@@ -357,6 +392,8 @@ impl Call {
 }
 
 impl_eq_hash!(Call; name, args);
+
+impl_require_feature!(Call {recurse: name, args; });
 
 /// Name of a call.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -389,6 +426,23 @@ pub enum CallName {
     /// Loop over the given function a bounded number of times until it returns success.
     ForWhile(FunctionName),
 }
+
+impl_require_feature!(CallName {
+    variants:
+        Jet(_),
+        UnwrapLeft(ty),
+        UnwrapRight(ty),
+        Unwrap,
+        IsNone(ty),
+        Assert,
+        Panic,
+        Debug,
+        TypeCast(ty),
+        Custom(_),
+        Fold(_, _),
+        ArrayFold(_, _),
+        ForWhile(_),
+});
 
 /// A type alias.
 #[derive(Clone, Debug)]
@@ -435,6 +489,8 @@ impl TypeAlias {
 
 impl_eq_hash!(TypeAlias; name, ty);
 
+impl_require_feature!(TypeAlias { recurse: ty; });
+
 /// An expression is something that returns a value.
 #[derive(Clone, Debug)]
 pub struct Expression {
@@ -478,6 +534,8 @@ impl Expression {
 
 impl_eq_hash!(Expression; inner);
 
+impl_require_feature!(Expression { recurse: inner; });
+
 /// The kind of expression.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ExpressionInner {
@@ -488,6 +546,12 @@ pub enum ExpressionInner {
     /// The block returns nothing (unit) if there is no final expression.
     Block(Arc<[Statement]>, Option<Arc<Expression>>),
 }
+
+impl_require_feature!(ExpressionInner {
+    variants:
+        Single(single),
+        Block(statements, maybe_expr),
+});
 
 /// A single expression directly returns a value.
 #[derive(Clone, Debug)]
@@ -509,6 +573,8 @@ impl SingleExpression {
 }
 
 impl_eq_hash!(SingleExpression; inner);
+
+impl_require_feature!(SingleExpression {recurse: inner; });
 
 /// The kind of single expression.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -546,6 +612,25 @@ pub enum SingleExpressionInner {
     /// The exclusive upper bound on the list size is not known at this point
     List(Arc<[Expression]>),
 }
+
+impl_require_feature!(SingleExpressionInner {
+    variants:
+        Either(either),
+        Option(maybe_expr),
+        Boolean(_),
+        Decimal(_),
+        Binary(_),
+        Hexadecimal(_),
+        Witness(_),
+        Parameter(_),
+        Variable(_),
+        Call(call),
+        Expression(expr),
+        Match(match_),
+        Tuple(exprs),
+        Array(exprs),
+        List(exprs),
+});
 
 /// Match expression.
 #[derive(Clone, Debug)]
@@ -592,6 +677,8 @@ impl Match {
 
 impl_eq_hash!(Match; scrutinee, left, right);
 
+impl_require_feature!(Match {recurse: scrutinee, left, right; });
+
 /// Arm of a match expression.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct MatchArm {
@@ -611,6 +698,8 @@ impl MatchArm {
     }
 }
 
+impl_require_feature!(MatchArm {recurse: pattern, expression; });
+
 /// Pattern of a match arm.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -628,6 +717,16 @@ pub enum MatchPattern {
     /// Match true value (no binding).
     True,
 }
+
+impl_require_feature!(MatchPattern {
+    variants:
+        Left(pattern, ty),
+        Right(pattern, ty),
+        None,
+        Some(pattern, ty),
+        False,
+        True,
+});
 
 impl MatchPattern {
     /// Access the pattern of a match pattern that binds a variables.
@@ -659,6 +758,11 @@ pub struct Module {
     items: Arc<[Item]>,
     span: Span,
 }
+
+impl_require_feature!(Module {
+    requires: UnstableFeature::Imports, span: span;
+    recurse: items;
+});
 
 impl Module {
     /// Needed by the driver to wrap a single file into a module.
@@ -1111,8 +1215,12 @@ pub trait ParseFromStr: Sized {
 /// Trait for parsing with collection of errors.
 pub trait ParseFromStrWithErrors: Sized {
     /// Parse a value from the string `s` with Errors.
+    ///
+    /// Feature-gated syntax in the parsed AST is checked against
+    /// `unstable_features`; uses of disabled features are pushed to `handler`.
     fn parse_from_str_with_errors(
         source: impl Into<SourceFile>,
+        unstable_features: &UnstableFeatures,
         handler: &mut ErrorCollector,
     ) -> Option<Self>;
 }
@@ -1157,28 +1265,32 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
     }
 }
 
-impl<A: ChumskyParse + std::fmt::Debug> ParseFromStrWithErrors for A {
+impl<A: ChumskyParse + crate::unstable::RequireFeature + std::fmt::Debug> ParseFromStrWithErrors
+    for A
+{
     fn parse_from_str_with_errors(
         source: impl Into<SourceFile>,
+        unstable_features: &UnstableFeatures,
         handler: &mut ErrorCollector,
     ) -> Option<Self> {
         let source: SourceFile = source.into();
-        let s = &source.content().to_string();
-        let (tokens, lex_errs) = crate::lexer::lex(s);
+        let src = source.content().to_string();
 
+        let (tokens, lex_errs) = crate::lexer::lex(&src);
+        let lex_ok = lex_errs.is_empty();
         handler.extend(source.clone(), lex_errs);
         let tokens = tokens?;
 
+        let eoi = (src.len()..src.len()).into();
         let (ast, parse_errs) = A::parser()
-            .map_with(|parsed, _| parsed)
-            .parse(
-                tokens
-                    .as_slice()
-                    .map((s.len()..s.len()).into(), |(t, s)| (t, s)),
-            )
+            .parse(tokens.as_slice().map(eoi, |(t, s)| (t, s)))
             .into_output_errors();
-
+        let parse_ok = parse_errs.is_empty();
         handler.extend(source.clone(), parse_errs);
+
+        if let (Some(ast), true) = (&ast, lex_ok && parse_ok) {
+            unstable_features.check_program(ast, &source, handler);
+        }
 
         // TODO: We should return parsed result if we found errors, but because analyzing in `ast` module
         // is not handling poisoned tree right now, we don't return parsed result
@@ -2588,7 +2700,11 @@ mod test {
         let input = "fn main() { let ab: u8 = <(u4, u4)> : :into((0b1011, 0b1101)); }";
         let source = SourceFile::anonymous(Arc::from(input));
         let mut error_handler = ErrorCollector::new();
-        let parse_program = Program::parse_from_str_with_errors(source, &mut error_handler);
+        let parse_program = Program::parse_from_str_with_errors(
+            source,
+            &UnstableFeatures::all(),
+            &mut error_handler,
+        );
 
         assert!(parse_program.is_none());
         assert!(ErrorCollector::to_string(&error_handler).contains("Expected '::', found ':'"));
@@ -2599,10 +2715,102 @@ mod test {
         let input = "fn main() { let pk: Pubkey = witnes::::PK; }";
         let source = SourceFile::anonymous(Arc::from(input));
         let mut error_handler = ErrorCollector::new();
-        let parse_program = Program::parse_from_str_with_errors(source, &mut error_handler);
+        let parse_program = Program::parse_from_str_with_errors(
+            source,
+            &UnstableFeatures::all(),
+            &mut error_handler,
+        );
 
         assert!(parse_program.is_none());
         assert!(ErrorCollector::to_string(&error_handler).contains("Expected ';', found '::'"));
+    }
+
+    /// Parse `input` and return whether it was rejected and the collected error text.
+    fn parse_with(input: &str, features: &UnstableFeatures) -> (bool, String) {
+        let source = SourceFile::anonymous(Arc::from(input));
+        let mut handler = ErrorCollector::new();
+        let program = Program::parse_from_str_with_errors(source, features, &mut handler);
+        (program.is_none(), ErrorCollector::to_string(&handler))
+    }
+
+    #[test]
+    fn test_gated_syntax_is_rejected_without_features() {
+        // Real `use`/`mod` syntax: rejected under none() (naming the feature + a
+        // -Z hint), accepted under all(). Delete when `imports` stabilizes.
+        for input in [
+            "use crate::foo::bar;\nfn main() { }",
+            "mod inner { }\nfn main() { }",
+        ] {
+            let (rejected, error) = parse_with(input, &UnstableFeatures::none());
+            assert!(
+                rejected,
+                "gated syntax must be rejected without features (if this feature was \
+                 just stabilized, delete this test):\n{input}"
+            );
+            assert!(
+                error.contains("imports") && error.contains("-Z"),
+                "rejection should name the feature and suggest -Z, got:\n{error}"
+            );
+
+            let (rejected, error) = parse_with(input, &UnstableFeatures::all());
+            assert!(
+                !rejected,
+                "the same syntax must parse with all features enabled:\n{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_type_heavy_program_needs_no_features() {
+        // Types are traversed by `RequireFeature` but not gated, so a type-heavy,
+        // import-free program must parse with no features (no false-positive gates).
+        let input = r#"type Alias = u32;
+fn pick(e: Either<u32, u32>) -> u32 {
+    match e {
+        Left(a: u32) => a,
+        Right(b: u32) => b,
+    }
+}
+fn main() {
+    let casted: u32 = <(u16, u16)>::into((0xbeef, 0xbabe));
+    let chosen: Alias = pick(Left(casted));
+    assert!(jet::eq_32(chosen, chosen));
+}
+"#;
+        // `parse_from_str_with_errors` returns `Some` only when no errors were
+        // collected, so a non-rejection already proves there were no gate errors.
+        let (rejected, error) = parse_with(input, &UnstableFeatures::none());
+        assert!(
+            !rejected,
+            "type-heavy but import-free program should parse with no features:\n{error}"
+        );
+    }
+
+    #[test]
+    fn test_syntax_error_does_not_produce_spurious_feature_gate_error() {
+        // The gate check skips error-recovered ASTs, so a program with
+        // both a syntax error and gated syntax reports only the syntax error.
+        let input = "use crate::foo;\nfn main( {";
+        let (rejected, error) = parse_with(input, &UnstableFeatures::none());
+        assert!(rejected, "broken program must be rejected");
+        assert!(
+            !error.contains("-Z"),
+            "syntax error should not produce a spurious feature-gate hint, got:\n{error}"
+        );
+    }
+
+    #[test]
+    fn test_lexer_error_does_not_produce_spurious_feature_gate_error() {
+        // Lexer-side companion to the case above: the stray `@` lexes with an
+        // error but recovers a cleanly-parsing `use` AST, and a program that
+        // didn't lex cleanly skips the gate check — so no spurious `-Z` hint.
+        let input = "use crate@::foo;\nfn main() { }";
+        let (rejected, error) = parse_with(input, &UnstableFeatures::none());
+        assert!(rejected, "program with a lexer error must be rejected");
+        assert!(
+            !error.contains("-Z"),
+            "lexer error should not produce a spurious feature-gate hint, got:\n{error}"
+        );
     }
 
     #[test]
