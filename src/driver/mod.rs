@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::error::{Error, ErrorCollector, RichError, Span};
-use crate::parse::{self, ParseFromStrWithErrors};
+use crate::parse;
 use crate::resolution::{DependencyMap, ResolvedUse};
 use crate::source::{CanonPath, CanonSourceFile};
 
@@ -162,7 +162,8 @@ impl DependencyGraph {
     /// * `root_source` - The `SourceFile` representing the entry point of the project.
     /// * `dependency_map` - The context-aware mapping rules used to resolve external imports.
     /// * `root_program` - A reference to the already-parsed AST of the root file.
-    /// * `handler` - The diagnostics collector used to record resolution and parsing errors.
+    /// * `parse_ctx` - The checked parser context used to record diagnostics and
+    ///   validate unstable feature use in dependency files.
     ///
     /// # Returns
     ///
@@ -177,7 +178,7 @@ impl DependencyGraph {
         root_source: CanonSourceFile,
         dependency_map: Arc<DependencyMap>,
         root_program: &parse::Program,
-        handler: &mut ErrorCollector,
+        parse_ctx: &mut parse::CheckedParseContext<'_, '_>,
     ) -> Result<Option<Self>, String> {
         let mut graph = Self {
             modules: vec![SourceModule {
@@ -219,13 +220,13 @@ impl DependencyGraph {
                 &current,
                 &graph.dependency_map,
                 &mut use_cache,
-                handler,
+                parse_ctx.handler(),
             );
 
             let mut ctx = LoadContext {
                 invalid_imports: &mut invalid_imports,
-                handler,
                 queue: &mut queue,
+                parse_ctx,
             };
             graph.load_and_parse_dependencies(&current, valid_imports, &mut ctx);
         }
@@ -234,7 +235,7 @@ impl DependencyGraph {
 
         // TODO: Consider getting rid of the 'String' error here and changing it to a more appropriate error
         // (e.g. 'Result<Self, ErrorCollector>') after resolving https://github.com/BlockstreamResearch/SimplicityHL/issues/270.
-        Ok((!handler.has_errors()).then_some(graph))
+        Ok((!parse_ctx.has_errors()).then_some(graph))
     }
 
     /// This helper cleanly encapsulates the process of loading source text, parsing it
@@ -245,7 +246,7 @@ impl DependencyGraph {
         path: &CanonPath,
         importer_source: &CanonSourceFile,
         span: Span,
-        handler: &mut ErrorCollector,
+        ctx: &mut LoadContext<'_, '_, '_>,
     ) -> Option<SourceModule> {
         let Ok(content) = std::fs::read_to_string(path.as_path()) else {
             let err = RichError::new(
@@ -256,21 +257,15 @@ impl DependencyGraph {
             )
             .with_source(importer_source.clone());
 
-            handler.push(err);
+            ctx.parse_ctx.handler().push(err);
             return None;
         };
 
-        let mut error_handler = ErrorCollector::new();
         let source = CanonSourceFile::new(path.clone(), Arc::from(content));
 
-        let ast = parse::Program::parse_from_str_with_errors(source.clone(), &mut error_handler);
-
-        if error_handler.has_errors() {
-            handler.extend_with_handler(source, &error_handler);
-            None
-        } else {
-            ast.map(|program| SourceModule { source, program })
-        }
+        ctx.parse_ctx
+            .parse_program(source.clone())
+            .map(|program| SourceModule { source, program })
     }
 
     /// PHASE 1 OF GRAPH CONSTRUCTION: Resolves all `use` declarations within a single
@@ -306,7 +301,7 @@ impl DependencyGraph {
         &mut self,
         current: &CurrentModule,
         valid_imports: Vec<(CanonPath, Span)>,
-        ctx: &mut LoadContext,
+        ctx: &mut LoadContext<'_, '_, '_>,
     ) {
         for (path, import_span) in valid_imports {
             if ctx.invalid_imports.contains(&path) {
@@ -322,7 +317,7 @@ impl DependencyGraph {
             }
 
             let Some(module) =
-                Self::parse_and_get_source_module(&path, &current.source, import_span, ctx.handler)
+                Self::parse_and_get_source_module(&path, &current.source, import_span, ctx)
             else {
                 // Safe to ignore output: previous `.contains` check prevents collisions.
                 let _ = ctx.invalid_imports.insert(path);
@@ -417,10 +412,10 @@ impl<'a> ImportContext<'a> {
 
 /// Shared mutable state threaded through dependency loading.
 /// Lives only for the duration of [`DependencyGraph::new`].
-struct LoadContext<'a> {
+struct LoadContext<'a, 'features, 'handler> {
     invalid_imports: &'a mut HashSet<CanonPath>,
-    handler: &'a mut ErrorCollector,
     queue: &'a mut VecDeque<usize>,
+    parse_ctx: &'a mut parse::CheckedParseContext<'features, 'handler>,
 }
 
 /// The currently processed module and its source, used for error reporting
@@ -436,6 +431,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::resolution::tests::{build_map, canon};
     use crate::test_utils::TempWorkspace;
+    use crate::unstable::UnstableFeatures;
 
     /// Initializes a raw graph environment for testing, explicitly allowing for and capturing failure states.
     ///
@@ -492,16 +488,21 @@ pub(crate) mod tests {
 
         let root_p = root_file_path.expect("main.simf must be defined in file list");
         let main_canon_source = CanonSourceFile::new(root_p, Arc::from(root_content));
+        let unstable_features = UnstableFeatures::all();
 
-        let main_program_option =
-            parse::Program::parse_from_str_with_errors(main_canon_source.clone(), &mut handler);
+        let main_program_option = {
+            let mut parse_ctx = parse::CheckedParseContext::new(&unstable_features, &mut handler);
+            parse_ctx.parse_program(main_canon_source.clone())
+        };
 
         let Some(main_program) = main_program_option else {
             return (None, HashMap::new(), ws, handler);
         };
 
-        let graph_option =
-            DependencyGraph::new(main_canon_source, map, &main_program, &mut handler).unwrap();
+        let graph_option = {
+            let mut parse_ctx = parse::CheckedParseContext::new(&unstable_features, &mut handler);
+            DependencyGraph::new(main_canon_source, map, &main_program, &mut parse_ctx).unwrap()
+        };
 
         let mut file_ids = HashMap::new();
 

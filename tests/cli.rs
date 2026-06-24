@@ -14,6 +14,8 @@ fn cli_dependency_can_use_crate_root() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_simc"))
         .arg(main)
+        .arg("-Z")
+        .arg("imports")
         .arg("--dep")
         .arg(dep_arg)
         .output()
@@ -25,6 +27,34 @@ fn cli_dependency_can_use_crate_root() {
         output.status.code(),
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn cli_import_program_rejected_without_unstable_flag() {
+    let root = repo_path("functional-tests/valid-test-cases/external-library-uses-crate");
+    let main = root.join("main.simf");
+    let ext_lib = root.join("ext_lib");
+    let dep_arg = format!("{}:ext_lib={}", root.display(), ext_lib.display());
+
+    // Same invocation as `cli_dependency_can_use_crate_root`, but without `-Z imports`:
+    // the import syntax must be gated, so the binary exits non-zero and points at
+    // the missing feature flag.
+    let output = Command::new(env!("CARGO_BIN_EXE_simc"))
+        .arg(main)
+        .arg("--dep")
+        .arg(dep_arg)
+        .output()
+        .expect("failed to run simc");
+
+    assert!(
+        !output.status.success(),
+        "simc must reject an import program without -Z imports"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("imports") && stderr.contains("-Z"),
+        "error should name the feature and the flag, got:\n{stderr}"
     );
 }
 
