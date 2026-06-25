@@ -2,8 +2,10 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
-use simplicityhl::ast::ElementsJetHinter;
+use simplicityhl::ast::{CoreJetHinter, ElementsJetHinter, JetHinter};
 use simplicityhl::error::should_color;
+#[cfg(feature = "external-jets")]
+use simplicityhl::jet::external::{init_external_jet_lib, ExternalJetHinter};
 use simplicityhl::version::SimcDirective;
 use simplicityhl::{
     resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
@@ -11,6 +13,7 @@ use simplicityhl::{
 };
 use simplicityhl::{UnstableFeature, UnstableFeatures};
 use std::path::Path;
+use std::str::FromStr;
 use std::{env, fmt, io};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -28,6 +31,9 @@ struct Output {
     /// versions can produce different CMRs from the same source, so the version
     /// travels with the artifact as metadata (it is not part of the program).
     compiler_version: &'static str,
+    /// Compilation target used to select the jet set. Different targets can
+    /// produce different CMRs from the same source and compiler version.
+    target: String,
 }
 
 impl fmt::Display for Output {
@@ -35,6 +41,7 @@ impl fmt::Display for Output {
         writeln!(f, "Program:\n{}", self.program)?;
         writeln!(f, "CMR:\n{}", self.cmr)?;
         writeln!(f, "Compiler version:\n{}", self.compiler_version)?;
+        writeln!(f, "Target:\n{}", self.target)?;
         if let Some(witness) = &self.witness {
             writeln!(f, "Witness:\n{}", witness)?;
         }
@@ -43,6 +50,131 @@ impl fmt::Display for Output {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug)]
+enum Target {
+    Elements,
+    Core,
+    #[cfg(feature = "external-jets")]
+    External(String),
+}
+
+struct TargetParseError(String);
+
+impl fmt::Debug for TargetParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl fmt::Display for TargetParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for TargetParseError {}
+
+const TARGET_HELP: &str = "Target platform for compilation: elements, core, or external:<path> (external targets require the 'external-jets' feature)";
+
+impl fmt::Display for Target {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Target::Elements => f.write_str("elements"),
+            Target::Core => f.write_str("core"),
+            #[cfg(feature = "external-jets")]
+            Target::External(path) => write!(f, "external:{path}"),
+        }
+    }
+}
+
+impl Target {
+    #[allow(clippy::unnecessary_wraps)]
+    fn jet_hinter(&self) -> Result<Box<dyn JetHinter>, Box<dyn std::error::Error>> {
+        match self {
+            Target::Elements => Ok(Box::new(ElementsJetHinter::new())),
+            Target::Core => Ok(Box::new(CoreJetHinter::new())),
+            #[cfg(feature = "external-jets")]
+            Target::External(path) => {
+                // SAFETY: `path` was canonicalized and verified to be a regular file while
+                // parsing the target argument.
+                //
+                // The user MUST trust the library to implement the external jet ABI.
+                //
+                // Initialization verifies that every required symbol exists.
+                unsafe {
+                    init_external_jet_lib(path)?;
+                }
+
+                Ok(Box::new(ExternalJetHinter::new()))
+            }
+        }
+    }
+}
+
+impl FromStr for Target {
+    type Err = TargetParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(path) = s.strip_prefix("external:") {
+            #[cfg(feature = "external-jets")]
+            {
+                return validate_external_jet_lib_path(path).map(Target::External);
+            }
+
+            #[cfg(not(feature = "external-jets"))]
+            {
+                let _ = path;
+                return Err(TargetParseError(
+                    "External targets require a compiler built with the 'external-jets' feature"
+                        .to_string(),
+                ));
+            }
+        }
+
+        match s {
+            "elements" => Ok(Target::Elements),
+            "core" => Ok(Target::Core),
+            _ => Err(TargetParseError(format!(
+                "Unknown target: {}. Use one of: elements, core, external:<path>",
+                s
+            ))),
+        }
+    }
+}
+
+#[cfg(feature = "external-jets")]
+fn validate_external_jet_lib_path(path: &str) -> Result<String, TargetParseError> {
+    if path.is_empty() {
+        return Err(TargetParseError(
+            "Invalid target: external target path cannot be empty".to_string(),
+        ));
+    }
+
+    let canonical_path = std::fs::canonicalize(path).map_err(|error| {
+        TargetParseError(format!(
+            "Invalid external target path '{}': {error}",
+            Path::new(path).display()
+        ))
+    })?;
+
+    if !canonical_path.is_file() {
+        return Err(TargetParseError(format!(
+            "Invalid external target path '{}': path is not a regular file",
+            canonical_path.display()
+        )));
+    }
+
+    canonical_path
+        .into_os_string()
+        .into_string()
+        .map_err(|path| {
+            TargetParseError(format!(
+                "Invalid external target path '{}': path is not valid UTF-8",
+                Path::new(&path).display()
+            ))
+        })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -121,6 +253,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .value_parser(clap::value_parser!(UnstableFeature))
                     .help(simplicityhl::UnstableFeature::help_message()),
             )
+            .arg(
+                Arg::new("target")
+                    .long("target")
+                    .short('t')
+                    .value_name("TARGET")
+                    .default_value("elements")
+                    .action(ArgAction::Set)
+                    .value_parser(clap::value_parser!(Target))
+                    .help(TARGET_HELP),
+            )
     };
 
     let matches = command.get_matches();
@@ -161,6 +303,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into(),
         );
     }
+
+    let target = matches
+        .get_one::<Target>("target")
+        .expect("target argument should have a default value");
 
     let dep_args = matches
         .get_many::<String>("dependencies")
@@ -222,7 +368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         source,
         &dependencies,
         &unstable_features,
-        Box::new(ElementsJetHinter::new()),
+        target.jet_hinter()?,
     ) {
         Ok(program) => program,
         Err(diags) => {
@@ -305,6 +451,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         abi_meta: abi_opt,
         cmr: cmr_hex,
         compiler_version: compiled.compiler_version(),
+        target: target.to_string(),
     };
 
     if output_json {
