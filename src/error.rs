@@ -418,6 +418,8 @@ impl Default for ErrorCollector {
     }
 }
 
+impl std::error::Error for ErrorCollector {}
+
 impl ErrorCollector {
     pub fn new() -> Self {
         Self { errors: Vec::new() }
