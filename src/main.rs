@@ -2,7 +2,7 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
-use simplicityhl::ast::ElementsJetHinter;
+use simplicityhl::ast::{CoreJetHinter, ElementsJetHinter, JetHinter};
 use simplicityhl::error::should_color;
 use simplicityhl::version::SimcDirective;
 use simplicityhl::{
@@ -11,6 +11,7 @@ use simplicityhl::{
 };
 use simplicityhl::{UnstableFeature, UnstableFeatures};
 use std::path::Path;
+use std::str::FromStr;
 use std::{env, fmt, io};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -28,6 +29,9 @@ struct Output {
     /// versions can produce different CMRs from the same source, so the version
     /// travels with the artifact as metadata (it is not part of the program).
     compiler_version: &'static str,
+    /// Compilation target used to select the jet set. Different targets can
+    /// produce different CMRs from the same source and compiler version.
+    target: String,
 }
 
 impl fmt::Display for Output {
@@ -35,6 +39,7 @@ impl fmt::Display for Output {
         writeln!(f, "Program:\n{}", self.program)?;
         writeln!(f, "CMR:\n{}", self.cmr)?;
         writeln!(f, "Compiler version:\n{}", self.compiler_version)?;
+        writeln!(f, "Target:\n{}", self.target)?;
         if let Some(witness) = &self.witness {
             writeln!(f, "Witness:\n{}", witness)?;
         }
@@ -42,6 +47,64 @@ impl fmt::Display for Output {
             writeln!(f, "ABI meta:\n{:?}", witness)?;
         }
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Target {
+    Elements,
+    Core,
+}
+
+struct TargetParseError(String);
+
+impl fmt::Debug for TargetParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl fmt::Display for TargetParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for TargetParseError {}
+
+const TARGET_HELP: &str = "Target platform for compilation: elements, or core";
+
+impl fmt::Display for Target {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Target::Elements => f.write_str("elements"),
+            Target::Core => f.write_str("core"),
+        }
+    }
+}
+
+impl Target {
+    /// Constructs the jet hinter for this compilation target.
+    fn jet_hinter(&self) -> Box<dyn JetHinter> {
+        match self {
+            Target::Elements => Box::new(ElementsJetHinter::new()),
+            Target::Core => Box::new(CoreJetHinter::new()),
+        }
+    }
+}
+
+impl FromStr for Target {
+    type Err = TargetParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "elements" => Ok(Target::Elements),
+            "core" => Ok(Target::Core),
+            _ => Err(TargetParseError(format!(
+                "Unknown target: {}. Use one of: elements or core",
+                s
+            ))),
+        }
     }
 }
 
@@ -121,6 +184,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .value_parser(clap::value_parser!(UnstableFeature))
                     .help(simplicityhl::UnstableFeature::help_message()),
             )
+            .arg(
+                Arg::new("target")
+                    .long("target")
+                    .short('t')
+                    .value_name("TARGET")
+                    .default_value("elements")
+                    .action(ArgAction::Set)
+                    .value_parser(clap::value_parser!(Target))
+                    .help(TARGET_HELP),
+            )
     };
 
     let matches = command.get_matches();
@@ -161,6 +234,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into(),
         );
     }
+
+    let target = matches
+        .get_one::<Target>("target")
+        .expect("target argument should have a default value");
 
     let dep_args = matches
         .get_many::<String>("dependencies")
@@ -222,7 +299,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         source,
         &dependencies,
         &unstable_features,
-        Box::new(ElementsJetHinter::new()),
+        target.jet_hinter(),
     ) {
         Ok(program) => program,
         Err(diags) => {
@@ -305,6 +382,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         abi_meta: abi_opt,
         cmr: cmr_hex,
         compiler_version: compiled.compiler_version(),
+        target: target.to_string(),
     };
 
     if output_json {
