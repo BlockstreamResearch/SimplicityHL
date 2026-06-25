@@ -85,11 +85,15 @@ impl SourceMap {
         }
     }
 
-    fn insert(&mut self, path: CanonPath) -> usize {
+    fn insert(&mut self, path: CanonPath) {
         let id = self.paths.len();
         self.ids.insert(path.clone(), id);
         self.paths.push(path);
-        id
+        debug_assert_eq!(self.ids.len(), self.paths.len());
+    }
+
+    fn len(&self) -> usize {
+        self.paths.len()
     }
 
     pub fn get_id(&self, path: &CanonPath) -> Option<usize> {
@@ -137,10 +141,10 @@ pub(crate) struct DependencyGraph {
     /// Fast bidirectional lookup between `CanonPath` and Module IDs.
     source_map: SourceMap,
 
-    /// Memoized results of [`crate::resolution::DependencyMap::resolve_path`] to avoid
-    /// resolving the same [`parse::UseDecl`] twice — once during the driver phase
-    /// and once during the building phase after linearization.
-    use_cache: HashMap<parse::UseDecl, ResolvedUse>,
+    /// Memoizes [`crate::resolution::DependencyMap::resolve_path_internal`] results,
+    /// keyed by the source [`Span`] of each `use` declaration, so the resolver runs
+    /// once per occurrence and the linearization phase can look the result up directly.
+    use_cache: HashMap<Span, ResolvedUse>,
 
     // TODO: Consider to optimising this with `Vec` instead of `HashMap`
     /// The Adjacency List: Defines the Directed acyclic Graph (DAG) of imports.
@@ -241,45 +245,8 @@ impl DependencyGraph {
         Ok((!handler.has_errors()).then_some(graph))
     }
 
-    /// This helper cleanly encapsulates the process of loading source text, parsing it
-    /// into an `parse::Program`, and combining them so the compiler can easily work with the file.
-    /// If the file is missing or contains syntax errors, it logs the diagnostic to the
-    /// `ErrorCollector` and safely returns `None`.
-    fn parse_and_get_source_module(
-        path: &CanonPath,
-        importer_source: &CanonSourceFile,
-        span: Span,
-        handler: &mut ErrorCollector,
-        unstable_features: &UnstableFeatures,
-    ) -> Option<SourceModule> {
-        let Ok(content) = std::fs::read_to_string(path.as_path()) else {
-            let err = RichError::new(
-                Error::FileNotFound {
-                    filename: PathBuf::from(path.as_path()),
-                },
-                span,
-            )
-            .with_source(importer_source.clone());
-
-            handler.push(err);
-            return None;
-        };
-
-        let mut error_handler = ErrorCollector::new();
-        let source = CanonSourceFile::new(path.clone(), Arc::from(content));
-
-        let ast = parse::Program::parse_from_str_with_errors(
-            source.clone(),
-            unstable_features,
-            &mut error_handler,
-        );
-
-        if error_handler.has_errors() {
-            handler.extend_with_handler(source, &error_handler);
-            None
-        } else {
-            ast.map(|program| SourceModule { source, program })
-        }
+    pub fn source_map(&self) -> &SourceMap {
+        &self.source_map
     }
 
     /// PHASE 1 OF GRAPH CONSTRUCTION: Resolves all `use` declarations within a single
@@ -292,7 +259,7 @@ impl DependencyGraph {
         current_program: &parse::Program,
         current_module: &CurrentModule,
         dependency_map: &DependencyMap,
-        use_cache: &mut HashMap<parse::UseDecl, ResolvedUse>,
+        use_cache: &mut HashMap<Span, ResolvedUse>,
         handler: &mut ErrorCollector,
     ) -> Vec<(CanonPath, Span)> {
         let mut ctx = ImportContext {
@@ -330,7 +297,10 @@ impl DependencyGraph {
                 continue;
             }
 
+            let new_id = self.source_map.len();
+
             let Some(module) = Self::parse_and_get_source_module(
+                new_id,
                 &path,
                 &current.source,
                 import_span,
@@ -342,7 +312,7 @@ impl DependencyGraph {
                 continue;
             };
 
-            let new_id = self.source_map.insert(path.clone());
+            self.source_map.insert(path.clone());
             self.modules.push(module);
 
             self.dependencies
@@ -353,8 +323,46 @@ impl DependencyGraph {
         }
     }
 
-    pub fn source_map(&self) -> &SourceMap {
-        &self.source_map
+    /// This helper cleanly encapsulates the process of loading source text, parsing it
+    /// into an `parse::Program`, and combining them so the compiler can easily work with the file.
+    /// If the file is missing or contains syntax errors, it logs the diagnostic to the
+    /// `ErrorCollector` and safely returns `None`.
+    fn parse_and_get_source_module(
+        new_id: usize,
+        path: &CanonPath,
+        importer_source: &CanonSourceFile,
+        span: Span,
+        handler: &mut ErrorCollector,
+        unstable_features: &UnstableFeatures,
+    ) -> Option<SourceModule> {
+        let Ok(content) = std::fs::read_to_string(path.as_path()) else {
+            let err = RichError::new(
+                Error::FileNotFound {
+                    filename: PathBuf::from(path.as_path()),
+                },
+                span,
+            )
+            .with_source(importer_source.clone());
+
+            handler.push(err);
+            return None;
+        };
+
+        let mut error_handler = ErrorCollector::new();
+        let source = CanonSourceFile::new(path.clone(), Arc::from(content));
+        let ast = parse::Program::parse_from_str_with_errors(
+            new_id,
+            source.clone(),
+            unstable_features,
+            &mut error_handler,
+        );
+
+        if error_handler.has_errors() {
+            handler.extend_with_handler(source, &error_handler);
+            return None;
+        }
+
+        ast.map(|program| SourceModule { source, program })
     }
 }
 
@@ -363,11 +371,27 @@ impl DependencyGraph {
 struct ImportContext<'a> {
     current: CurrentModule,
     dependency_map: &'a DependencyMap,
-    use_cache: &'a mut HashMap<parse::UseDecl, ResolvedUse>,
+    use_cache: &'a mut HashMap<Span, ResolvedUse>,
     handler: &'a mut ErrorCollector,
 }
 
 impl<'a> ImportContext<'a> {
+    /// Recursively walks an item, collecting resolved imports.
+    /// Recurses into inline `mod` blocks.
+    fn process_item(&mut self, item: &parse::Item, valid_imports: &mut Vec<(CanonPath, Span)>) {
+        match item {
+            parse::Item::Use(use_decl) => valid_imports.extend(self.resolve_single(use_decl)),
+            parse::Item::Module(module) => {
+                for item in module.items() {
+                    self.process_item(item, valid_imports);
+                }
+            }
+
+            // These items carry no import information at this stage and can be safely skipped.
+            parse::Item::TypeAlias(_) | parse::Item::Function(_) | parse::Item::Ignored => {}
+        }
+    }
+
     /// Resolves a single `use` declaration, caches the result for reuse during
     /// later graph construction phases, and returns the resolved path and span.
     /// Returns `None` and reports to `handler` if resolution fails.
@@ -384,18 +408,12 @@ impl<'a> ImportContext<'a> {
             }
         };
 
-        // We assign a file ID to prevent collisions between identical `use` statements across different files.
-        // For instance, `use crate::A::foo;` in the local workspace and in an external dependency
-        // might resolve to completely different implementations of the `foo` function.
-        let mut use_decl = use_decl.clone();
         let span = *use_decl.span();
-        use_decl.set_file_id(self.current.id);
-
         let result: (CanonPath, Span) = (resolved.path.clone(), span);
 
         // Since we found an error, when we can reevalute the result, we do not want to break it again
         // So, add error to prevent similar cases in the future
-        if let Some(old_value) = self.use_cache.insert(use_decl, resolved) {
+        if let Some(old_value) = self.use_cache.insert(span, resolved) {
             let msg = format!(
                 "Reevaluated an existing use_decl. Old value was: {:?}",
                 old_value
@@ -405,26 +423,6 @@ impl<'a> ImportContext<'a> {
             self.handler.push(err);
         }
         Some(result)
-    }
-
-    /// Recursively walks an item, collecting resolved imports.
-    /// Recurses into inline `mod` blocks.
-    fn process_item(&mut self, item: &parse::Item, valid_imports: &mut Vec<(CanonPath, Span)>) {
-        match item {
-            parse::Item::Use(use_decl) => {
-                if let Some(import) = self.resolve_single(use_decl) {
-                    valid_imports.push(import);
-                }
-            }
-            parse::Item::Module(module) => {
-                for item in module.items() {
-                    self.process_item(item, valid_imports);
-                }
-            }
-
-            // These items carry no import information at this stage and can be safely skipped.
-            parse::Item::TypeAlias(_) | parse::Item::Function(_) | parse::Item::Ignored => {}
-        }
     }
 }
 
@@ -508,6 +506,7 @@ pub(crate) mod tests {
         let main_canon_source = CanonSourceFile::new(root_p, Arc::from(root_content));
 
         let main_program_option = parse::Program::parse_from_str_with_errors(
+            MAIN_MODULE,
             main_canon_source.clone(),
             &UnstableFeatures::all(),
             &mut handler,

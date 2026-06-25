@@ -16,10 +16,6 @@ impl DependencyGraph {
         }
     }
 
-    fn get_module_name(source_id: usize) -> Identifier {
-        Identifier::from_str_unchecked(format!("unit_{}", source_id).as_str())
-    }
-
     /// Constructs the unified array of items for the entire multi-program.
     fn build_program(
         &self,
@@ -35,7 +31,7 @@ impl DependencyGraph {
                 .program
                 .items()
                 .iter()
-                .filter_map(|item| self.rewrite_item(source_id, item))
+                .filter_map(|item| self.rewrite_item(item))
                 .collect();
 
             if source_id == MAIN_MODULE {
@@ -64,49 +60,40 @@ impl DependencyGraph {
     }
 
     /// Rewrites a single item for the flattened single-file representation.
-    fn rewrite_item(&self, source_id: usize, item: &parse::Item) -> Option<parse::Item> {
+    fn rewrite_item(&self, item: &parse::Item) -> Option<parse::Item> {
         match item {
-            parse::Item::TypeAlias(alias) => {
-                let mut alias = alias.clone();
-                alias.set_file_id(source_id);
-                Some(parse::Item::TypeAlias(alias))
-            }
-            parse::Item::Function(function) => {
-                let mut function = function.clone();
-                function.set_file_id(source_id);
-                Some(parse::Item::Function(function))
-            }
-            parse::Item::Use(use_decl) => Some(self.rewrite_use(source_id, use_decl)),
+            parse::Item::Use(use_decl) => Some(self.rewrite_use(use_decl)),
             parse::Item::Module(module) => {
                 let items: Vec<parse::Item> = module
                     .items()
                     .iter()
-                    .filter_map(|inner_item| self.rewrite_item(source_id, inner_item))
+                    .filter_map(|inner_item| self.rewrite_item(inner_item))
                     .collect();
 
                 Some(parse::Item::Module(parse::Module::new(
-                    source_id,
+                    module.span().file_id,
                     module.visibility().clone(),
                     module.name().clone(),
                     &items,
                 )))
             }
+            parse::Item::TypeAlias(_) | parse::Item::Function(_) => Some(item.clone()),
             parse::Item::Ignored => None,
         }
     }
 
-    /// Rewrites a `use` declaration by replacing the drp alias with the canonical
-    /// `file_N` module name, prepending it to the remaining `mod_path` from the cache.
-    /// If the target is the `MAIN_MODULE`, the `file_N` segment is safely omitted.
+    /// Rewrites a `use` declaration to its canonical `crate`-rooted form.
     ///
-    /// ## Example
+    /// The resolved path becomes `crate::<module>::<mod_path...>`, where
+    /// `<module>` is `file_N` for dependency files and is omitted when the
+    /// target is `MAIN_MODULE` (via `get_module_name`).
     ///
-    /// `use base_math::simple_op::hash` into `use file_2::hash`
-    /// `use crate::inline_mod::item` into `use crate::inline_mod::item`
-    fn rewrite_use(&self, source_id: usize, use_decl: &parse::UseDecl) -> parse::Item {
-        let mut use_decl = use_decl.clone();
-        use_decl.set_file_id(source_id);
-        let resolved = &self.use_cache[&use_decl];
+    /// ## Examples
+    ///
+    /// - `use base_math::simple_op::hash` → `use crate::file_2::hash`
+    /// - `use some_dep::item` (target = `MAIN_MODULE`) → `use crate::item`
+    fn rewrite_use(&self, use_decl: &parse::UseDecl) -> parse::Item {
+        let resolved = &self.use_cache[use_decl.span()];
         let target_id = self
             .source_map
             .get_id(&resolved.path)
@@ -114,12 +101,16 @@ impl DependencyGraph {
 
         let mut new_path = Vec::with_capacity(resolved.mod_path.len() + 2);
         new_path.push(Identifier::from_str_unchecked(CRATE_STR));
-
         new_path.push(Self::get_module_name(target_id));
         new_path.extend(resolved.mod_path.iter().cloned());
 
+        let mut use_decl = use_decl.clone();
         use_decl.set_path(&new_path);
         parse::Item::Use(use_decl)
+    }
+
+    fn get_module_name(source_id: usize) -> Identifier {
+        Identifier::from_str_unchecked(format!("unit_{}", source_id).as_str())
     }
 }
 

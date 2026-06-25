@@ -360,7 +360,10 @@ mod tests {
 
     impl RequireFeature for Requires {
         fn feature_requirements(&self, out: &mut Vec<FeatureRequirement>) {
-            out.push(FeatureRequirement::new(self.0, Span::new(0, 3)));
+            out.push(FeatureRequirement::new(
+                self.0,
+                Span::new_in_default_file(0..3),
+            ));
         }
     }
 

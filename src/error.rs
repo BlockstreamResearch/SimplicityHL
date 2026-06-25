@@ -6,6 +6,7 @@ use std::sync::Arc;
 use chumsky::error::Error as ChumskyError;
 use chumsky::input::ValueInput;
 use chumsky::label::LabelError;
+use chumsky::span::SimpleSpan;
 use chumsky::text::Char;
 use chumsky::util::MaybeRef;
 use chumsky::DefaultExpected;
@@ -23,6 +24,8 @@ use crate::unstable::UnstableFeature;
 /// Area that an object spans inside a file.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Span {
+    /// Identifier of the source file this span refers to.
+    pub file_id: usize,
     /// Position where the object starts, inclusively.
     pub start: usize,
     /// Position where the object ends, exclusively.
@@ -30,18 +33,30 @@ pub struct Span {
 }
 
 impl Span {
-    /// A dummy span.
-    #[cfg(feature = "arbitrary")]
-    pub(crate) const DUMMY: Self = Self::new(0, 0);
+    pub(crate) const DUMMY: Self = Self::new(0, 0..0);
 
     /// Create a new span.
     ///
     /// ## Panics
     ///
-    /// Start comes after end.
-    pub const fn new(start: usize, end: usize) -> Self {
-        assert!(start <= end, "Start cannot come after end");
-        Self { start, end }
+    /// Panics if `start > end`.
+    pub const fn new(file_id: usize, range: Range<usize>) -> Self {
+        assert!(range.start <= range.end, "Start cannot come after end");
+        Self {
+            file_id,
+            start: range.start,
+            end: range.end,
+        }
+    }
+
+    /// EOF sentinel: zero-width position at the end of `file_id`'s contents
+    pub const fn eof(file_id: usize, source_len: usize) -> Self {
+        // start == end is intentional
+        Self::new(file_id, source_len..source_len)
+    }
+
+    pub const fn from_chumsky(file_id: usize, span: SimpleSpan<usize>) -> Self {
+        Self::new(file_id, span.start..span.end)
     }
 
     /// Return a slice from the given `file` that corresponds to the span.
@@ -51,18 +66,16 @@ impl Span {
 }
 
 impl chumsky::span::Span for Span {
-    type Context = ();
-
+    type Context = usize;
     type Offset = usize;
 
-    fn new((): Self::Context, range: Range<Self::Offset>) -> Self {
-        Self {
-            start: range.start,
-            end: range.end,
-        }
+    fn new(file_id: Self::Context, range: Range<Self::Offset>) -> Self {
+        Self::new(file_id, range)
     }
 
-    fn context(&self) -> Self::Context {}
+    fn context(&self) -> Self::Context {
+        self.file_id
+    }
 
     fn start(&self) -> Self::Offset {
         self.start
@@ -75,29 +88,19 @@ impl chumsky::span::Span for Span {
 
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}..{}", self.start, self.end)?;
-        Ok(())
+        write!(f, "{}..{}", self.start, self.end)
     }
 }
 
-impl From<chumsky::span::SimpleSpan> for Span {
-    fn from(span: chumsky::span::SimpleSpan) -> Self {
-        Self {
-            start: span.start,
-            end: span.end,
-        }
-    }
-}
-
-impl From<Range<usize>> for Span {
-    fn from(range: Range<usize>) -> Self {
-        Self::new(range.start, range.end)
+impl From<SimpleSpan<usize, usize>> for Span {
+    fn from(span: SimpleSpan<usize, usize>) -> Self {
+        Self::new(span.context, span.start..span.end)
     }
 }
 
 impl From<&str> for Span {
     fn from(s: &str) -> Self {
-        Span::new(0, s.len())
+        Span::new(crate::driver::MAIN_MODULE, 0..s.len())
     }
 }
 
@@ -208,7 +211,7 @@ impl RichError {
             error: Box::new(Error::CannotParse {
                 msg: reason.to_string(),
             }),
-            span: Span::new(0, 0),
+            span: Span::DUMMY,
             source: None,
         }
     }
@@ -927,7 +930,15 @@ impl From<simplicity::types::Error> for Error {
 
 #[cfg(test)]
 mod tests {
+    use crate::driver::MAIN_MODULE;
+
     use super::*;
+
+    impl Span {
+        pub const fn new_in_default_file(range: Range<usize>) -> Self {
+            Self::new(MAIN_MODULE, range)
+        }
+    }
 
     const CONTENT: &str = r#"let a1: List<u32, 5> = None;
 let x: u32 = Left(
@@ -938,7 +949,7 @@ let x: u32 = Left(
     #[test]
     fn display_single_line() {
         let error = Error::ListBoundPow2 { bound: 5 }
-            .with_span(Span::new(13, 19))
+            .with_span(Span::new_in_default_file(13..19))
             .with_content(Arc::from(CONTENT));
         let expected = r#"
   |
@@ -952,7 +963,7 @@ let x: u32 = Left(
         let error = Error::CannotParse {
             msg: "Expected value of type `u32`, got `Either<Either<_, u32>, _>`".to_string(),
         }
-        .with_span(Span::new(41, CONTENT.len()))
+        .with_span(Span::new_in_default_file(41..CONTENT.len()))
         .with_content(Arc::from(CONTENT));
         let expected = r#"
   |
@@ -992,7 +1003,7 @@ let x: u32 = Left(
         let error = Error::CannotParse {
             msg: "This error has no file".to_string(),
         }
-        .with_span(Span::new(5, 10));
+        .with_span(Span::new_in_default_file(5..10));
         assert_eq!(&expected, &error.to_string());
     }
 
@@ -1013,7 +1024,7 @@ let x: u32 = Left(
         let error = Error::CannotParse {
             msg: "number too large to fit in target type".to_string(),
         }
-        .with_span(Span::new(21, 26))
+        .with_span(Span::new_in_default_file(21..26))
         .with_content(Arc::from(file));
 
         let expected = r#"
@@ -1055,7 +1066,7 @@ let x: u32 = Left(
         let error = Error::CannotParse {
             msg: "number too large to fit in target type".to_string(),
         }
-        .with_span(Span::new(12, 17))
+        .with_span(Span::new_in_default_file(12..17))
         .with_content(Arc::from(file));
 
         let expected = r#"
@@ -1072,7 +1083,7 @@ let x: u32 = Left(
         let error = Error::Grammar {
             msg: "Error span at (0,0)".to_string(),
         }
-        .with_span(Span::new(0, 0))
+        .with_span(Span::new_in_default_file(0..0))
         .with_content(Arc::from(file));
 
         let expected = r#"
@@ -1088,7 +1099,7 @@ let x: u32 = Left(
         let error = Error::CannotParse {
             msg: "eof".to_string(),
         }
-        .with_span(Span::new(file.len(), file.len()))
+        .with_span(Span::new_in_default_file(file.len()..file.len()))
         .with_content(Arc::from(file));
 
         let expected = r#"
@@ -1104,7 +1115,7 @@ let x: u32 = Left(
     fn display_single_line_with_file() {
         let source = SourceFile::new(std::path::Path::new("src/main.simf"), Arc::from(CONTENT));
         let error = Error::ListBoundPow2 { bound: 5 }
-            .with_span(Span::new(13, 19))
+            .with_span(Span::new_in_default_file(13..19))
             .with_source(source);
 
         let expected = r#"
@@ -1121,7 +1132,7 @@ let x: u32 = Left(
         let error = Error::CannotParse {
             msg: "Expected value of type `u32`, got `Either<Either<_, u32>, _>`".to_string(),
         }
-        .with_span(Span::new(41, CONTENT.len()))
+        .with_span(Span::new_in_default_file(41..CONTENT.len()))
         .with_source(source);
 
         let expected = r#"
