@@ -18,6 +18,7 @@ use crate::parse::MatchPattern;
 use crate::source::SourceFile;
 use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName, WitnessName};
 use crate::types::{ResolvedType, UIntType};
+use crate::unstable::UnstableFeature;
 
 /// Area that an object spans inside a file.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -478,6 +479,9 @@ impl fmt::Display for ErrorCollector {
 /// Records _what_ happened but not where.
 #[derive(Debug, Clone)]
 pub enum Error {
+    UnstableFeature {
+        feature: UnstableFeature,
+    },
     DependencyPathNotFound {
         path: PathBuf,
     },
@@ -643,15 +647,16 @@ pub enum Error {
         declared: ResolvedType,
         assigned: ResolvedType,
     },
-    // TODO: Remove these once `use` and `mod` are supported by the AST
-    UseKeywordIsNotSupported,
-    ModuleKeywordIsNotSupported,
 }
 
 #[rustfmt::skip]
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::UnstableFeature { feature } => write!(
+                f,
+                "The '{feature}' feature is not enabled.\nEnable it with: -Z {feature}"
+            ),
             Error::DependencyPathNotFound { path } => write!(
                 f,
                 "Path not found: {}", path.display()
@@ -879,14 +884,6 @@ impl fmt::Display for Error {
             Error::ArgumentTypeMismatch { name, declared, assigned } => write!(
                 f,
                 "Parameter `{name}` was declared with type `{declared}` but its assigned argument is of type `{assigned}`"
-            ),
-            Error::UseKeywordIsNotSupported => write!(
-                f,
-                "The `use` keyword is not supported yet"
-            ),
-            Error::ModuleKeywordIsNotSupported => write!(
-                f,
-                "The `mod` keyword is not supported yet"
             ),
         }
     }

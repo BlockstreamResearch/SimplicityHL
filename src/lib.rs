@@ -17,6 +17,7 @@ pub mod parse;
 pub mod pattern;
 pub mod resolution;
 pub mod source;
+pub mod unstable;
 
 #[cfg(feature = "serde")]
 mod serde;
@@ -45,6 +46,7 @@ use crate::resolution::DependencyMap;
 use crate::source::CanonSourceFile;
 use crate::source::SourceFile;
 pub use crate::types::ResolvedType;
+pub use crate::unstable::{UnstableFeature, UnstableFeatures};
 pub use crate::value::Value;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 
@@ -70,10 +72,15 @@ impl TemplateProgram {
     pub fn flatten(
         source: CanonSourceFile,
         dependency_map: &DependencyMap,
+        unstable_features: &UnstableFeatures,
     ) -> Result<String, String> {
         let mut error_handler = ErrorCollector::new();
-        let (resolved_program, _) =
-            Self::dependency_helper(source, dependency_map, &mut error_handler)?;
+        let (resolved_program, _) = Self::dependency_helper(
+            source,
+            dependency_map,
+            unstable_features,
+            &mut error_handler,
+        )?;
 
         resolved_program
             .ok_or_else(|| error_handler.to_string())
@@ -88,14 +95,19 @@ impl TemplateProgram {
     pub fn new_with_dep(
         source: CanonSourceFile,
         dependency_map: &DependencyMap,
+        unstable_features: &UnstableFeatures,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, ErrorCollector> {
         let mut error_handler = ErrorCollector::new();
 
         let build_program = || -> Result<Self, ()> {
-            let (resolved_program, source_map) =
-                Self::dependency_helper(source.clone(), dependency_map, &mut error_handler)
-                    .map_err(|_| ())?;
+            let (resolved_program, source_map) = Self::dependency_helper(
+                source.clone(),
+                dependency_map,
+                unstable_features,
+                &mut error_handler,
+            )
+            .map_err(|_| ())?;
 
             let resolved_program = resolved_program.ok_or(())?;
 
@@ -127,11 +139,25 @@ impl TemplateProgram {
         s: Str,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, ErrorCollector> {
+        Self::new_with_unstable(s, &UnstableFeatures::none(), jet_hinter)
+    }
+
+    /// Like [`new`](Self::new), but rejects any unstable feature used by the
+    /// program that is not enabled in `unstable_features`.
+    pub fn new_with_unstable<Str: Into<Arc<str>>>(
+        s: Str,
+        unstable_features: &UnstableFeatures,
+        jet_hinter: Box<dyn ast::JetHinter>,
+    ) -> Result<Self, ErrorCollector> {
         let file = s.into();
         let source = SourceFile::anonymous(file.clone());
         let mut error_handler = ErrorCollector::new();
 
-        let parse_program = parse::Program::parse_from_str_with_errors(source, &mut error_handler);
+        let parse_program = parse::Program::parse_from_str_with_errors(
+            source,
+            unstable_features,
+            &mut error_handler,
+        );
 
         if let Some(program) = parse_program {
             let Ok(ast_program) = ast::Program::analyze(&program, jet_hinter.clone_box())
@@ -153,21 +179,53 @@ impl TemplateProgram {
         }
     }
 
+    /*
     fn dependency_helper(
         source: CanonSourceFile,
         dependency_map: &DependencyMap,
+        unstable_features: &UnstableFeatures,
         handler: &mut ErrorCollector,
     ) -> Result<(Option<parse::Program>, SourceMap), String> {
-        let program = parse::Program::parse_from_str_with_errors(source.clone(), handler)
-            .ok_or_else(|| handler.to_string())?;
-        // TODO: we should remove this errors push after refactoring errors
-        let graph =
-            DependencyGraph::new(source, Arc::from(dependency_map.clone()), &program, handler)
-                .map_err(|e| {
-                    handler.push(error::RichError::parsing_error(&e));
-                    handler.to_string()
-                })?
+        let program =
+            parse::Program::parse_from_str_with_errors(source.clone(), unstable_features, handler)
                 .ok_or_else(|| handler.to_string())?;
+        let graph = DependencyGraph::new(
+            source,
+            Arc::from(dependency_map.clone()),
+            &program,
+            handler,
+            unstable_features,
+        )?
+        .ok_or_else(|| handler.to_string())?;
+
+        let program = graph.linearize_and_build(handler);
+
+        program.map(|opt| (opt, graph.source_map().clone()))
+    }
+    */
+
+    fn dependency_helper(
+        source: CanonSourceFile,
+        dependency_map: &DependencyMap,
+        unstable_features: &UnstableFeatures,
+        handler: &mut ErrorCollector,
+    ) -> Result<(Option<parse::Program>, SourceMap), String> {
+        let program =
+            parse::Program::parse_from_str_with_errors(source.clone(), unstable_features, handler)
+                .ok_or_else(|| handler.to_string())?;
+        // TODO: we should remove this errors push after refactoring errors
+        let graph = DependencyGraph::new(
+            source,
+            Arc::from(dependency_map.clone()),
+            &program,
+            handler,
+            unstable_features,
+        )
+        .map_err(|e| {
+            handler.push(error::RichError::parsing_error(&e));
+            handler.to_string()
+        })?
+        .ok_or_else(|| handler.to_string())?;
 
         let program = graph.linearize_and_build(handler);
 
@@ -253,13 +311,19 @@ impl CompiledProgram {
     pub fn new_with_dep(
         source: CanonSourceFile,
         dependency_map: &DependencyMap,
+        unstable_features: &UnstableFeatures,
         arguments: Arguments,
         include_debug_symbols: bool,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        TemplateProgram::new_with_dep(source, dependency_map, jet_hinter.clone_box())
-            .map_err(|e| e.to_string())
-            .and_then(|template| template.instantiate(arguments, include_debug_symbols))
+        TemplateProgram::new_with_dep(
+            source,
+            dependency_map,
+            unstable_features,
+            jet_hinter.clone_box(),
+        )
+        .map_err(|e| e.to_string())
+        .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
     /// Parse and compile a SimplicityHL program from the given string.
@@ -274,7 +338,25 @@ impl CompiledProgram {
         include_debug_symbols: bool,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        TemplateProgram::new(s, jet_hinter.clone_box())
+        Self::new_with_unstable(
+            s,
+            &UnstableFeatures::none(),
+            arguments,
+            include_debug_symbols,
+            jet_hinter,
+        )
+    }
+
+    /// Like [`new`](Self::new), but rejects any unstable feature used by the
+    /// program that is not enabled in `unstable_features`.
+    pub fn new_with_unstable<Str: Into<Arc<str>>>(
+        s: Str,
+        unstable_features: &UnstableFeatures,
+        arguments: Arguments,
+        include_debug_symbols: bool,
+        jet_hinter: Box<dyn ast::JetHinter>,
+    ) -> Result<Self, String> {
+        TemplateProgram::new_with_unstable(s, unstable_features, jet_hinter.clone_box())
             .map_err(|e| e.to_string())
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
@@ -361,7 +443,33 @@ impl SatisfiedProgram {
         include_debug_symbols: bool,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        let compiled = CompiledProgram::new(s, arguments, include_debug_symbols, jet_hinter)?;
+        Self::new_with_unstable(
+            s,
+            &UnstableFeatures::none(),
+            arguments,
+            witness_values,
+            include_debug_symbols,
+            jet_hinter,
+        )
+    }
+
+    /// Like [`new`](Self::new), but rejects any unstable feature used by the
+    /// program that is not enabled in `unstable_features`.
+    pub fn new_with_unstable<Str: Into<Arc<str>>>(
+        s: Str,
+        unstable_features: &UnstableFeatures,
+        arguments: Arguments,
+        witness_values: WitnessValues,
+        include_debug_symbols: bool,
+        jet_hinter: Box<dyn ast::JetHinter>,
+    ) -> Result<Self, String> {
+        let compiled = CompiledProgram::new_with_unstable(
+            s,
+            unstable_features,
+            arguments,
+            include_debug_symbols,
+            jet_hinter,
+        )?;
         compiled.satisfy(witness_values)
     }
 
@@ -493,7 +601,7 @@ pub(crate) mod tests {
             Arc::from(program_text),
         );
 
-        match TemplateProgram::flatten(source, dependency_map) {
+        match TemplateProgram::flatten(source, dependency_map, &UnstableFeatures::all()) {
             Ok(single_file) => single_file,
             Err(error) => panic!("{error}"),
         }
@@ -504,8 +612,12 @@ pub(crate) mod tests {
         let source = SourceFile::anonymous(file.clone());
 
         let mut error_handler = ErrorCollector::new();
-        let parse_program =
-            parse::Program::parse_from_str_with_errors(source, &mut error_handler).unwrap();
+        let parse_program = parse::Program::parse_from_str_with_errors(
+            source,
+            &UnstableFeatures::all(),
+            &mut error_handler,
+        )
+        .unwrap();
         parse_program.to_string()
     }
 
@@ -537,11 +649,22 @@ pub(crate) mod tests {
 
     impl TestCase<TemplateProgram> {
         pub fn template_file<P: AsRef<Path>>(program_file_path: P) -> Self {
-            let program_text = std::fs::read_to_string(program_file_path).unwrap();
-            Self::template_text(Cow::Owned(program_text))
+            Self::template_file_with_unstable(program_file_path, UnstableFeatures::none())
         }
 
-        pub fn template_deps(prog_path: &Path, dependency_map: &DependencyMap) -> Self {
+        pub fn template_file_with_unstable<P: AsRef<Path>>(
+            program_file_path: P,
+            unstable_features: UnstableFeatures,
+        ) -> Self {
+            let program_text = std::fs::read_to_string(program_file_path).unwrap();
+            Self::template_text_with_unstable(Cow::Owned(program_text), unstable_features)
+        }
+
+        pub fn template_deps_with_unstable(
+            prog_path: &Path,
+            dependency_map: &DependencyMap,
+            unstable_features: UnstableFeatures,
+        ) -> Self {
             let program_text = std::fs::read_to_string(prog_path).unwrap();
             let source = CanonSourceFile::new(
                 CanonPath::canonicalize(prog_path).unwrap(),
@@ -551,6 +674,7 @@ pub(crate) mod tests {
             let program = match TemplateProgram::new_with_dep(
                 source,
                 dependency_map,
+                &unstable_features,
                 Box::new(ElementsJetHinter::new()),
             ) {
                 Ok(x) => x,
@@ -566,8 +690,16 @@ pub(crate) mod tests {
         }
 
         pub fn template_text(program_text: Cow<str>) -> Self {
-            let program = match TemplateProgram::new(
+            Self::template_text_with_unstable(program_text, UnstableFeatures::none())
+        }
+
+        pub fn template_text_with_unstable(
+            program_text: Cow<str>,
+            unstable_features: UnstableFeatures,
+        ) -> Self {
+            let program = match TemplateProgram::new_with_unstable(
                 program_text.as_ref(),
+                &unstable_features,
                 Box::new(ElementsJetHinter::new()),
             ) {
                 Ok(x) => x,
@@ -614,17 +746,33 @@ pub(crate) mod tests {
                 .with_arguments(Arguments::default())
         }
 
+        pub fn program_file_with_unstable<P: AsRef<Path>>(
+            program_file_path: P,
+            unstable_features: UnstableFeatures,
+        ) -> Self {
+            TestCase::<TemplateProgram>::template_file_with_unstable(
+                program_file_path,
+                unstable_features,
+            )
+            .with_arguments(Arguments::default())
+        }
+
         pub fn program_text(program_text: Cow<str>) -> Self {
             TestCase::<TemplateProgram>::template_text(program_text)
                 .with_arguments(Arguments::default())
         }
 
-        pub fn program_file_with_deps(
+        pub fn program_file_with_deps_and_unstable(
             prog_path: impl AsRef<Path>,
             dependency_map: &DependencyMap,
+            unstable_features: UnstableFeatures,
         ) -> Self {
-            TestCase::<TemplateProgram>::template_deps(prog_path.as_ref(), dependency_map)
-                .with_arguments(Arguments::default())
+            TestCase::<TemplateProgram>::template_deps_with_unstable(
+                prog_path.as_ref(),
+                dependency_map,
+                unstable_features,
+            )
+            .with_arguments(Arguments::default())
         }
 
         #[cfg(feature = "serde")]
@@ -737,9 +885,13 @@ pub(crate) mod tests {
 
         let dependency_map = build_dependency_map(&main_path, [(&root_path, lib_alias, &lib_path)]);
 
-        TestCase::program_file_with_deps(&main_path, &dependency_map)
-            .with_witness_values(WitnessValues::default())
-            .assert_run_success();
+        TestCase::program_file_with_deps_and_unstable(
+            &main_path,
+            &dependency_map,
+            UnstableFeatures::all(),
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
     }
 
     pub(crate) fn flatten_dependency_test(root_path: &str, lib_alias: &str) {
@@ -781,9 +933,13 @@ pub(crate) mod tests {
 
         let ref_deps = mapped_deps.iter().map(|(c, a, t)| (c, *a, t));
         let dependency_map = build_dependency_map(&main_path, ref_deps);
-        TestCase::program_file_with_deps(&main_path, &dependency_map)
-            .with_witness_values(WitnessValues::default())
-            .assert_run_success();
+        TestCase::program_file_with_deps_and_unstable(
+            &main_path,
+            &dependency_map,
+            UnstableFeatures::all(),
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
     }
 
     /// THE ADVANCED HELPER
@@ -919,10 +1075,14 @@ pub(crate) mod tests {
 
         let dependency_map = build_map(&canon_root, &[]).unwrap();
 
-        TestCase::<TemplateProgram>::template_deps(&main_path, &dependency_map)
-            .with_arguments(Arguments::default())
-            .with_witness_values(WitnessValues::default())
-            .assert_run_success();
+        TestCase::<TemplateProgram>::template_deps_with_unstable(
+            &main_path,
+            &dependency_map,
+            UnstableFeatures::all(),
+        )
+        .with_arguments(Arguments::default())
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
     }
 
     #[test]
@@ -944,7 +1104,7 @@ pub(crate) mod tests {
 
     #[test]
     fn modules() {
-        TestCase::program_file("./examples/modules.simf")
+        TestCase::program_file_with_unstable("./examples/modules.simf", UnstableFeatures::all())
             .with_witness_values(WitnessValues::default())
             .assert_run_success();
     }
@@ -1434,6 +1594,7 @@ mod error_tests {
         let err = TemplateProgram::new_with_dep(
             source_file(&main_path),
             &dependencies,
+            &UnstableFeatures::all(),
             Box::new(ElementsJetHinter::new()),
         )
         .expect_err("dependency body has a type error");
@@ -1464,6 +1625,7 @@ mod error_tests {
         let _err = TemplateProgram::new_with_dep(
             source_file(&main_path),
             &dependencies,
+            &UnstableFeatures::none(),
             Box::new(ElementsJetHinter::new()),
         )
         .expect_err("omitted-context dependencies");
@@ -1483,6 +1645,7 @@ mod error_tests {
         let err = TemplateProgram::new_with_dep(
             source_file(&main_path),
             &dependencies,
+            &UnstableFeatures::all(),
             Box::new(ElementsJetHinter::new()),
         )
         .expect_err("missing imported module should fail");
@@ -1688,6 +1851,7 @@ mod functional_tests {
         CompiledProgram::new_with_dep(
             source,
             dependency_map,
+            &crate::UnstableFeatures::all(),
             Arguments::default(),
             false,
             Box::new(ElementsJetHinter::new()),
