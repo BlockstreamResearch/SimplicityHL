@@ -75,7 +75,7 @@ jobs:
       - name: Checkout Toolchain
         uses: dtolnay/rust-toolchain@stable
       - run: rustup target add wasm32-unknown-unknown
-      - run: cargo check --target wasm32-unknown-unknown
+      - run: cargo check --target wasm32-unknown-unknown --features external-jets
 
   Fuzz:
     name: Check Fuzz
