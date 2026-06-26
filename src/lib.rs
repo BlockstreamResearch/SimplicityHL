@@ -179,7 +179,6 @@ impl TemplateProgram {
         }
     }
 
-    /*
     fn dependency_helper(
         source: CanonSourceFile,
         dependency_map: &DependencyMap,
@@ -189,30 +188,7 @@ impl TemplateProgram {
         let program =
             parse::Program::parse_from_str_with_errors(source.clone(), unstable_features, handler)
                 .ok_or_else(|| handler.to_string())?;
-        let graph = DependencyGraph::new(
-            source,
-            Arc::from(dependency_map.clone()),
-            &program,
-            handler,
-            unstable_features,
-        )?
-        .ok_or_else(|| handler.to_string())?;
 
-        let program = graph.linearize_and_build(handler);
-
-        program.map(|opt| (opt, graph.source_map().clone()))
-    }
-    */
-
-    fn dependency_helper(
-        source: CanonSourceFile,
-        dependency_map: &DependencyMap,
-        unstable_features: &UnstableFeatures,
-        handler: &mut ErrorCollector,
-    ) -> Result<(Option<parse::Program>, SourceMap), String> {
-        let program =
-            parse::Program::parse_from_str_with_errors(source.clone(), unstable_features, handler)
-                .ok_or_else(|| handler.to_string())?;
         // TODO: we should remove this errors push after refactoring errors
         let graph = DependencyGraph::new(
             source,
