@@ -1,13 +1,28 @@
-# Unreleased
+# 0.6.0 - 2026-06-26
 
-* Remove ModuleProgram and the parsing of Arguments and Witnesses from the core compiler [#323](https://github.com/BlockstreamResearch/SimplicityHL/pull/323)
-* Deprecate the `DefaultTracker::new` [#355](https://github.com/BlockstreamResearch/SimplicityHL/pull/355)
+## Breaking Changes
 
-# 0.6.0-rc.0 - 2026-04-24
+* Remove `ModuleProgram` and the parsing of arguments and witnesses from the core compiler. [#323](https://github.com/BlockstreamResearch/SimplicityHL/pull/323)
+* Replace the deprecated `WithFile` trait with `WithContent` and `WithSource` to cleanly separate single-file execution from multi-file environments. Replace `RichError::file()` with `source()`. [#266](https://github.com/BlockstreamResearch/SimplicityHL/pull/266)
+* Rename the lock-distance/duration jets: `jet::check_lock_distance`, `jet::check_lock_duration`, `jet::tx_lock_distance`, and `jet::tx_lock_duration` are now `jet::broken_do_not_use_check_lock_distance`, `jet::broken_do_not_use_check_lock_duration`, `jet::broken_do_not_use_tx_lock_distance`, and `jet::broken_do_not_use_tx_lock_duration`. Existing `.simf` programs using these jets must be updated. [#314](https://github.com/BlockstreamResearch/SimplicityHL/pull/314)
+* Public API changes around `CanonSourceFile`, `DependencyMapBuilder`, `UnstableFeatures`, `JetHinter`, and several constructor signatures. [#315](https://github.com/BlockstreamResearch/SimplicityHL/pull/315), [#330](https://github.com/BlockstreamResearch/SimplicityHL/pull/330), [#356](https://github.com/BlockstreamResearch/SimplicityHL/pull/356), [#361](https://github.com/BlockstreamResearch/SimplicityHL/pull/361)
 
-* Add imports and dependency resolution, including `pub`/`use` syntax, re-exports, aliases, transitive dependencies, collision diagnostics, functional tests, examples, and `simc --dep` for compiling multi-file programs. [#264](https://github.com/BlockstreamResearch/SimplicityHL/pull/264)
-* Replaced the deprecated `WithFile` trait with `WithContent` and `WithSource` to cleanly separate single-file execution from multi-file environments. Additionally, replaced the `file()` method on `RichError` with `source()`. [#266](https://github.com/BlockstreamResearch/SimplicityHL/pull/266)
+## Added
+
+* Add unstable-features gating via `simc -Z <feature>`, backed by an `UnstableFeature` enum and a `RequireFeature` trait implemented exhaustively on every AST node, with parse-time checks and docs in `doc/unstable-features.md`. [#354](https://github.com/BlockstreamResearch/SimplicityHL/pull/354)
+* Add imports, modules, and dependency resolution: `pub`/`use` syntax, `mod` blocks with nesting, re-exports, aliases, transitive dependencies, collision diagnostics, and `simc --dep` for compiling multi-file programs. The driver flattens multi-file programs by wrapping each file in `mod unit_N { ... }` (no effect on CMR). Currently gated behind `simc -Z imports`. [#264](https://github.com/BlockstreamResearch/SimplicityHL/pull/264), [#337](https://github.com/BlockstreamResearch/SimplicityHL/pull/337)
+* Add `crate::` paths for local dependencies and tighten dependency validation. [#303](https://github.com/BlockstreamResearch/SimplicityHL/pull/303), [#312](https://github.com/BlockstreamResearch/SimplicityHL/pull/312)
+* Add jet extensibility: introduce `JetHL` and `CoreJetHinter`, expose an external-jets feature/API with an example, and bump `simplicity-lang` to 0.8.0. [#322](https://github.com/BlockstreamResearch/SimplicityHL/pull/322), [#334](https://github.com/BlockstreamResearch/SimplicityHL/pull/334), [#340](https://github.com/BlockstreamResearch/SimplicityHL/pull/340), [#344](https://github.com/BlockstreamResearch/SimplicityHL/pull/344), [#357](https://github.com/BlockstreamResearch/SimplicityHL/pull/357)
+
+## Changed
+
+* Move the VS Code extension and LSP to a separate repository. [#326](https://github.com/BlockstreamResearch/SimplicityHL/pull/326)
 * Clean up whitespace in the generated jet documentation. [#276](https://github.com/BlockstreamResearch/SimplicityHL/pull/276)
+* Reshape public error and diagnostic types. [#325](https://github.com/BlockstreamResearch/SimplicityHL/pull/325), [#328](https://github.com/BlockstreamResearch/SimplicityHL/pull/328)
+
+## Deprecated
+
+* Deprecate `DefaultTracker::new`. [#355](https://github.com/BlockstreamResearch/SimplicityHL/pull/355)
 
 # 0.5.0 - 2026-04-17
 
