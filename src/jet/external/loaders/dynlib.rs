@@ -19,7 +19,6 @@ impl std::error::Error for Error {}
 /// Handle to a dynamically loaded shared library.
 ///
 /// The library is unloaded when this value is dropped.
-#[derive(Clone)]
 pub struct Library {
     handle: *mut c_void,
 }

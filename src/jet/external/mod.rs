@@ -1,20 +1,32 @@
+#[cfg(not(target_arch = "wasm32"))]
 mod dynamic;
 mod loaders;
+#[cfg(target_arch = "wasm32")]
+mod wasm;
 
-use std::{io::Write, path::Path, rc::Rc};
+use std::io::Write;
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
 
 use simplicity::{
     jet::{type_name::TypeName, Jet},
     BitIter, BitWriter, Cmr, Cost,
 };
 
-use crate::jet::{
-    external::dynamic::ExternalJetDynamicLib, JetHL, SourceJetClassification,
-    TargetJetClassification,
-};
-use crate::{ast::JetHinter, jet::external::loaders::dynlib::Library};
+use crate::ast::JetHinter;
+use crate::jet::{JetHL, SourceJetClassification, TargetJetClassification};
+use crate::parse::ParseFromStr;
+use crate::types::AliasedType;
 
-/// Load the external jet library from the specified shared object file path
+#[cfg(target_arch = "wasm32")]
+use crate::jet::external::wasm::ExternalJetWasmLib;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::jet::external::{dynamic::ExternalJetDynamicLib, loaders::dynlib::Library};
+
+/// Load the external jet library. When compiled for wasm32, the library is loaded
+/// from the current environment. When compiled for other targets
+/// the library is loaded from the specified path.
 ///
 /// # Safety
 ///
@@ -22,6 +34,24 @@ use crate::{ast::JetHinter, jet::external::loaders::dynlib::Library};
 /// symbols listed below with signatures matching the corresponding
 /// fields of [`ExternalJetLib`]. Calling a function through a
 /// mismatched signature is undefined behavior.
+#[cfg(target_arch = "wasm32")]
+pub unsafe fn init_external_jet_lib() -> Result<(), Box<dyn std::error::Error>> {
+    let api = ExternalJetWasmLib::load();
+    if wasm::EXTERNAL_JET_WASM_LIB.set(api).is_err() {
+        return Err("Failed to set external jet lib, it may have already been initialized".into());
+    }
+    Ok(())
+}
+
+/// Load the external jet library from a dynamic library path on non-wasm targets.
+///
+/// # Safety
+///
+/// The caller must ensure that the loaded library exports each of the
+/// symbols listed below with signatures matching the corresponding
+/// fields of [`ExternalJetLib`]. Calling a function through a
+/// mismatched signature is undefined behavior.
+#[cfg(not(target_arch = "wasm32"))]
 pub unsafe fn init_external_jet_lib(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let library = unsafe { Library::load(Path::new(path))? };
     let api = unsafe { ExternalJetDynamicLib::load(library)? };
@@ -33,12 +63,22 @@ pub unsafe fn init_external_jet_lib(path: &str) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-fn external_jet_lib() -> Rc<dyn ExternalJetLib> {
-    let lib = dynamic::EXTERNAL_JET_DYNAMIC_LIB
-        .get()
-        .expect("External jet lib is not initialized. Please call init_external_jet_lib first.");
+fn external_jet_lib() -> &'static dyn ExternalJetLib {
+    #[cfg(target_arch = "wasm32")]
+    {
+        wasm::EXTERNAL_JET_WASM_LIB
+            .get()
+            .expect("External jet lib is not initialized. Please call init_external_jet_lib first.")
+            as &dyn ExternalJetLib
+    }
 
-    Rc::new(lib.clone())
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        dynamic::EXTERNAL_JET_DYNAMIC_LIB
+            .get()
+            .expect("External jet lib is not initialized. Please call init_external_jet_lib first.")
+            as &dyn ExternalJetLib
+    }
 }
 
 /// External jet integration interface.
@@ -186,4 +226,111 @@ impl JetHinter for ExternalJetHinter {
         let container = external_jet_lib();
         container.conjure(jet)
     }
+}
+
+/// Serialize a [`SourceJetClassification`] into a portable byte buffer.
+///
+/// Layout:
+/// - 1 tag byte: `0` Unary, `1` Binary, `2` Ternary, `3` Quaternary, `4` Custom.
+/// - for `Custom`: a little-endian `u32` element count, then, for each element,
+///   a little-endian `u32` byte length followed by the UTF-8 [`Display`] form of
+///   the [`AliasedType`].
+pub fn serialize_source_jet_classification(classification: &SourceJetClassification) -> Vec<u8> {
+    let mut out = Vec::new();
+    match classification {
+        SourceJetClassification::Unary => out.push(0),
+        SourceJetClassification::Binary => out.push(1),
+        SourceJetClassification::Ternary => out.push(2),
+        SourceJetClassification::Quaternary => out.push(3),
+        SourceJetClassification::Custom(types) => {
+            out.push(4);
+            out.extend_from_slice(&(types.len() as u32).to_le_bytes());
+            for ty in types {
+                write_aliased_type(&mut out, ty);
+            }
+        }
+    }
+    out
+}
+
+/// Inverse of [`serialize_source_jet_classification`].
+///
+/// Returns `None` if the buffer is truncated, carries an unknown tag, or holds
+/// a type string that fails to parse.
+pub fn deserialize_source_jet_classification(bytes: &[u8]) -> Option<SourceJetClassification> {
+    let (&tag, mut rest) = bytes.split_first()?;
+    match tag {
+        0 => Some(SourceJetClassification::Unary),
+        1 => Some(SourceJetClassification::Binary),
+        2 => Some(SourceJetClassification::Ternary),
+        3 => Some(SourceJetClassification::Quaternary),
+        4 => {
+            let count = read_u32(&mut rest)? as usize;
+            let mut types = Vec::with_capacity(count);
+            for _ in 0..count {
+                types.push(read_aliased_type(&mut rest)?);
+            }
+            Some(SourceJetClassification::Custom(types))
+        }
+        _ => None,
+    }
+}
+
+/// Serialize a [`TargetJetClassification`] into a portable byte buffer.
+///
+/// Layout:
+/// - 1 tag byte: `0` Unary, `1` Custom.
+/// - for `Custom`: a little-endian `u32` byte length followed by the UTF-8
+///   [`Display`] form of the [`AliasedType`].
+pub fn serialize_target_jet_classification(classification: &TargetJetClassification) -> Vec<u8> {
+    let mut out = Vec::new();
+    match classification {
+        TargetJetClassification::Unary => out.push(0),
+        TargetJetClassification::Custom(ty) => {
+            out.push(1);
+            write_aliased_type(&mut out, ty);
+        }
+    }
+    out
+}
+
+/// Inverse of [`serialize_target_jet_classification`].
+///
+/// Returns `None` if the buffer is truncated, carries an unknown tag, or holds
+/// a type string that fails to parse.
+pub fn deserialize_target_jet_classification(bytes: &[u8]) -> Option<TargetJetClassification> {
+    let (&tag, mut rest) = bytes.split_first()?;
+    match tag {
+        0 => Some(TargetJetClassification::Unary),
+        1 => Some(TargetJetClassification::Custom(read_aliased_type(
+            &mut rest,
+        )?)),
+        _ => None,
+    }
+}
+
+fn write_aliased_type(out: &mut Vec<u8>, ty: &AliasedType) {
+    let s = ty.to_string();
+    out.extend_from_slice(&(s.len() as u32).to_le_bytes());
+    out.extend_from_slice(s.as_bytes());
+}
+
+fn read_u32(rest: &mut &[u8]) -> Option<u32> {
+    if rest.len() < 4 {
+        return None;
+    }
+    let (head, tail) = rest.split_at(4);
+    *rest = tail;
+    Some(u32::from_le_bytes(head.try_into().ok()?))
+}
+
+fn read_aliased_type(rest: &mut &[u8]) -> Option<AliasedType> {
+    let len = read_u32(rest)? as usize;
+    if rest.len() < len {
+        return None;
+    }
+    let (head, tail) = rest.split_at(len);
+    *rest = tail;
+    let s = std::str::from_utf8(head).ok()?;
+    AliasedType::parse_from_str(s).ok()
 }

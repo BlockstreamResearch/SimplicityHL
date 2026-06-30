@@ -18,7 +18,6 @@ pub(super) static EXTERNAL_JET_DYNAMIC_LIB: OnceLock<ExternalJetDynamicLib> = On
 ///
 /// Each field is a function pointer resolved from a `#[no_mangle]` export of
 /// the same name in the library.
-#[derive(Clone)]
 pub struct ExternalJetDynamicLib {
     pub cmr: fn(jet: ExternalJet) -> Cmr,
     pub source_ty: fn(jet: ExternalJet) -> TypeName,
