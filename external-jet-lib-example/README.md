@@ -52,6 +52,22 @@ cargo run -p external-jet-lib-example --bin external-lib-consumer -- \
     target/debug/libexternal_jet_lib_example.dylib
 ```
 
+## Wasm Host Demo
+
+Build wasm artifacts and run the Node host:
+
+```sh
+rustup target add wasm32-unknown-unknown
+
+cargo build -p external-jet-lib-example --target wasm32-unknown-unknown --bin compiler-wasm
+cargo build -p external-jet-lib-example --target wasm32-unknown-unknown --lib
+
+cd external-jet-lib-example/js-host
+npm run run
+```
+
+This path demonstrates the same idea as native loading, but with wasm module imports wired in JavaScript.
+
 ## Security Notes
 
 Loading a shared library executes arbitrary native code in the current process. Only load libraries from trusted, verified sources.

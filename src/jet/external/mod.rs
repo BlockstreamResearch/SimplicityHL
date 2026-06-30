@@ -1,20 +1,30 @@
+#[cfg(not(target_arch = "wasm32"))]
 mod dynamic;
 mod loaders;
+#[cfg(target_arch = "wasm32")]
+mod wasm;
 
-use std::{io::Write, path::Path, rc::Rc};
+use std::{io::Write, rc::Rc};
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
 
 use simplicity::{
     jet::{type_name::TypeName, Jet},
     BitIter, BitWriter, Cmr, Cost,
 };
 
-use crate::jet::{
-    external::dynamic::ExternalJetDynamicLib, JetHL, SourceJetClassification,
-    TargetJetClassification,
-};
-use crate::{ast::JetHinter, jet::external::loaders::dynlib::Library};
+use crate::ast::JetHinter;
+use crate::jet::{JetHL, SourceJetClassification, TargetJetClassification};
 
-/// Load the external jet library from the specified shared object file path
+#[cfg(target_arch = "wasm32")]
+use crate::jet::external::wasm::ExternalJetWasmLib;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::jet::external::{dynamic::ExternalJetDynamicLib, loaders::dynlib::Library};
+
+/// Load the external jet library. When compiled for wasm32, the library is loaded
+/// from the current environment. When compiled for other targets
+/// the library is loaded from the specified path.
 ///
 /// # Safety
 ///
@@ -22,18 +32,42 @@ use crate::{ast::JetHinter, jet::external::loaders::dynlib::Library};
 /// symbols listed below with signatures matching the corresponding
 /// fields of [`ExternalJetLib`]. Calling a function through a
 /// mismatched signature is undefined behavior.
-pub unsafe fn init_external_jet_lib(path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let library = unsafe { Library::load(Path::new(path))? };
-    let api = unsafe { ExternalJetDynamicLib::load(library)? };
-
-    if dynamic::EXTERNAL_JET_DYNAMIC_LIB.set(api).is_err() {
-        return Err("Failed to set external jet lib, it may have already been initialized".into());
+#[allow(unused_variables)]
+pub unsafe fn init_external_jet_lib(path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let api = ExternalJetWasmLib::load();
+        if wasm::EXTERNAL_JET_WASM_LIB.set(api).is_err() {
+            return Err(
+                "Failed to set external jet lib, it may have already been initialized".into(),
+            );
+        }
+        return Ok(());
     }
 
-    Ok(())
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = path.ok_or("Path must be provided for non-wasm targets")?;
+        let library = unsafe { Library::load(Path::new(path))? };
+        let api = unsafe { ExternalJetDynamicLib::load(library)? };
+
+        if dynamic::EXTERNAL_JET_DYNAMIC_LIB.set(api).is_err() {
+            return Err(
+                "Failed to set external jet lib, it may have already been initialized".into(),
+            );
+        }
+
+        Ok(())
+    }
 }
 
 fn external_jet_lib() -> Rc<dyn ExternalJetLib> {
+    #[cfg(target_arch = "wasm32")]
+    let lib = wasm::EXTERNAL_JET_WASM_LIB
+        .get()
+        .expect("External jet lib is not initialized. Please call init_external_jet_lib first.");
+
+    #[cfg(not(target_arch = "wasm32"))]
     let lib = dynamic::EXTERNAL_JET_DYNAMIC_LIB
         .get()
         .expect("External jet lib is not initialized. Please call init_external_jet_lib first.");

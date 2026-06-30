@@ -8,6 +8,10 @@ rust-version = "1.79.0"
 name = "external-lib-consumer"
 path = "src/main.rs"
 
+[[bin]]
+name = "compiler-wasm"
+path = "src/compiler_wasm.rs"
+
 [lib]
 crate-type = ["cdylib"]
 
