@@ -2,13 +2,16 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
-use simplicityhl::ast::ElementsJetHinter;
+use simplicityhl::ast::{CoreJetHinter, ElementsJetHinter, JetHinter};
+#[cfg(feature = "external-jets")]
+use simplicityhl::jet::external::{init_external_jet_lib, ExternalJetHinter};
 use simplicityhl::{
     resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
     CompiledProgram,
 };
 use simplicityhl::{UnstableFeature, UnstableFeatures};
 use std::path::Path;
+use std::str::FromStr;
 use std::{env, fmt};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -35,6 +38,46 @@ impl fmt::Display for Output {
             writeln!(f, "ABI meta:\n{:?}", witness)?;
         }
         Ok(())
+    }
+}
+
+enum Target {
+    Elements,
+    Core,
+    #[cfg(feature = "external-jets")]
+    External(String),
+}
+
+impl Target {
+    #[allow(clippy::unnecessary_wraps)]
+    fn jet_hinter(&self) -> Result<Box<dyn JetHinter>, Box<dyn std::error::Error>> {
+        match self {
+            Target::Elements => Ok(Box::new(ElementsJetHinter::new())),
+            Target::Core => Ok(Box::new(CoreJetHinter::new())),
+            #[cfg(feature = "external-jets")]
+            Target::External(path) => {
+                unsafe {
+                    init_external_jet_lib(path)?;
+                }
+
+                Ok(Box::new(ExternalJetHinter::new()))
+            }
+        }
+    }
+}
+
+impl FromStr for Target {
+    type Err = Box<dyn std::error::Error>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "elements" => Ok(Target::Elements),
+            "core" => Ok(Target::Core),
+            #[cfg(feature = "external-jets")]
+            _ => Ok(Target::External(s.to_string())),
+            #[cfg(not(feature = "external-jets"))]
+            _ => Err(format!("Unknown target: {}", s).into()),
+        }
     }
 }
 
@@ -105,6 +148,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .value_parser(clap::value_parser!(UnstableFeature))
                     .help(simplicityhl::UnstableFeature::help_message()),
             )
+            .arg(
+                Arg::new("target")
+                    .long("target")
+                    .short('t')
+                    .value_name("TARGET")
+                    .default_value("elements")
+                    .action(ArgAction::Set)
+                    .help("Target platform for compilation, or file path to external target (e.g., --target=elements|core or --target=./my_target.dylib)"),
+            )
     };
 
     let matches = command.get_matches();
@@ -140,6 +192,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         simplicityhl::Arguments::default()
     };
+
+    let target_arg = matches
+        .get_one::<String>("target")
+        .expect("target argument should have a default value");
+
+    let target = Target::from_str(target_arg).expect("target argument should be valid");
 
     let dep_args = matches
         .get_many::<String>("dependencies")
@@ -191,7 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &unstable_features,
         args_opt,
         include_debug_symbols,
-        Box::new(ElementsJetHinter::new()),
+        target.jet_hinter()?,
     ) {
         Ok(program) => program,
         Err(e) => {
