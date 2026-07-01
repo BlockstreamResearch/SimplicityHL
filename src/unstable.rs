@@ -31,6 +31,9 @@ pub enum UnstableFeature {
     /// Import-system syntax: `use` imports, `mod` modules, `as` import
     /// aliases, and `crate::` paths. Enable with `simc -Z imports`.
     Imports,
+    /// Enum syntax: `enum` declarations and `EnumName::Variant` match
+    /// expressions. Enable with `simc -Z enums`.
+    Enums,
 }
 
 impl UnstableFeature {
@@ -44,7 +47,7 @@ impl UnstableFeature {
     /// Append the new variant here, bump the count in
     /// `all_contains_every_variant` ( in the `tests` module below), then
     /// gate the syntax via [`RequireFeature`].
-    pub const ALL: &'static [Self] = &[Self::Imports];
+    pub const ALL: &'static [Self] = &[Self::Imports, Self::Enums];
 
     /// Human-readable description shown next to the feature's name under
     /// `simc --help`.
@@ -52,6 +55,9 @@ impl UnstableFeature {
         match self {
             Self::Imports => {
                 "Module system syntax: 'use' imports, 'mod' modules, 'as' aliases, 'crate::' paths"
+            }
+            Self::Enums => {
+                "Enum syntax: 'enum' declarations and 'EnumName::Variant' match expressions"
             }
         }
     }
@@ -215,6 +221,7 @@ impl fmt::Display for UnstableFeature {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Imports => write!(f, "imports"),
+            Self::Enums => write!(f, "enums"),
         }
     }
 }
@@ -227,6 +234,7 @@ impl FromStr for UnstableFeature {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "imports" => Ok(UnstableFeature::Imports),
+            "enums" => Ok(UnstableFeature::Enums),
             _ => Err(format!("Unknown unstable feature: '{s}'")),
         }
     }
@@ -267,6 +275,14 @@ impl FromStr for UnstableFeature {
 ///         recurse: items;
 ///     }
 /// }
+///
+/// // Struct that gates a feature but has no children to recurse into.
+/// // The `recurse` clause is optional and may be omitted entirely.
+/// impl_require_feature! {
+///     EnumDeclaration {
+///         requires: UnstableFeature::Enums, span: span;
+///     }
+/// }
 /// ```
 macro_rules! impl_require_feature {
     (@recurse $out:ident; _) => {};
@@ -299,7 +315,7 @@ macro_rules! impl_require_feature {
     (
         $ty:ty {
             $(requires: $feature:expr, span: $span:ident;)?
-            recurse: $($recurse:tt),* $(,)?;
+            $(recurse: $($recurse:tt),* $(,)?;)?
         }
     ) => {
         impl $crate::unstable::RequireFeature for $ty {
@@ -315,12 +331,12 @@ macro_rules! impl_require_feature {
                         self.$span,
                     ));
                 )?
-                $(
+                $($(
                     $crate::unstable::RequireFeature::feature_requirements(
                         &self.$recurse,
                         out,
                     );
-                )*
+                )*)?
             }
         }
     };
@@ -344,7 +360,7 @@ mod tests {
         // the variant to `ALL`. Pins that `ALL` stays complete.
         assert_eq!(
             all_features.len(),
-            1,
+            2,
             "update this count when adding a feature"
         );
 

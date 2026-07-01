@@ -352,36 +352,72 @@ impl CompiledProgram {
         named::forget_names(&self.simplicity)
     }
 
-    /// Satisfy the SimplicityHL program with the given `witness_values`.
+    /// Satisfy the program with the given `witness_values`.
+    ///
+    /// All declared witnesses must be present; a missing one is an error. Use
+    /// [`satisfy_with_env_fill_missing`](Self::satisfy_with_env_fill_missing) to zero-fill them.
     ///
     /// ## Errors
     ///
-    /// - Witness values have a different type than declared in the SimplicityHL program.
-    /// - There are missing witness values.
+    /// - A witness value has the wrong type, or is missing.
     pub fn satisfy(&self, witness_values: WitnessValues) -> Result<SatisfiedProgram, String> {
         self.satisfy_with_env(witness_values, None)
     }
 
-    /// Satisfy the SimplicityHL program with the given `witness_values`.
-    /// If `env` is `None`, the program is not pruned, otherwise it is pruned with the given environment.
+    /// Satisfy the program, pruning with `env` if it is `Some`.
+    ///
+    /// Like [`satisfy`](Self::satisfy), all declared witnesses must be present. Equivalent to
+    /// [`satisfy_with_env_fill_missing`](Self::satisfy_with_env_fill_missing) with
+    /// `fill_missing = false`.
     ///
     /// ## Errors
     ///
-    /// - Witness values have a different type than declared in the SimplicityHL program.
-    /// - There are missing witness values.
+    /// - A witness value has the wrong type, or is missing.
     pub fn satisfy_with_env(
         &self,
         witness_values: WitnessValues,
         env: Option<&ElementsEnv<Arc<elements::Transaction>>>,
     ) -> Result<SatisfiedProgram, String> {
+        self.satisfy_with_env_fill_missing(witness_values, env, false)
+    }
+
+    /// Satisfy the program, pruning with `env` if it is `Some`.
+    ///
+    /// If `fill_missing` is `true`, witnesses absent from `witness_values` are zero-filled, so a
+    /// multi-branch program can be satisfied with only the executed branch's witnesses; when
+    /// pruning, a zero-filled witness that survives on a live branch is still rejected. If
+    /// `false`, a missing witness is an error.
+    ///
+    /// ## Errors
+    ///
+    /// - A witness value has the wrong type.
+    /// - A witness is missing (`fill_missing = false`), or a zero-filled witness survives pruning
+    ///   on the executed branch (`fill_missing = true`).
+    pub fn satisfy_with_env_fill_missing(
+        &self,
+        witness_values: WitnessValues,
+        env: Option<&ElementsEnv<Arc<elements::Transaction>>>,
+        fill_missing: bool,
+    ) -> Result<SatisfiedProgram, String> {
         witness_values
             .is_consistent(&self.witness_types)
             .map_err(|e| e.to_string())?;
 
-        let mut simplicity_redeem = named::populate_witnesses(&self.simplicity, witness_values)?;
-        if let Some(env) = env {
-            simplicity_redeem = simplicity_redeem.prune(env).map_err(|e| e.to_string())?;
-        }
+        let (witness_values, zero_filled) = if fill_missing {
+            witness_values.fill_missing(&self.witness_types)
+        } else {
+            (witness_values, std::collections::HashSet::new())
+        };
+        let simplicity_redeem = named::populate_witnesses(&self.simplicity, witness_values)?;
+        let simplicity_redeem = if let Some(env) = env {
+            let pruned = simplicity_redeem.prune(env).map_err(|e| e.to_string())?;
+            if !zero_filled.is_empty() {
+                named::check_surviving_witnesses(&self.simplicity, &pruned, &zero_filled)?;
+            }
+            pruned
+        } else {
+            simplicity_redeem
+        };
         Ok(SatisfiedProgram {
             simplicity: simplicity_redeem,
             debug_symbols: self.debug_symbols.clone(),
@@ -744,6 +780,17 @@ pub(crate) mod tests {
                 .with_arguments(Arguments::default())
         }
 
+        pub fn program_text_with_unstable(
+            program_text: Cow<str>,
+            unstable_features: UnstableFeatures,
+        ) -> Self {
+            TestCase::<TemplateProgram>::template_text_with_unstable(
+                program_text,
+                unstable_features,
+            )
+            .with_arguments(Arguments::default())
+        }
+
         pub fn program_file_with_deps_and_unstable(
             prog_path: impl AsRef<Path>,
             dependency_map: &DependencyMap,
@@ -774,10 +821,17 @@ pub(crate) mod tests {
             self,
             witness_values: WitnessValues,
         ) -> TestCase<SatisfiedProgram> {
-            let program = match self.program.satisfy(witness_values) {
-                Ok(x) => x,
-                Err(error) => panic!("{error}"),
-            };
+            // Test programs may only supply the witnesses for the branch that executes
+            // (e.g. `last_will`), so the harness zero-fills the rest. The strict,
+            // fail-on-missing path is exercised directly in `satisfy`-based unit tests.
+            let program =
+                match self
+                    .program
+                    .satisfy_with_env_fill_missing(witness_values, None, true)
+                {
+                    Ok(x) => x,
+                    Err(error) => panic!("{error}"),
+                };
             TestCase {
                 program,
                 lock_time: self.lock_time,
@@ -1141,6 +1195,187 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn enum_match_3_variants() {
+        use crate::str::WitnessName;
+        use crate::value::ValueConstructible;
+        use std::collections::HashMap;
+
+        let src = r#"
+            enum Path { A = 0, B = 2, C = 5 }
+            fn main() {
+                match witness::PATH {
+                    Path::A => assert!(jet::eq_32(0, 0)),
+                    Path::B => assert!(jet::eq_32(0, 0)),
+                    Path::C => assert!(jet::eq_32(0, 0)),
+                }
+            }
+        "#;
+        // Select variant C via its u8 discriminant.
+        let mut map: HashMap<WitnessName, Value> = HashMap::new();
+        map.insert(WitnessName::from_str_unchecked("PATH"), Value::u8(5));
+        TestCase::program_text_with_unstable(Cow::Borrowed(src), UnstableFeatures::all())
+            .with_witness_values(WitnessValues::from(map))
+            .assert_run_success();
+    }
+
+    #[test]
+    fn enum_match_invalid_discriminant_fails() {
+        use crate::str::WitnessName;
+        use crate::value::ValueConstructible;
+        use std::collections::HashMap;
+
+        let src = r#"
+            enum Path { A = 1, B = 2, C = 3 }
+            fn main() {
+                match witness::PATH {
+                    Path::A => assert!(jet::eq_32(0, 0)),
+                    Path::B => assert!(jet::eq_32(0, 0)),
+                    Path::C => assert!(jet::eq_32(0, 0)),
+                }
+            }
+        "#;
+        // Discriminant 0 is not declared in the enum; the script must fail.
+        for bad in [0u8, 4, 99, 255] {
+            let mut map: HashMap<WitnessName, Value> = HashMap::new();
+            map.insert(WitnessName::from_str_unchecked("PATH"), Value::u8(bad));
+            let result =
+                TestCase::program_text_with_unstable(Cow::Borrowed(src), UnstableFeatures::all())
+                    .with_witness_values(WitnessValues::from(map))
+                    .run();
+            assert!(
+                result.is_err(),
+                "discriminant {bad} is not declared; execution should fail but succeeded"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_witness_on_live_branch_errors() {
+        use crate::str::WitnessName;
+        use crate::value::ValueConstructible;
+        use std::collections::HashMap;
+
+        let src = r#"
+enum Branch { A = 1, B = 2 }
+fn main() {
+    match witness::SELECTOR {
+        Branch::A => assert!(jet::is_zero_32(witness::A)),
+        Branch::B => assert!(jet::is_zero_32(witness::B)),
+    }
+}
+"#;
+        let env = crate::dummy_env::dummy();
+
+        // SELECTOR = 1 (Branch::A) → branch A taken; B is missing but pruned → satisfy OK
+        {
+            let mut map: HashMap<WitnessName, Value> = HashMap::new();
+            map.insert(WitnessName::from_str_unchecked("SELECTOR"), Value::u8(1));
+            map.insert(WitnessName::from_str_unchecked("A"), Value::u32(0));
+            let compiled = CompiledProgram::new_with_unstable(
+                src,
+                &UnstableFeatures::all(),
+                Arguments::default(),
+                false,
+                Box::new(ElementsJetHinter::new()),
+            )
+            .unwrap();
+            compiled
+                .satisfy_with_env_fill_missing(WitnessValues::from(map), Some(&env), true)
+                .expect("B is on a pruned branch; satisfy should succeed");
+        }
+
+        // SELECTOR = 2 (Branch::B) → branch B taken; A is missing but pruned → satisfy OK
+        {
+            let mut map: HashMap<WitnessName, Value> = HashMap::new();
+            map.insert(WitnessName::from_str_unchecked("SELECTOR"), Value::u8(2));
+            map.insert(WitnessName::from_str_unchecked("B"), Value::u32(0));
+            let compiled = CompiledProgram::new_with_unstable(
+                src,
+                &UnstableFeatures::all(),
+                Arguments::default(),
+                false,
+                Box::new(ElementsJetHinter::new()),
+            )
+            .unwrap();
+            compiled
+                .satisfy_with_env_fill_missing(WitnessValues::from(map), Some(&env), true)
+                .expect("A is on a pruned branch; satisfy should succeed");
+        }
+
+        // SELECTOR = 2 (Branch::B) → branch B taken; B is missing and live → satisfy errors
+        {
+            let mut map: HashMap<WitnessName, Value> = HashMap::new();
+            map.insert(WitnessName::from_str_unchecked("SELECTOR"), Value::u8(2));
+            // B is intentionally not provided
+            let compiled = CompiledProgram::new_with_unstable(
+                src,
+                &UnstableFeatures::all(),
+                Arguments::default(),
+                false,
+                Box::new(ElementsJetHinter::new()),
+            )
+            .unwrap();
+            let err = compiled
+                .satisfy_with_env_fill_missing(WitnessValues::from(map), Some(&env), true)
+                .expect_err("B is on the executed branch and missing; satisfy should fail");
+            assert!(
+                err.contains('B'),
+                "error message should mention witness B, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn fill_missing_false_rejects_missing_witness() {
+        use crate::str::WitnessName;
+        use crate::value::ValueConstructible;
+        use std::collections::HashMap;
+
+        let src = r#"
+enum Branch { A = 1, B = 2 }
+fn main() {
+    match witness::SELECTOR {
+        Branch::A => assert!(jet::is_zero_32(witness::A)),
+        Branch::B => assert!(jet::is_zero_32(witness::B)),
+    }
+}
+"#;
+        let compiled = CompiledProgram::new_with_unstable(
+            src,
+            &UnstableFeatures::all(),
+            Arguments::default(),
+            false,
+            Box::new(ElementsJetHinter::new()),
+        )
+        .unwrap();
+
+        // Only SELECTOR and A are provided; B is omitted. With `fill_missing = false` and no
+        // pruning env, an omitted witness must be an error rather than being silently
+        // zero-filled.
+        let mut map: HashMap<WitnessName, Value> = HashMap::new();
+        map.insert(WitnessName::from_str_unchecked("SELECTOR"), Value::u8(1));
+        map.insert(WitnessName::from_str_unchecked("A"), Value::u32(0));
+
+        let err = compiled
+            .satisfy_with_env_fill_missing(WitnessValues::from(map.clone()), None, false)
+            .expect_err("missing witness B must be rejected when fill_missing = false");
+        assert!(
+            err.contains('B'),
+            "error should mention the missing witness B, got: {err}"
+        );
+
+        // The public `satisfy` is strict (fill_missing = false), so it rejects the same input.
+        compiled
+            .satisfy(WitnessValues::from(map.clone()))
+            .expect_err("public satisfy must reject a missing witness");
+
+        // Same inputs with `fill_missing = true` succeed (B is zero-filled).
+        compiled
+            .satisfy_with_env_fill_missing(WitnessValues::from(map), None, true)
+            .expect("fill_missing = true should zero-fill the omitted witness B");
+    }
+
+    #[test]
     #[cfg(feature = "serde")]
     fn hodl_vault() {
         TestCase::program_file("./examples/hodl_vault.simf")
@@ -1162,7 +1397,7 @@ pub(crate) mod tests {
     #[test]
     #[cfg(feature = "serde")]
     fn last_will_inherit() {
-        TestCase::program_file("./examples/last_will.simf")
+        TestCase::program_file_with_unstable("./examples/last_will.simf", UnstableFeatures::all())
             .with_sequence(25920)
             .print_sighash_all()
             .with_witness_file("./examples/last_will.inherit.wit")
@@ -1399,7 +1634,10 @@ fn main() {
             )
             .unwrap();
 
-            let test_case = TestCase::program_file(format!("./examples/{}.simf", name));
+            let test_case = TestCase::program_file_with_unstable(
+                format!("./examples/{}.simf", name),
+                crate::UnstableFeatures::all(),
+            );
             match program.witness {
                 Some(wit) => {
                     let (new_program, new_witness) = test_case

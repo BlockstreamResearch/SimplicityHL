@@ -77,7 +77,9 @@ impl DependencyGraph {
                     &items,
                 )))
             }
-            parse::Item::TypeAlias(_) | parse::Item::Function(_) => Some(item.clone()),
+            parse::Item::TypeAlias(_)
+            | parse::Item::Function(_)
+            | parse::Item::EnumDeclaration(_) => Some(item.clone()),
             parse::Item::Ignored => None,
         }
     }

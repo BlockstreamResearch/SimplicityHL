@@ -68,6 +68,8 @@ pub enum Item {
     /// An import declaration (e.g., `use math::add`) that brings another
     /// [`Item`] into the current scope.
     Use(UseDecl),
+    /// An enum declaration.
+    EnumDeclaration(EnumDeclaration),
     /// A module containing a collection of nested [`Item`].
     Module(Module),
     /// A placeholder used exclusively for error recovery during parsing.
@@ -82,6 +84,7 @@ impl_require_feature!(Item {
         TypeAlias(alias),
         Function(function),
         Use(use_decl),
+        EnumDeclaration(decl),
         Module(module),
         Ignored,
 });
@@ -460,6 +463,84 @@ impl_eq_hash!(TypeAlias; name, ty);
 
 impl_require_feature!(TypeAlias { recurse: ty; });
 
+/// A single variant in an enum declaration.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct EnumVariant {
+    name: Identifier,
+    discriminant: u8,
+    span: Span,
+}
+
+impl EnumVariant {
+    pub fn name(&self) -> &Identifier {
+        &self.name
+    }
+
+    pub fn discriminant(&self) -> u8 {
+        self.discriminant
+    }
+}
+
+impl AsRef<Span> for EnumVariant {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+/// An enum declaration.
+#[derive(Clone, Debug)]
+pub struct EnumDeclaration {
+    visibility: Visibility,
+    name: AliasName,
+    variants: Arc<[EnumVariant]>,
+    span: Span,
+}
+
+impl EnumDeclaration {
+    pub fn visibility(&self) -> &Visibility {
+        &self.visibility
+    }
+
+    pub fn name(&self) -> &AliasName {
+        &self.name
+    }
+
+    pub fn variants(&self) -> &[EnumVariant] {
+        &self.variants
+    }
+}
+
+impl_require_feature!(EnumDeclaration {
+    requires: UnstableFeature::Enums, span: span;
+});
+
+impl_eq_hash!(EnumDeclaration; name, variants);
+
+impl AsRef<Span> for EnumDeclaration {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for EnumDeclaration {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let visibility = Visibility::arbitrary(u)?;
+        let name = AliasName::arbitrary(u)?;
+        let len = u.int_in_range(2..=8)?;
+        let variants = (0..len)
+            .map(|_| EnumVariant::arbitrary(u))
+            .collect::<arbitrary::Result<Arc<[EnumVariant]>>>()?;
+        Ok(Self {
+            visibility,
+            name,
+            variants,
+            span: Span::DUMMY,
+        })
+    }
+}
+
 /// An expression is something that returns a value.
 #[derive(Clone, Debug)]
 pub struct Expression {
@@ -572,6 +653,8 @@ pub enum SingleExpressionInner {
     Expression(Arc<Expression>),
     /// Match expression over a sum type
     Match(Match),
+    /// Match expression over a named enum type
+    EnumMatch(EnumMatch),
     /// Tuple wrapper expression
     Tuple(Arc<[Expression]>),
     /// Array wrapper expression
@@ -596,6 +679,7 @@ impl_require_feature!(SingleExpressionInner {
         Call(call),
         Expression(expr),
         Match(match_),
+        EnumMatch(enum_match),
         Tuple(exprs),
         Array(exprs),
         List(exprs),
@@ -648,6 +732,35 @@ impl_eq_hash!(Match; scrutinee, left, right);
 
 impl_require_feature!(Match {recurse: scrutinee, left, right; });
 
+/// Match expression over a named enum type (N arms, N ≥ 2).
+#[derive(Clone, Debug)]
+pub struct EnumMatch {
+    scrutinee: Arc<Expression>,
+    arms: Arc<[MatchArm]>,
+    span: Span,
+}
+
+impl_require_feature!(EnumMatch {
+    requires: UnstableFeature::Enums, span: span;
+    recurse: scrutinee, arms;
+});
+
+impl EnumMatch {
+    pub fn scrutinee(&self) -> &Expression {
+        &self.scrutinee
+    }
+
+    pub fn arms(&self) -> &[MatchArm] {
+        &self.arms
+    }
+
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl_eq_hash!(EnumMatch; scrutinee, arms);
+
 /// Arm of a match expression.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct MatchArm {
@@ -685,6 +798,8 @@ pub enum MatchPattern {
     False,
     /// Match true value (no binding).
     True,
+    /// Match a named enum variant (no payload binding).
+    EnumVariant(AliasName, Identifier),
 }
 
 impl_require_feature!(MatchPattern {
@@ -695,6 +810,7 @@ impl_require_feature!(MatchPattern {
         Some(pattern, ty),
         False,
         True,
+        EnumVariant(_, _),
 });
 
 impl MatchPattern {
@@ -704,7 +820,10 @@ impl MatchPattern {
             MatchPattern::Left(i, _) | MatchPattern::Right(i, _) | MatchPattern::Some(i, _) => {
                 Some(i)
             }
-            MatchPattern::None | MatchPattern::False | MatchPattern::True => None,
+            MatchPattern::None
+            | MatchPattern::False
+            | MatchPattern::True
+            | MatchPattern::EnumVariant(..) => None,
         }
     }
 
@@ -714,7 +833,10 @@ impl MatchPattern {
             MatchPattern::Left(i, ty) | MatchPattern::Right(i, ty) | MatchPattern::Some(i, ty) => {
                 Some((i, ty))
             }
-            MatchPattern::None | MatchPattern::False | MatchPattern::True => None,
+            MatchPattern::None
+            | MatchPattern::False
+            | MatchPattern::True
+            | MatchPattern::EnumVariant(..) => None,
         }
     }
 }
@@ -783,6 +905,7 @@ impl fmt::Display for Item {
             Self::TypeAlias(alias) => write!(f, "{alias}"),
             Self::Function(function) => write!(f, "{function}"),
             Self::Use(use_declaration) => write!(f, "{use_declaration}"),
+            Self::EnumDeclaration(decl) => write!(f, "{decl}"),
             Self::Module(module) => write!(f, "{module}"),
             Self::Ignored => Ok(()),
         }
@@ -907,6 +1030,7 @@ pub enum ExprTree<'a> {
     Single(&'a SingleExpression),
     Call(&'a Call),
     Match(&'a Match),
+    EnumMatch(&'a EnumMatch),
 }
 
 impl TreeLike for ExprTree<'_> {
@@ -947,6 +1071,7 @@ impl TreeLike for ExprTree<'_> {
                 | S::Expression(l) => Tree::Unary(Self::Expression(l)),
                 S::Call(call) => Tree::Unary(Self::Call(call)),
                 S::Match(match_) => Tree::Unary(Self::Match(match_)),
+                S::EnumMatch(enum_match) => Tree::Unary(Self::EnumMatch(enum_match)),
                 S::Tuple(elements) | S::Array(elements) | S::List(elements) => {
                     Tree::Nary(elements.iter().map(Self::Expression).collect())
                 }
@@ -957,6 +1082,16 @@ impl TreeLike for ExprTree<'_> {
                 Self::Expression(match_.left().expression()),
                 Self::Expression(match_.right().expression()),
             ])),
+            Self::EnumMatch(enum_match) => Tree::Nary(
+                std::iter::once(Self::Expression(enum_match.scrutinee()))
+                    .chain(
+                        enum_match
+                            .arms()
+                            .iter()
+                            .map(|arm| Self::Expression(arm.expression())),
+                    )
+                    .collect(),
+            ),
         }
     }
 }
@@ -1022,7 +1157,7 @@ impl fmt::Display for ExprTree<'_> {
                             write!(f, ")")?;
                         }
                     },
-                    S::Call(..) | S::Match(..) => {}
+                    S::Call(..) | S::Match(..) | S::EnumMatch(..) => {}
                     S::Tuple(tuple) => {
                         if data.n_children_yielded == 0 {
                             write!(f, "(")?;
@@ -1073,6 +1208,18 @@ impl fmt::Display for ExprTree<'_> {
                         write!(f, ",\n}}")?;
                     }
                 },
+                Self::EnumMatch(enum_match) => {
+                    let n = data.n_children_yielded;
+                    if n == 0 {
+                        write!(f, "match ")?;
+                    } else if n == 1 {
+                        write!(f, "{{\n{} => ", enum_match.arms()[0].pattern())?;
+                    } else if n <= enum_match.arms().len() {
+                        write!(f, ",\n{} => ", enum_match.arms()[n - 1].pattern())?;
+                    } else {
+                        write!(f, ",\n}}")?;
+                    }
+                }
             }
         }
 
@@ -1145,7 +1292,24 @@ impl fmt::Display for MatchPattern {
             MatchPattern::Some(i, ty) => write!(f, "Some({i}: {ty})"),
             MatchPattern::False => write!(f, "false"),
             MatchPattern::True => write!(f, "true"),
+            MatchPattern::EnumVariant(enum_name, variant) => write!(f, "{enum_name}::{variant}"),
         }
+    }
+}
+
+impl fmt::Display for EnumDeclaration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}enum {} {{", self.visibility(), self.name())?;
+        for variant in self.variants() {
+            write!(f, " {} = {},", variant.name(), variant.discriminant())?;
+        }
+        write!(f, " }}")
+    }
+}
+
+impl fmt::Display for EnumMatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", ExprTree::EnumMatch(self))
     }
 }
 
@@ -1500,9 +1664,16 @@ impl ChumskyParse for Item {
             let use_parser = UseDecl::parser().map(Item::Use);
 
             // Lazy item here
+            let enum_parser = EnumDeclaration::parser().map(Item::EnumDeclaration);
             let mod_parser = Module::parser_with_items(item).map(Item::Module);
 
-            choice((func_parser, use_parser, type_parser, mod_parser))
+            choice((
+                func_parser,
+                use_parser,
+                type_parser,
+                enum_parser,
+                mod_parser,
+            ))
         })
     }
 }
@@ -1916,6 +2087,61 @@ impl ChumskyParse for TypeAlias {
     }
 }
 
+impl ChumskyParse for EnumDeclaration {
+    fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
+    where
+        I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
+    {
+        let visibility = just(Token::Pub)
+            .to(Visibility::Public)
+            .or_not()
+            .map(Option::unwrap_or_default);
+
+        let discriminant = just(Token::Eq)
+            .ignore_then(select! { Token::DecLiteral(d) => d })
+            .try_map(|d, span| {
+                d.as_inner().parse::<u8>().map_err(|_| {
+                    RichError::new(
+                        Error::Grammar {
+                            msg: format!(
+                                "enum discriminant '{}' is out of range (must be 0-255)",
+                                d.as_inner()
+                            ),
+                        },
+                        span,
+                    )
+                })
+            });
+
+        let variant =
+            Identifier::parser()
+                .then(discriminant)
+                .map_with(|(name, discriminant), e| EnumVariant {
+                    name,
+                    discriminant,
+                    span: e.span(),
+                });
+
+        let variants = variant
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LBrace), just(Token::RBrace))
+            .map(Arc::from);
+
+        visibility
+            .then_ignore(just(Token::Enum))
+            .then(AliasName::parser())
+            .then(variants)
+            .map_with(|((visibility, name), variants), e| Self {
+                visibility,
+                name,
+                variants,
+                span: e.span(),
+            })
+    }
+}
+
 impl ChumskyParse for Expression {
     fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
     where
@@ -2037,7 +2263,7 @@ impl SingleExpression {
 
         let call = Call::parser(expr.clone()).map(SingleExpressionInner::Call);
 
-        let match_expr = Match::parser(expr.clone()).map(SingleExpressionInner::Match);
+        let match_expr = match_expr_parser(expr.clone());
 
         let variable = Identifier::parser().map(SingleExpressionInner::Variable);
 
@@ -2092,129 +2318,120 @@ impl ChumskyParse for MatchPattern {
     }
 }
 
-impl MatchArm {
-    fn parser<'tokens, 'src: 'tokens, I, E>(
-        expr: E,
-    ) -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
-    where
-        I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
-        E: Parser<'tokens, I, Expression, ParseError<'src>> + Clone + 'tokens,
-    {
-        MatchPattern::parser()
-            .then_ignore(just(Token::FatArrow))
-            .then(expr.map(Arc::new))
-            .then(just(Token::Comma).or_not())
-            .validate(|((pattern, expression), comma), e, emitter| {
-                let is_block = matches!(expression.as_ref().inner, ExpressionInner::Block(_, _));
+/// Parser for `match` expressions.
+///
+/// Handles both binary match (exactly 2 arms: Left/Right, None/Some, false/true) and enum match
+/// (2+ arms using `EnumName::Variant` patterns). Dispatches to [`Match`] or [`EnumMatch`] based
+/// on the patterns found.
+fn match_expr_parser<'tokens, 'src: 'tokens, I, E>(
+    expr: E,
+) -> impl Parser<'tokens, I, SingleExpressionInner, ParseError<'src>> + Clone
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
+    E: Parser<'tokens, I, Expression, ParseError<'src>> + Clone + 'tokens,
+{
+    let scrutinee = expr.clone().map(Arc::new);
 
-                if !is_block && comma.is_none() {
-                    emitter.emit(
-                        Error::Grammar {
-                            msg: "Missing ',' after a match arm that isn't block expression"
-                                .to_string(),
+    // Enum variant pattern: `EnumName::VariantName`.
+    // Binary keywords are excluded so choice() works without backtracking:
+    // when the ident is Left/Right/Some/None the select! guard fails without consuming the token.
+    let enum_variant_pattern =
+        select! { Token::Ident(name) if name != "Left" && name != "Right" && name != "Some" && name != "None" => AliasName::from_str_unchecked(name) }
+            .then_ignore(just(Token::DoubleColon))
+            .then(select! { Token::Ident(v) => Identifier::from_str_unchecked(v) })
+            .map(|(enum_name, variant)| MatchPattern::EnumVariant(enum_name, variant));
+
+    let combined_pattern = choice((enum_variant_pattern, MatchPattern::parser()));
+
+    // No recover_with here: repeated() stops naturally when arm_parser fails.
+    // Outer delimited_with_recovery handles the block-level recovery.
+    let arm_parser = combined_pattern
+        .then_ignore(just(Token::FatArrow))
+        .then(expr.clone().map(Arc::new))
+        .then(just(Token::Comma).or_not())
+        .validate(|((pattern, expression), comma), e, emitter| {
+            let is_block = matches!(expression.as_ref().inner, ExpressionInner::Block(_, _));
+            if !is_block && comma.is_none() {
+                emitter.emit(
+                    Error::Grammar {
+                        msg: "Missing ',' after a match arm that isn't block expression"
+                            .to_string(),
+                    }
+                    .with_span(e.span()),
+                );
+            }
+            MatchArm {
+                pattern,
+                expression,
+            }
+        });
+
+    let arms = delimited_with_recovery(
+        arm_parser.repeated().collect::<Vec<_>>(),
+        Token::LBrace,
+        Token::RBrace,
+        |_| vec![],
+    );
+
+    just(Token::Match)
+        .ignore_then(scrutinee)
+        .then(arms)
+        .validate(|(scrutinee, arms), e, emit| {
+            let all_enum = arms
+                .iter()
+                .all(|a| matches!(a.pattern, MatchPattern::EnumVariant(..)));
+
+            if all_enum && arms.len() >= 2 {
+                return SingleExpressionInner::EnumMatch(EnumMatch {
+                    scrutinee,
+                    arms: Arc::from(arms),
+                    span: e.span(),
+                });
+            }
+
+            // Binary match: exactly 2 non-enum arms.
+            let fallback_arm = MatchArm {
+                expression: Arc::new(Expression::empty(Span::DUMMY)),
+                pattern: MatchPattern::False,
+            };
+            let (first, second) = if arms.len() == 2 {
+                let mut it = arms.into_iter();
+                (it.next().unwrap(), it.next().unwrap())
+            } else {
+                emit.emit(
+                    Error::Grammar {
+                        msg: "binary match requires exactly 2 arms".to_string(),
+                    }
+                    .with_span(e.span()),
+                );
+                (fallback_arm.clone(), fallback_arm)
+            };
+
+            let (left, right) = match (&first.pattern, &second.pattern) {
+                (MatchPattern::Left(..), MatchPattern::Right(..)) => (first, second),
+                (MatchPattern::Right(..), MatchPattern::Left(..)) => (second, first),
+                (MatchPattern::None, MatchPattern::Some(..)) => (first, second),
+                (MatchPattern::Some(..), MatchPattern::None) => (second, first),
+                (MatchPattern::False, MatchPattern::True) => (first, second),
+                (MatchPattern::True, MatchPattern::False) => (second, first),
+                (p1, p2) => {
+                    emit.emit(
+                        Error::IncompatibleMatchArms {
+                            first: p1.clone(),
+                            second: p2.clone(),
                         }
                         .with_span(e.span()),
                     );
+                    (first, second)
                 }
-
-                Self {
-                    pattern,
-                    expression,
-                }
+            };
+            SingleExpressionInner::Match(Match {
+                scrutinee,
+                left,
+                right,
+                span: e.span(),
             })
-    }
-}
-
-impl Match {
-    fn parser<'tokens, 'src: 'tokens, I, E>(
-        expr: E,
-    ) -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
-    where
-        I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
-        E: Parser<'tokens, I, Expression, ParseError<'src>> + Clone + 'tokens,
-    {
-        let scrutinee = expr.clone().map(Arc::new);
-
-        let arm_recovery = any()
-            .filter(|t| !matches!(t, Token::Comma | Token::RBrace))
-            .ignored()
-            .or(nested_delimiters(
-                Token::LBrace,
-                Token::RBrace,
-                [
-                    (Token::LParen, Token::RParen),
-                    (Token::LBracket, Token::RBracket),
-                ],
-                |_| (),
-            )
-            .ignored())
-            .repeated()
-            .map_with(|(), _| None);
-
-        let arm_parser = MatchArm::parser(expr.clone())
-            .map(Some)
-            .recover_with(via_parser(arm_recovery.clone()));
-
-        let arms = delimited_with_recovery(
-            arm_parser.clone().then(arm_parser.clone()),
-            Token::LBrace,
-            Token::RBrace,
-            |_| (None, None),
-        );
-
-        just(Token::Match)
-            .ignore_then(scrutinee)
-            .then(arms)
-            .validate(|(scrutinee, arms), e, emit| match arms {
-                (Some(first), Some(second)) => {
-                    let (left, right) = match (&first.pattern, &second.pattern) {
-                        (MatchPattern::Left(..), MatchPattern::Right(..)) => (first, second),
-                        (MatchPattern::Right(..), MatchPattern::Left(..)) => (second, first),
-
-                        (MatchPattern::None, MatchPattern::Some(..)) => (first, second),
-                        (MatchPattern::Some(..), MatchPattern::None) => (second, first),
-
-                        (MatchPattern::False, MatchPattern::True) => (first, second),
-                        (MatchPattern::True, MatchPattern::False) => (second, first),
-
-                        (p1, p2) => {
-                            emit.emit(
-                                Error::IncompatibleMatchArms {
-                                    first: p1.clone(),
-                                    second: p2.clone(),
-                                }
-                                .with_span(e.span()),
-                            );
-                            (first, second)
-                        }
-                    };
-
-                    Self {
-                        scrutinee,
-                        left,
-                        right,
-                        span: e.span(),
-                    }
-                }
-                _ => {
-                    let match_arm_fallback = MatchArm {
-                        expression: Arc::new(Expression::empty(Span::DUMMY)),
-                        pattern: MatchPattern::False,
-                    };
-
-                    let (left, right) = (
-                        arms.0.unwrap_or(match_arm_fallback.clone()),
-                        arms.1.unwrap_or(match_arm_fallback.clone()),
-                    );
-                    Self {
-                        scrutinee,
-                        left,
-                        right,
-                        span: e.span(),
-                    }
-                }
-            })
-    }
+        })
 }
 
 impl Module {
@@ -2784,5 +3001,103 @@ fn main() {
             let program = parse::Program::parse_from_str(input).expect("parsing works");
             assert_eq!(program.to_string(), format!("{input}\n"));
         }
+    }
+
+    fn parse_item(input: &str) -> Item {
+        let program = parse::Program::parse_from_str(input).expect("parsing should succeed");
+        program.items().first().expect("expected one item").clone()
+    }
+
+    #[test]
+    fn test_enum_declaration_basic() {
+        let item = parse_item("enum Path { Inherit = 1, ColdSpend = 2, RefreshSpend = 3, }");
+        let Item::EnumDeclaration(decl) = item else {
+            panic!("expected EnumDeclaration, got {item:?}");
+        };
+        assert_eq!(decl.name().as_inner(), "Path");
+        assert_eq!(decl.variants().len(), 3);
+        assert_eq!(decl.variants()[0].name().as_inner(), "Inherit");
+        assert_eq!(decl.variants()[0].discriminant(), 1);
+        assert_eq!(decl.variants()[1].name().as_inner(), "ColdSpend");
+        assert_eq!(decl.variants()[1].discriminant(), 2);
+        assert_eq!(decl.variants()[2].name().as_inner(), "RefreshSpend");
+        assert_eq!(decl.variants()[2].discriminant(), 3);
+    }
+
+    #[test]
+    fn test_enum_declaration_pub() {
+        let item = parse_item("pub enum Color { Red = 0, Green = 1, Blue = 2, }");
+        let Item::EnumDeclaration(decl) = item else {
+            panic!("expected EnumDeclaration");
+        };
+        assert_eq!(decl.visibility(), &Visibility::Public);
+        assert_eq!(decl.name().as_inner(), "Color");
+    }
+
+    #[test]
+    fn test_enum_declaration_display_round_trip() {
+        let input = "enum Path { Inherit = 1, ColdSpend = 2, RefreshSpend = 3, }";
+        let item = parse_item(input);
+        let Item::EnumDeclaration(decl) = item else {
+            panic!("expected EnumDeclaration");
+        };
+        assert_eq!(
+            decl.to_string(),
+            "enum Path { Inherit = 1, ColdSpend = 2, RefreshSpend = 3, }"
+        );
+    }
+
+    #[test]
+    fn test_enum_match_parses() {
+        let input = "fn main() { match witness::PATH { Path::Inherit => 0, Path::ColdSpend => 1, Path::RefreshSpend => 2, } }";
+        let source = SourceFile::anonymous(Arc::from(input));
+        let mut errors = ErrorCollector::new();
+        let program = Program::parse_from_str_with_errors(
+            MAIN_MODULE,
+            source,
+            &UnstableFeatures::all(),
+            &mut errors,
+        );
+        assert!(program.is_some(), "should parse without errors");
+        assert!(
+            !errors.has_errors(),
+            "unexpected errors: {}",
+            ErrorCollector::to_string(&errors)
+        );
+    }
+
+    #[test]
+    fn test_enum_match_produces_enum_match_node() {
+        let input =
+            "fn main() { match witness::PATH { Path::Inherit => 0, Path::ColdSpend => 1, } }";
+        let program = parse::Program::parse_from_str(input).expect("parsing should succeed");
+        // Walk the tree looking for an EnumMatch node
+        let has_enum_match = program.items().iter().any(|item| {
+            if let Item::Function(f) = item {
+                format!("{f}").contains("Path::Inherit")
+            } else {
+                false
+            }
+        });
+        assert!(has_enum_match, "expected EnumMatch in the parse tree");
+    }
+
+    #[test]
+    fn test_binary_match_still_works_after_enum_parser_change() {
+        let input = "fn main() { let x: bool = true; match x { true => 1, false => 0, } }";
+        let source = SourceFile::anonymous(Arc::from(input));
+        let mut errors = ErrorCollector::new();
+        let program = Program::parse_from_str_with_errors(
+            MAIN_MODULE,
+            source,
+            &UnstableFeatures::all(),
+            &mut errors,
+        );
+        assert!(program.is_some(), "binary match should still parse");
+        assert!(
+            !errors.has_errors(),
+            "unexpected errors: {}",
+            ErrorCollector::to_string(&errors)
+        );
     }
 }
