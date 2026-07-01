@@ -106,8 +106,6 @@ pub enum Visibility {
 /// ```
 #[derive(Clone, Debug)]
 pub struct UseDecl {
-    file_id: usize,
-
     /// The visibility of the import (e.g., `pub use` vs `use`).
     visibility: Visibility,
 
@@ -134,19 +132,6 @@ impl_require_feature!(UseItems {
 });
 
 impl UseDecl {
-    /// The driver uses this to ensure imports conform to the flattened program structure.
-    pub(crate) fn set_file_id(&mut self, file_id: usize) {
-        self.file_id = file_id;
-    }
-
-    pub(crate) fn set_path(&mut self, path: &[Identifier]) {
-        self.path = Vec::from(path)
-    }
-
-    pub fn file_id(&self) -> usize {
-        self.file_id
-    }
-
     pub fn visibility(&self) -> &Visibility {
         &self.visibility
     }
@@ -157,6 +142,14 @@ impl UseDecl {
     /// followed by all subsequent sub-module segments.
     pub fn path(&self) -> &[Identifier] {
         &self.path
+    }
+
+    pub fn items(&self) -> &UseItems {
+        &self.items
+    }
+
+    pub fn span(&self) -> &Span {
+        &self.span
     }
 
     pub fn str_path(&self) -> String {
@@ -179,24 +172,19 @@ impl UseDecl {
         })
     }
 
-    pub fn items(&self) -> &UseItems {
-        &self.items
-    }
-
-    pub fn span(&self) -> &Span {
-        &self.span
+    pub(crate) fn set_path(&mut self, path: &[Identifier]) {
+        self.path = Vec::from(path)
     }
 }
 
-// `file_id` and `span` are required because `UseDecl` hashing is context-dependent.
+// `span` are required because `UseDecl` hashing is context-dependent.
 // For instance, identical `use crate::...` paths differ between binary and library roots.
 // Tested by: `functional_tests::identical_crate_uses_in_different_package_roots_do_not_poison_resolution_cache`.
-impl_eq_hash!(UseDecl; file_id, visibility, path, items, span);
+impl_eq_hash!(UseDecl; visibility, path, items, span);
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for UseDecl {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let file_id = u.int_in_range(0..=3)?;
         let visibility = Visibility::arbitrary(u)?;
         let path_len = u.int_in_range(2..=4)?;
         let path = (0..path_len)
@@ -205,7 +193,6 @@ impl<'a> arbitrary::Arbitrary<'a> for UseDecl {
         let items = UseItems::arbitrary(u)?;
 
         Ok(Self {
-            file_id,
             visibility,
             path,
             items,
@@ -240,7 +227,6 @@ pub enum UseItems {
 
 #[derive(Clone, Debug)]
 pub struct Function {
-    file_id: usize, // The field required for the driver
     visibility: Visibility,
     name: FunctionName,
     params: Arc<[FunctionParam]>,
@@ -250,14 +236,6 @@ pub struct Function {
 }
 
 impl Function {
-    pub fn file_id(&self) -> usize {
-        self.file_id
-    }
-
-    pub(crate) fn set_file_id(&mut self, file_id: usize) {
-        self.file_id = file_id;
-    }
-
     pub fn visibility(&self) -> &Visibility {
         &self.visibility
     }
@@ -448,7 +426,6 @@ impl_require_feature!(CallName {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TypeAlias {
-    file_id: usize, // The field required for the driver
     visibility: Visibility,
     name: AliasName,
     ty: AliasedType,
@@ -456,14 +433,6 @@ pub struct TypeAlias {
 }
 
 impl TypeAlias {
-    pub fn file_id(&self) -> usize {
-        self.file_id
-    }
-
-    pub(crate) fn set_file_id(&mut self, file_id: usize) {
-        self.file_id = file_id;
-    }
-
     pub fn visibility(&self) -> &Visibility {
         &self.visibility
     }
@@ -752,7 +721,6 @@ impl MatchPattern {
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Module {
-    file_id: usize,
     visibility: Visibility,
     name: ModuleName,
     items: Arc<[Item]>,
@@ -773,11 +741,10 @@ impl Module {
         items: &[Item],
     ) -> Module {
         Self {
-            file_id,
             visibility,
             name,
             items: Arc::from(items),
-            span: Span::new(0, 0),
+            span: Span::new(file_id, 0..0),
         }
     }
 
@@ -1219,6 +1186,7 @@ pub trait ParseFromStrWithErrors: Sized {
     /// Feature-gated syntax in the parsed AST is checked against
     /// `unstable_features`; uses of disabled features are pushed to `handler`.
     fn parse_from_str_with_errors(
+        file_id: usize,
         source: impl Into<SourceFile>,
         unstable_features: &UnstableFeatures,
         handler: &mut ErrorCollector,
@@ -1239,7 +1207,7 @@ type ParseError<'src> = extra::Err<RichError>;
 /// This implementation only returns first encountered error.
 impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
     fn parse_from_str(s: &str) -> Result<Self, RichError> {
-        let (tokens, mut lex_errs) = crate::lexer::lex(s);
+        let (tokens, mut lex_errs) = crate::lexer::lex(MAIN_MODULE, s);
 
         let Some(tokens) = tokens else {
             return Err(lex_errs.pop().unwrap_or(RichError::parsing_error(
@@ -1252,7 +1220,7 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
             .parse(
                 tokens
                     .as_slice()
-                    .map((s.len()..s.len()).into(), |(t, s)| (t, s)),
+                    .map(Span::eof(MAIN_MODULE, s.len()), |(t, s)| (t, s)),
             )
             .into_output_errors();
 
@@ -1269,6 +1237,7 @@ impl<A: ChumskyParse + crate::unstable::RequireFeature + std::fmt::Debug> ParseF
     for A
 {
     fn parse_from_str_with_errors(
+        file_id: usize,
         source: impl Into<SourceFile>,
         unstable_features: &UnstableFeatures,
         handler: &mut ErrorCollector,
@@ -1276,12 +1245,12 @@ impl<A: ChumskyParse + crate::unstable::RequireFeature + std::fmt::Debug> ParseF
         let source: SourceFile = source.into();
         let src = source.content().to_string();
 
-        let (tokens, lex_errs) = crate::lexer::lex(&src);
+        let (tokens, lex_errs) = crate::lexer::lex(file_id, &src);
         let lex_ok = lex_errs.is_empty();
         handler.extend(source.clone(), lex_errs);
         let tokens = tokens?;
 
-        let eoi = (src.len()..src.len()).into();
+        let eoi = Span::eof(file_id, src.len());
         let (ast, parse_errs) = A::parser()
             .parse(tokens.as_slice().map(eoi, |(t, s)| (t, s)))
             .into_output_errors();
@@ -1587,7 +1556,6 @@ impl ChumskyParse for Function {
             .then(ret)
             .then(body)
             .map_with(|((((visibility, name), params), ret), body), e| Self {
-                file_id: MAIN_MODULE,
                 visibility,
                 name,
                 params,
@@ -1652,7 +1620,6 @@ impl ChumskyParse for UseDecl {
             .then(items)
             .then_ignore(just(Token::Semi))
             .map_with(|((visibility, path), items), e| Self {
-                file_id: MAIN_MODULE,
                 visibility,
                 path,
                 items,
@@ -1941,7 +1908,6 @@ impl ChumskyParse for TypeAlias {
                     .then_ignore(just(Token::Semi)),
             )
             .map_with(|(visibility, (name, ty)), e| Self {
-                file_id: MAIN_MODULE,
                 visibility,
                 name: name.0,
                 ty,
@@ -2232,7 +2198,7 @@ impl Match {
                 }
                 _ => {
                     let match_arm_fallback = MatchArm {
-                        expression: Arc::new(Expression::empty(Span::new(0, 0))),
+                        expression: Arc::new(Expression::empty(Span::DUMMY)),
                         pattern: MatchPattern::False,
                     };
 
@@ -2283,7 +2249,6 @@ impl Module {
         visibility
             .then(just(Token::Mod).ignore_then(name).then(items))
             .map_with(|(visibility, (name, items)), e| Self {
-                file_id: MAIN_MODULE,
                 visibility,
                 name: name.0,
                 items,
@@ -2430,7 +2395,6 @@ impl crate::ArbitraryRec for Function {
     fn arbitrary_rec(u: &mut arbitrary::Unstructured, budget: usize) -> arbitrary::Result<Self> {
         use arbitrary::Arbitrary;
 
-        let file_id = u.int_in_range(0..=3)?;
         let visibility = Visibility::arbitrary(u)?;
         let name = FunctionName::arbitrary(u)?;
         let len = u.int_in_range(0..=6)?;
@@ -2440,7 +2404,6 @@ impl crate::ArbitraryRec for Function {
         let ret = Option::<AliasedType>::arbitrary(u)?;
         let body = Expression::arbitrary_rec(u, budget).map(Expression::into_block)?;
         Ok(Self {
-            file_id,
             visibility,
             name,
             params,
@@ -2454,15 +2417,11 @@ impl crate::ArbitraryRec for Function {
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for Module {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        // A small range allows us to test scenarios where two
-        // randomly generated modules end up in the same file.
-        let file_id = u.int_in_range(0..=3)?;
         let visibility = Visibility::arbitrary(u)?;
         let name = ModuleName::arbitrary(u)?;
         let items_vec = generate_arbitrary_items(u)?;
 
         Ok(Self {
-            file_id,
             visibility,
             name,
             items: items_vec.into(),
@@ -2675,11 +2634,10 @@ mod test {
         /// Creates a dummy `UseDecl` specifically for testing `DependencyMap` resolution.
         pub fn dummy_path(path: Vec<Identifier>) -> Self {
             Self {
-                file_id: MAIN_MODULE,
                 visibility: Visibility::default(),
                 path,
                 items: UseItems::List(Vec::new()),
-                span: Span::new(0, 0),
+                span: Span::DUMMY,
             }
         }
     }
@@ -2700,13 +2658,14 @@ mod test {
         let input = "fn main() { let ab: u8 = <(u4, u4)> : :into((0b1011, 0b1101)); }";
         let source = SourceFile::anonymous(Arc::from(input));
         let mut error_handler = ErrorCollector::new();
-        let parse_program = Program::parse_from_str_with_errors(
+        let parsed_program = Program::parse_from_str_with_errors(
+            MAIN_MODULE,
             source,
             &UnstableFeatures::all(),
             &mut error_handler,
         );
 
-        assert!(parse_program.is_none());
+        assert!(parsed_program.is_none());
         assert!(ErrorCollector::to_string(&error_handler).contains("Expected '::', found ':'"));
     }
 
@@ -2715,13 +2674,14 @@ mod test {
         let input = "fn main() { let pk: Pubkey = witnes::::PK; }";
         let source = SourceFile::anonymous(Arc::from(input));
         let mut error_handler = ErrorCollector::new();
-        let parse_program = Program::parse_from_str_with_errors(
+        let parsed_program = Program::parse_from_str_with_errors(
+            MAIN_MODULE,
             source,
             &UnstableFeatures::all(),
             &mut error_handler,
         );
 
-        assert!(parse_program.is_none());
+        assert!(parsed_program.is_none());
         assert!(ErrorCollector::to_string(&error_handler).contains("Expected ';', found '::'"));
     }
 
@@ -2729,7 +2689,8 @@ mod test {
     fn parse_with(input: &str, features: &UnstableFeatures) -> (bool, String) {
         let source = SourceFile::anonymous(Arc::from(input));
         let mut handler = ErrorCollector::new();
-        let program = Program::parse_from_str_with_errors(source, features, &mut handler);
+        let program =
+            Program::parse_from_str_with_errors(MAIN_MODULE, source, features, &mut handler);
         (program.is_none(), ErrorCollector::to_string(&handler))
     }
 

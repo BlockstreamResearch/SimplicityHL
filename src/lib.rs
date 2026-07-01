@@ -39,7 +39,7 @@ pub extern crate simplicity;
 pub use simplicity::elements;
 
 use crate::debug::DebugSymbols;
-use crate::driver::{DependencyGraph, SourceMap};
+use crate::driver::{DependencyGraph, SourceMap, MAIN_MODULE};
 use crate::error::{ErrorCollector, WithContent, WithSource as _};
 use crate::parse::ParseFromStrWithErrors;
 use crate::resolution::DependencyMap;
@@ -153,13 +153,14 @@ impl TemplateProgram {
         let source = SourceFile::anonymous(file.clone());
         let mut error_handler = ErrorCollector::new();
 
-        let parse_program = parse::Program::parse_from_str_with_errors(
+        let parsed_program = parse::Program::parse_from_str_with_errors(
+            MAIN_MODULE,
             source,
             unstable_features,
             &mut error_handler,
         );
 
-        if let Some(program) = parse_program {
+        if let Some(program) = parsed_program {
             let Ok(ast_program) = ast::Program::analyze(&program, jet_hinter.clone_box())
                 .with_content(Arc::clone(&file))
                 .map_err(|e| error_handler.push(e))
@@ -185,9 +186,13 @@ impl TemplateProgram {
         unstable_features: &UnstableFeatures,
         handler: &mut ErrorCollector,
     ) -> Result<(Option<parse::Program>, SourceMap), String> {
-        let program =
-            parse::Program::parse_from_str_with_errors(source.clone(), unstable_features, handler)
-                .ok_or_else(|| handler.to_string())?;
+        let program = parse::Program::parse_from_str_with_errors(
+            MAIN_MODULE,
+            source.clone(),
+            unstable_features,
+            handler,
+        )
+        .ok_or_else(|| handler.to_string())?;
 
         // TODO: we should remove this errors push after refactoring errors
         let graph = DependencyGraph::new(
@@ -589,6 +594,7 @@ pub(crate) mod tests {
 
         let mut error_handler = ErrorCollector::new();
         let parse_program = parse::Program::parse_from_str_with_errors(
+            MAIN_MODULE,
             source,
             &UnstableFeatures::all(),
             &mut error_handler,

@@ -4,6 +4,7 @@ use chumsky::prelude::{any, choice, end, just, recursive, skip_then_retry_until}
 use chumsky::{error::Rich, extra, span::SimpleSpan, text, IterParser, Parser};
 
 use crate::driver::CRATE_STR;
+use crate::error::{Error, RichError, Span};
 use crate::str::{Binary, Decimal, Hexadecimal};
 
 pub type Spanned<T> = (T, SimpleSpan);
@@ -234,27 +235,29 @@ pub fn lexer<'src>(
 /// Lexes an input string into a stream of tokens with spans.
 ///
 /// All comments in the input code are discarded.
-pub fn lex<'src>(input: &'src str) -> (Option<Tokens<'src>>, Vec<crate::error::RichError>) {
+pub fn lex(file_id: usize, input: &str) -> (Option<Tokens<'_>>, Vec<crate::error::RichError>) {
     let (tokens, errors) = lexer().parse(input).into_output_errors();
-    (
-        tokens.map(|vec| {
-            vec.into_iter()
-                .map(|(tok, span)| (tok, crate::error::Span::from(span)))
-                .filter(|(tok, _)| !matches!(tok, Token::Comment | Token::BlockComment))
-                .collect::<Vec<_>>()
-        }),
-        errors
-            .iter()
-            .map(|err| {
-                crate::error::RichError::new(
-                    crate::error::Error::CannotParse {
-                        msg: err.reason().to_string(),
-                    },
-                    (*err.span()).into(),
-                )
-            })
-            .collect::<Vec<_>>(),
-    )
+
+    let tokens = tokens.map(|vec| {
+        vec.into_iter()
+            .filter(|(tok, _)| !matches!(tok, Token::Comment | Token::BlockComment))
+            .map(|(tok, span)| (tok, Span::from_chumsky(file_id, span)))
+            .collect()
+    });
+
+    let errors = errors
+        .into_iter()
+        .map(|err| {
+            RichError::new(
+                Error::CannotParse {
+                    msg: err.reason().to_string(),
+                },
+                Span::from_chumsky(file_id, *err.span()),
+            )
+        })
+        .collect();
+
+    (tokens, errors)
 }
 
 /// A list of all reserved keywords.
