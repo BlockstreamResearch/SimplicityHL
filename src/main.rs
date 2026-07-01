@@ -3,6 +3,7 @@ use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
 use simplicityhl::ast::ElementsJetHinter;
+use simplicityhl::version::missing_directive_warning;
 use simplicityhl::{
     resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
     CompiledProgram,
@@ -112,6 +113,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prog_file = matches.get_one::<String>("prog_file").unwrap();
     let main_path = CanonPath::canonicalize(Path::new(prog_file))?;
     let main_text = std::fs::read_to_string(main_path.as_path()).map_err(|e| e.to_string())?;
+    // Entry file only; deps are still version-checked in the driver, just not warned.
+    if let Some(warning) = missing_directive_warning(&main_text) {
+        eprintln!("Warning: {warning}");
+    }
     let include_debug_symbols = matches.get_flag("debug");
     let output_json = matches.get_flag("json");
     let abi_param = matches.get_flag("abi");

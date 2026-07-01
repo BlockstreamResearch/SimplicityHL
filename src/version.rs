@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use semver::{Version, VersionReq};
 
+use crate::driver::MAIN_MODULE;
 use crate::error::{Error, ErrorCollector, RichError, Span};
 use crate::source::SourceFile;
 
@@ -296,7 +297,7 @@ fn extract_directive_from_line<'a>(
     let span_start = current_offset + (line.len() - trimmed.len());
     let span_end = span_start + (trimmed.len() - after_quote.len()) + 1;
 
-    Some((req_str, Span::new(span_start, span_end)))
+    Some((req_str, Span::new(MAIN_MODULE, span_start..span_end)))
 }
 
 /// Skip past `/* ... */` so a directive may follow a leading comment block.
@@ -330,7 +331,7 @@ fn directive_looking(trimmed: &str) -> bool {
 /// The span covering a directive-looking line, for reporting a malformed directive.
 fn directive_looking_span(line: &str, trimmed: &str, offset: usize) -> Span {
     let start = offset + (line.len() - trimmed.len());
-    Span::new(start, start + trimmed.trim_end().len())
+    Span::new(MAIN_MODULE, start..start + trimmed.trim_end().len())
 }
 
 /// The message shared by [`check`] and [`requirement_of`] for a leading line that

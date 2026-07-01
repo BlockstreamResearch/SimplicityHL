@@ -38,6 +38,7 @@ use crate::parse::{self, ParseFromStrWithErrors};
 use crate::resolution::{DependencyMap, ResolvedUse};
 use crate::source::{CanonPath, CanonSourceFile};
 use crate::unstable::UnstableFeatures;
+use crate::version::check_source;
 
 /// The reserved identifier for the program's entry point.
 pub(crate) const MAIN_STR: &str = "main";
@@ -350,6 +351,9 @@ impl DependencyGraph {
 
         let mut error_handler = ErrorCollector::new();
         let source = CanonSourceFile::new(path.clone(), Arc::from(content));
+
+        check_source(&source, &mut error_handler);
+
         let ast = parse::Program::parse_from_str_with_errors(
             new_id,
             source.clone(),
@@ -491,7 +495,8 @@ pub(crate) mod tests {
         let mut root_file_path = None;
         let mut root_content = String::new();
 
-        // Create all requested files
+        // Create all requested files. A directive is optional, so files are written
+        // verbatim — version_tests.rs declares directives explicitly where it tests them.
         for (path, content) in files {
             let full_path = format!("workspace/{}", path);
             let created_file = canon(&ws.create_file(&full_path, content));
@@ -504,6 +509,8 @@ pub(crate) mod tests {
 
         let root_p = root_file_path.expect("main.simf must be defined in file list");
         let main_canon_source = CanonSourceFile::new(root_p, Arc::from(root_content));
+
+        check_source(&main_canon_source, &mut handler);
 
         let main_program_option = parse::Program::parse_from_str_with_errors(
             MAIN_MODULE,
