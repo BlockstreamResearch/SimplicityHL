@@ -451,8 +451,9 @@ mod tests {
 
     #[test]
     fn test_debug_and_jet_tracing() {
+        let program_text = TEST_PROGRAM;
         let program =
-            TemplateProgram::new(TEST_PROGRAM, Box::new(ElementsJetHinter::new())).unwrap();
+            TemplateProgram::new(program_text, Box::new(ElementsJetHinter::new())).unwrap();
         let program = program.instantiate(Arguments::default(), true).unwrap();
         let satisfied = program.satisfy(WitnessValues::default()).unwrap();
 
@@ -522,8 +523,9 @@ mod tests {
     fn test_arith_jet_trace_regression() {
         let env = create_test_env();
 
+        let program_text = TEST_ARITHMETIC_JETS;
         let program =
-            TemplateProgram::new(TEST_ARITHMETIC_JETS, Box::new(ElementsJetHinter::new())).unwrap();
+            TemplateProgram::new(program_text, Box::new(ElementsJetHinter::new())).unwrap();
         let program = program.instantiate(Arguments::default(), true).unwrap();
         let satisfied = program.satisfy(WitnessValues::default()).unwrap();
 
@@ -577,9 +579,9 @@ mod tests {
 
         let env = create_test_env();
 
+        let program_text = TEST_FULL_MULTIPLY_JETS;
         let program =
-            TemplateProgram::new(TEST_FULL_MULTIPLY_JETS, Box::new(ElementsJetHinter::new()))
-                .unwrap();
+            TemplateProgram::new(program_text, Box::new(ElementsJetHinter::new())).unwrap();
         let program = program.instantiate(Arguments::default(), true).unwrap();
         let satisfied = program.satisfy(WitnessValues::default()).unwrap();
 

@@ -275,6 +275,7 @@ mod tests {
     use chumsky::error::Rich;
 
     use super::*;
+    use crate::version::blank_version_directive;
 
     fn lex<'src>(
         input: &'src str,
@@ -369,10 +370,13 @@ mod tests {
     fn lexer_test() {
         use chumsky::prelude::*;
 
-        // Check if the lexer parses the example file without errors.
+        // Check if the lexer parses the example file without errors. The leading
+        // `simc "...";` directive is blanked before lexing in every production path
+        // (it is not a language token), so mirror that here.
         let src = include_str!("../examples/last_will.simf");
+        let src = blank_version_directive(src);
 
-        let (tokens, lex_errs) = lexer().parse(src).into_output_errors();
+        let (tokens, lex_errs) = lexer().parse(src.as_ref()).into_output_errors();
         let _ = tokens.unwrap();
 
         assert!(lex_errs.is_empty());

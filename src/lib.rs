@@ -27,6 +27,7 @@ pub mod test_utils;
 pub mod tracker;
 pub mod types;
 pub mod value;
+pub mod version;
 mod witness;
 
 use std::sync::Arc;
@@ -48,6 +49,7 @@ use crate::source::SourceFile;
 pub use crate::types::ResolvedType;
 pub use crate::unstable::{UnstableFeature, UnstableFeatures};
 pub use crate::value::Value;
+use crate::version::check_source;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 
 /// The template of a SimplicityHL program.
@@ -153,31 +155,37 @@ impl TemplateProgram {
         let source = SourceFile::anonymous(file.clone());
         let mut error_handler = ErrorCollector::new();
 
-        let parsed_program = parse::Program::parse_from_str_with_errors(
+        // Fail fast on a directive problem so the parser never sees a `simc` line: a
+        // malformed or misplaced directive surfaces as a clear diagnostic here, instead
+        // of a confusing downstream parse error.
+        check_source(&source, &mut error_handler);
+        if error_handler.has_errors() {
+            return Err(error_handler);
+        }
+
+        let Some(program) = parse::Program::parse_from_str_with_errors(
             MAIN_MODULE,
             source,
             unstable_features,
             &mut error_handler,
-        );
+        ) else {
+            return Err(error_handler);
+        };
 
-        if let Some(program) = parsed_program {
-            let Ok(ast_program) = ast::Program::analyze(&program, jet_hinter.clone_box())
-                .with_content(Arc::clone(&file))
-                .map_err(|e| error_handler.push(e))
-            else {
-                Err(error_handler)?
-            };
+        let Ok(ast_program) = ast::Program::analyze(&program, jet_hinter.clone_box())
+            .with_content(Arc::clone(&file))
+            .map_err(|e| error_handler.push(e))
+        else {
+            return Err(error_handler);
+        };
 
-            Ok(Self {
-                simfony: ast_program,
-                file,
-                jet_hinter,
-                source_map: SourceMap::default(),
-                resolved_program: program,
-            })
-        } else {
-            Err(error_handler)?
-        }
+        Ok(Self {
+            simfony: ast_program,
+            file,
+            jet_hinter,
+            source_map: SourceMap::default(),
+            resolved_program: program,
+        })
     }
 
     fn dependency_helper(
@@ -186,6 +194,15 @@ impl TemplateProgram {
         unstable_features: &UnstableFeatures,
         handler: &mut ErrorCollector,
     ) -> Result<(Option<parse::Program>, SourceMap), String> {
+        // Run the version check first and fail fast: a malformed, misplaced, or
+        // incompatible directive surfaces as a clear diagnostic here, instead of being
+        // hidden behind — or compounded by — a raw lexer/parser error. (`check_source`
+        // pushes to `handler`; `parse_from_str_with_errors` returns `Some` only when the
+        // handler is error-free, so no post-parse re-check is needed.)
+        check_source(&source, handler);
+        if handler.has_errors() {
+            return Err(handler.to_string());
+        }
         let program = parse::Program::parse_from_str_with_errors(
             MAIN_MODULE,
             source.clone(),
@@ -1044,7 +1061,7 @@ pub(crate) mod tests {
         let ws = TempWorkspace::new("crate_success");
         let root = ws.create_dir("workspace");
         ws.create_file(
-            format!("workspace/{MAIN}").as_str(),
+            "workspace/main.simf",
             "use crate::utils::add;\nfn main() { assert!(jet::eq_32(add(2, 2), 4)); }",
         );
         ws.create_file(
@@ -1073,7 +1090,8 @@ pub(crate) mod tests {
         let program = TemplateProgram::new(code, Box::new(ElementsJetHinter::new()));
         assert!(
             program.is_ok(),
-            "TemplateProgram::new should successfully compile anonymous source files without requiring canonical paths"
+            "TemplateProgram::new should successfully compile anonymous source files without requiring canonical paths, error: {:?}",
+            program.err()
         );
     }
 
@@ -1270,7 +1288,8 @@ pub(crate) mod tests {
 
     #[test]
     fn empty_function_body_nonempty_return() {
-        let prog_text = r#"fn my_true() -> bool {
+        let prog_text = r#"
+fn my_true() -> bool {
     // function body is empty, although function must return `bool`
 }
 
@@ -1530,13 +1549,53 @@ fn main() {
             regression_test("transfer_with_timeout");
         }
     }
+
+    /// An omitted directive is allowed: the compiler only enforces a directive that is
+    /// present, so a directive-less program compiles. The dependency-path equivalent is
+    /// covered end to end by the CLI test `cli_version_missing_warns_but_compiles`.
+    #[test]
+    fn directive_omitted() {
+        let result = TemplateProgram::new(
+            "fn main() {}",
+            Box::new(crate::ast::ElementsJetHinter::new()),
+        );
+        assert!(result.is_ok(), "expected success, got: {:?}", result.err());
+    }
+
+    // Smoke tests that the version check is wired into `TemplateProgram::new`: one
+    // compatible directive compiles, one incompatible directive aborts. The semver
+    // matching and per-kind messages are covered exhaustively in `version`'s unit
+    // tests, so they are not re-asserted through the pipeline here.
+    #[test]
+    fn compatible_directive_compiles() {
+        let compatible = format!(
+            "simc \"{}\";\nfn main() {{}}",
+            crate::version::current_version()
+        );
+        assert!(
+            TemplateProgram::new(compatible, Box::new(crate::ast::ElementsJetHinter::new()))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn incompatible_directive_aborts() {
+        let too_old = "simc \">= 99.99.99\";\nfn main() {}";
+        let err = TemplateProgram::new(too_old, Box::new(crate::ast::ElementsJetHinter::new()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Incompatible compiler version"),
+            "Expected 'Incompatible compiler version', got: {}",
+            err
+        );
+    }
 }
 
 #[cfg(test)]
 mod error_tests {
     use std::path::Path;
 
-    use super::tests::MAIN;
     use super::*;
 
     use crate::ast::ElementsJetHinter;
@@ -1563,7 +1622,7 @@ mod error_tests {
         let root_dir = ws.create_dir("workspace");
         let lib_dir = ws.create_dir("workspace/lib");
         let main_path = ws.create_file(
-            format!("workspace/{MAIN}").as_str(),
+            "workspace/main.simf",
             "use lib::bad::f;\nfn main() { f(); }\n",
         );
         let bad_path = ws.create_file(
@@ -1594,7 +1653,7 @@ mod error_tests {
         let root_dir = ws.create_dir("workspace");
         let lib_dir = ws.create_dir("workspace/lib");
         let main_path = ws.create_file(
-            format!("workspace/{MAIN}").as_str(),
+            "workspace/main.simf",
             "use lib::nested::two;\nfn main() { assert!(jet::eq_32(two(), 2)); }\n",
         );
         ws.create_file(
@@ -1619,7 +1678,7 @@ mod error_tests {
         let root_dir = ws.create_dir("workspace");
         let lib_dir = ws.create_dir("workspace/lib");
         let main_path = ws.create_file(
-            format!("workspace/{MAIN}").as_str(),
+            "workspace/main.simf",
             "use lib::missing::Thing;\nfn main() {}\n",
         );
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);

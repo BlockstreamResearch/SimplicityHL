@@ -31,6 +31,7 @@ use crate::str::{
 };
 use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
 use crate::unstable::{impl_require_feature, UnstableFeature, UnstableFeatures};
+use crate::version::blank_version_directive;
 
 /// A program is a sequence of items.
 #[derive(Clone, Debug)]
@@ -1207,7 +1208,8 @@ type ParseError<'src> = extra::Err<RichError>;
 /// This implementation only returns first encountered error.
 impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
     fn parse_from_str(s: &str) -> Result<Self, RichError> {
-        let (tokens, mut lex_errs) = crate::lexer::lex(MAIN_MODULE, s);
+        let blanked = blank_version_directive(s);
+        let (tokens, mut lex_errs) = crate::lexer::lex(MAIN_MODULE, &blanked);
 
         let Some(tokens) = tokens else {
             return Err(lex_errs.pop().unwrap_or(RichError::parsing_error(
@@ -1243,7 +1245,11 @@ impl<A: ChumskyParse + crate::unstable::RequireFeature + std::fmt::Debug> ParseF
         handler: &mut ErrorCollector,
     ) -> Option<Self> {
         let source: SourceFile = source.into();
-        let src = source.content().to_string();
+        let original = source.content().to_string();
+        // Blank the `simc "...";` directive (replacing it with equal-length spaces)
+        // before lexing, so the grammar never sees it while byte offsets — and thus
+        // error spans — stay aligned with the original source.
+        let src = blank_version_directive(&original);
 
         let (tokens, lex_errs) = crate::lexer::lex(file_id, &src);
         let lex_ok = lex_errs.is_empty();
@@ -1502,6 +1508,8 @@ impl ChumskyParse for Item {
             // Lazy item here
             let mod_parser = Module::parser_with_items(item).map(Item::Module);
 
+            // The `simc "...";` directive is removed from the source before lexing
+            // (see `version::blank_version_directive`), so the grammar never sees it.
             choice((func_parser, use_parser, type_parser, mod_parser))
         })
     }
