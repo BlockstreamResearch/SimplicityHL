@@ -106,9 +106,25 @@ pub fn cost(jet: ExternalJet) -> Cost {
 /// how the host turns the identifier written after `jet::` into a handle. On
 /// success the resulting [`HappyJet`] is reduced to its [`ExternalJet`] index for
 /// return across the boundary.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub fn parse(s: &str) -> Result<ExternalJet, simplicityhl::simplicity::Error> {
     HappyJet::parse(s).map(|jet| ExternalJet { index: jet.index() })
+}
+
+/// wasm32 shim for the current compiler import signature of `parse`.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn parse(name_ptr: *const u8, name_len: usize, out: *mut ExternalJet) -> i32 {
+    let bytes = std::slice::from_raw_parts(name_ptr, name_len);
+    let Ok(name) = std::str::from_utf8(bytes) else {
+        return 1;
+    };
+    let Ok(jet) = HappyJet::parse(name) else {
+        return 1;
+    };
+    std::ptr::write(out, ExternalJet { index: jet.index() });
+    0
 }
 /// Exports the [`Display`](std::fmt::Display) name of the jet.
 #[no_mangle]
@@ -165,9 +181,22 @@ pub fn verify() -> ExternalJet {
 /// [`HappyJet`] and re-box it as a [`JetHL`], re-attaching the high-level
 /// behaviour. It returns [`None`] if the jet does not belong to this library.
 /// This mirrors the `conjure` method of the built-in jet hinters.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub fn conjure(jet: &dyn Jet) -> Option<Box<dyn JetHL>> {
     jet.as_any()
         .downcast_ref::<HappyJet>()
         .map(|jet| Box::new(*jet) as Box<dyn JetHL>)
+}
+
+/// wasm32 shim for the current compiler import signature of `conjure`.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn conjure(out: *mut Option<Box<dyn JetHL>>, jet: *const dyn Jet) {
+    let jet = &*jet;
+    let value = jet
+        .as_any()
+        .downcast_ref::<HappyJet>()
+        .map(|jet| Box::new(*jet) as Box<dyn JetHL>);
+    std::ptr::write(out, value);
 }

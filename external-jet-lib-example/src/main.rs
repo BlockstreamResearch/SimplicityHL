@@ -33,7 +33,7 @@ fn main() {
     //    the process-global `ExternalJetLib` table. This must happen exactly once
     //    and before any program that uses external jets is compiled.
     unsafe {
-        simplicityhl::jet::external::init_external_jet_lib(&lib_path)
+        simplicityhl::jet::external::init_external_jet_lib(Some(&lib_path))
             .expect("failed to initialize external jet lib");
     }
 
