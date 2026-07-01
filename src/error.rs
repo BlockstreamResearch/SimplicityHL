@@ -485,6 +485,13 @@ pub enum Error {
     UnstableFeature {
         feature: UnstableFeature,
     },
+    InvalidSimcVersionSyntax {
+        err: String,
+    },
+    SimcVersionMismatch {
+        required: String,
+        current: String,
+    },
     DependencyPathNotFound {
         path: PathBuf,
     },
@@ -659,6 +666,13 @@ impl fmt::Display for Error {
             Error::UnstableFeature { feature } => write!(
                 f,
                 "The '{feature}' feature is not enabled.\nEnable it with: -Z {feature}"
+            ),
+            Error::InvalidSimcVersionSyntax { err } => {
+                write!(f, "Invalid version syntax: {err}")
+            }
+            Error::SimcVersionMismatch { required, current } => write!(
+                f,
+                "Incompatible compiler version: file requires `{required}`, but the compiler is `{current}`. Update the compiler or the `simc` directive."
             ),
             Error::DependencyPathNotFound { path } => write!(
                 f,
@@ -1106,6 +1120,41 @@ let x: u32 = Left(
   |
 3 | 
   | ^ Cannot parse: eof"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_compiler_version_invalid_syntax() {
+        let file = "simc \"abc\";\nfn main() {}";
+        let error = Error::InvalidSimcVersionSyntax {
+            err: "unexpected character 'a'".to_string(),
+        }
+        .with_span(Span::new_in_default_file(0..11))
+        .with_content(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | simc "abc";
+  | ^^^^^^^^^^^ Invalid version syntax: unexpected character 'a'"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_compiler_version_mismatch() {
+        let file = "simc \">= 0.6.0\";\nfn main() {}";
+        let error = Error::SimcVersionMismatch {
+            required: ">= 0.6.0".to_string(),
+            current: "0.5.0".to_string(),
+        }
+        .with_span(Span::new_in_default_file(0..16))
+        .with_content(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | simc ">= 0.6.0";
+  | ^^^^^^^^^^^^^^^^ Incompatible compiler version: file requires `>= 0.6.0`, but the compiler is `0.5.0`. Update the compiler or the `simc` directive."#;
 
         assert_eq!(&expected[1..], &error.to_string());
     }
