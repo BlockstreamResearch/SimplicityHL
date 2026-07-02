@@ -1,5 +1,5 @@
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ use crate::str::{AliasName, FunctionName, Identifier, ModuleName, SymbolName, Wi
 use crate::types::{
     AliasedType, ResolvedType, StructuralType, TypeConstructible, TypeDeconstructible, UIntType,
 };
-use crate::value::{UIntValue, Value};
+use crate::value::{UIntValue, Value, ValueConstructible};
 use crate::witness::{Parameters, WitnessTypes};
 use crate::{impl_eq_hash, parse};
 
@@ -553,9 +553,39 @@ impl_jet_hinter!(CoreJetHinter, Core);
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 struct ModuleScope {
     aliases: HashMap<AliasName, (ResolvedType, Visibility)>,
+    /// Enum definitions declared in this module, keyed by enum name.
+    enums: HashMap<AliasName, EnumBinding>,
     functions: HashMap<FunctionName, (CustomFunction, Visibility)>,
     /// Nested inling `mod` blocks, each becoming a child scope.
     submodules: HashMap<ModuleName, (ModuleScope, Visibility)>,
+}
+
+/// A single enum variant after analysis: its name and u8 discriminant, without source span.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResolvedEnumVariant {
+    name: Identifier,
+    discriminant: u8,
+}
+
+/// The resolved definition of an enum as stored in [`Scope`]:
+/// a list of [`ResolvedEnumVariant`]s in declaration order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EnumBinding {
+    variants: Arc<[ResolvedEnumVariant]>,
+}
+
+impl EnumBinding {
+    fn new(variants: Arc<[ResolvedEnumVariant]>) -> Self {
+        Self { variants }
+    }
+
+    fn variants(&self) -> &[ResolvedEnumVariant] {
+        &self.variants
+    }
+
+    fn contains_variant(&self, name: &Identifier) -> bool {
+        self.variants.iter().any(|v| &v.name == name)
+    }
 }
 
 /// Scope for generating the abstract syntax tree.
@@ -580,6 +610,8 @@ struct Scope {
     is_main: bool,
     call_tracker: CallTracker,
     jet_hinter: Box<dyn JetHinter>,
+    /// Monotonic counter backing [`Scope::fresh_identifier`].
+    fresh_counter: usize,
 }
 
 impl Default for Scope {
@@ -602,7 +634,18 @@ impl Scope {
             is_main: false,
             call_tracker: CallTracker::default(),
             jet_hinter,
+            fresh_counter: 0,
         }
+    }
+
+    /// Generate a compiler-internal identifier that cannot collide with a user variable.
+    ///
+    /// The returned name begins with a digit, which the lexer never produces for an
+    /// identifier, and embeds a monotonic counter so repeated calls are unique.
+    fn fresh_identifier(&mut self, tag: &str) -> Identifier {
+        let n = self.fresh_counter;
+        self.fresh_counter += 1;
+        Identifier::from_str_unchecked(&format!("{n}_{tag}"))
     }
 
     pub fn is_outside_function(&self) -> bool {
@@ -935,6 +978,34 @@ impl Scope {
         Ok(())
     }
 
+    pub fn insert_enum(
+        &mut self,
+        name: AliasName,
+        visibility: Visibility,
+        variants: Arc<[ResolvedEnumVariant]>,
+    ) -> Result<(), Error> {
+        if self.current_module().enums.contains_key(&name)
+            || self.current_module().aliases.contains_key(&name)
+        {
+            return Err(Error::RedefinedAlias { name });
+        }
+
+        // An enum is also a `u8` type alias, so its name resolves as a type.
+        let resolved = self.resolve(&AliasedType::from(UIntType::U8))?;
+        self.current_module_mut()
+            .aliases
+            .insert(name.clone(), (resolved, visibility));
+        self.current_module_mut()
+            .enums
+            .insert(name, EnumBinding::new(variants));
+
+        Ok(())
+    }
+
+    pub fn get_enum(&self, name: &AliasName) -> Option<&EnumBinding> {
+        self.current_module().enums.get(name)
+    }
+
     /// Insert a parameter into the global map.
     ///
     /// ## Errors
@@ -1134,6 +1205,56 @@ impl AbstractSyntaxTree for Item {
                 Ok(Self::Module(analyzed_children))
             }
             parse::Item::Ignored => Ok(Self::Ignored),
+            parse::Item::EnumDeclaration(decl) => {
+                let n = decl.variants().len();
+                if n < 2 {
+                    return Err(Error::Grammar {
+                        msg: format!("enum '{}' must have at least 2 variants", decl.name()),
+                    })
+                    .with_span(decl);
+                }
+
+                let mut sorted: Vec<&parse::EnumVariant> = decl.variants().iter().collect();
+                sorted.sort_by_key(|v| v.discriminant());
+                for w in sorted.windows(2) {
+                    if w[0].discriminant() == w[1].discriminant() {
+                        return Err(Error::Grammar {
+                            msg: format!(
+                                "enum '{}' has duplicate discriminant {}",
+                                decl.name(),
+                                w[0].discriminant()
+                            ),
+                        })
+                        .with_span(decl);
+                    }
+                }
+                let mut seen_names = HashSet::new();
+                for v in decl.variants() {
+                    if !seen_names.insert(v.name()) {
+                        return Err(Error::Grammar {
+                            msg: format!(
+                                "enum '{}' has duplicate variant name '{}'",
+                                decl.name(),
+                                v.name()
+                            ),
+                        })
+                        .with_span(decl);
+                    }
+                }
+
+                let variants: Arc<[ResolvedEnumVariant]> = sorted
+                    .iter()
+                    .map(|v| ResolvedEnumVariant {
+                        name: v.name().clone(),
+                        discriminant: v.discriminant(),
+                    })
+                    .collect();
+                scope
+                    .insert_enum(decl.name().clone(), decl.visibility().clone(), variants)
+                    .with_span(decl)?;
+
+                Ok(Self::TypeAlias)
+            }
         }
     }
 }
@@ -1446,6 +1567,81 @@ impl AbstractSyntaxTree for SingleExpression {
             }
             parse::SingleExpressionInner::Match(match_) => {
                 Match::analyze(match_, ty, scope).map(SingleExpressionInner::Match)?
+            }
+            parse::SingleExpressionInner::EnumMatch(enum_match) => {
+                let arms = enum_match.arms();
+                let span = *enum_match.span();
+
+                if arms.is_empty() {
+                    return Err(Error::Grammar {
+                        msg: "enum match has no arms".to_string(),
+                    })
+                    .with_span(span);
+                }
+
+                let enum_name = match arms[0].pattern() {
+                    MatchPattern::EnumVariant(name, _) => name.clone(),
+                    _ => unreachable!("EnumMatch arms have EnumVariant patterns"),
+                };
+
+                let binding = scope
+                    .get_enum(&enum_name)
+                    .ok_or_else(|| Error::UndefinedAlias {
+                        name: enum_name.clone(),
+                    })
+                    .with_span(span)?;
+
+                let mut arm_map: HashMap<&Identifier, &parse::Expression> = HashMap::new();
+                for arm in arms {
+                    let MatchPattern::EnumVariant(arm_enum_name, variant) = arm.pattern() else {
+                        unreachable!("EnumMatch arms have EnumVariant patterns")
+                    };
+                    if arm_enum_name != &enum_name {
+                        return Err(Error::Grammar {
+                            msg: format!(
+                                "all match arms must use the same enum; expected '{}', found '{}'",
+                                enum_name, arm_enum_name
+                            ),
+                        })
+                        .with_span(span);
+                    }
+                    if !binding.contains_variant(variant) {
+                        return Err(Error::Grammar {
+                            msg: format!(
+                                "variant '{}' is not defined in enum '{}'",
+                                variant, enum_name
+                            ),
+                        })
+                        .with_span(span);
+                    }
+                    if arm_map.insert(variant, arm.expression()).is_some() {
+                        return Err(Error::Grammar {
+                            msg: format!("duplicate arm for variant '{}'", variant),
+                        })
+                        .with_span(span);
+                    }
+                }
+
+                if arm_map.len() != binding.variants().len() {
+                    return Err(Error::Grammar {
+                        msg: format!(
+                            "enum match on '{}' must cover all {} variants",
+                            enum_name,
+                            binding.variants().len()
+                        ),
+                    })
+                    .with_span(span);
+                }
+
+                let ordered_arms: Vec<(&parse::Expression, u8)> = binding
+                    .variants()
+                    .iter()
+                    .map(|v| (arm_map[&v.name], v.discriminant))
+                    .collect();
+                let u8_ty = ResolvedType::from(UIntType::U8);
+                let scrutinee =
+                    Expression::analyze(enum_match.scrutinee(), &u8_ty, scope).map(Arc::new)?;
+                desugar_enum_arms_u8(&ordered_arms, scrutinee, ty, scope, span)?
             }
         };
 
@@ -1808,6 +2004,162 @@ impl AbstractSyntaxTree for Match {
     }
 }
 
+/// Build an `Expression` wrapping a single inner expression of the given type.
+///
+/// Both the `SingleExpression` and its enclosing `Expression` carry the same `ty`/`span`,
+/// so this helper keeps the two in sync and removes the repetitive nested-struct
+/// boilerplate in the enum-match desugaring below.
+fn single_expr(inner: SingleExpressionInner, ty: &ResolvedType, span: Span) -> Expression {
+    Expression {
+        inner: ExpressionInner::Single(SingleExpression {
+            inner,
+            ty: ty.clone(),
+            span,
+        }),
+        ty: ty.clone(),
+        span,
+    }
+}
+
+/// Desugar an N-arm enum match (u8 discriminant) into an equality-comparison chain.
+fn desugar_enum_arms_u8(
+    arms: &[(&parse::Expression, u8)],
+    scrutinee: Arc<Expression>,
+    expected_ty: &ResolvedType,
+    scope: &mut Scope,
+    span: Span,
+) -> Result<SingleExpressionInner, RichError> {
+    debug_assert!(arms.len() >= 2);
+
+    let u8_ty = ResolvedType::from(UIntType::U8);
+
+    // Resolve the equality jet from the active target's jet set rather than hardcoding
+    // Elements, so the desugaring is correct for every jet family (Core, Elements, ...).
+    let eq8_jet = scope
+        .jet_hinter
+        .parse_jet("eq_8")
+        .ok_or(Error::Internal {
+            msg: "target jet set does not provide the `eq_8` jet required to desugar an enum match"
+                .to_string(),
+        })
+        .with_span(span)?;
+    let eq8_call = CallName::Jet(eq8_jet);
+
+    // Bind the scrutinee to a compiler-generated variable so it is evaluated once and
+    // referenced N times in the comparison chain, avoiding witness-reuse errors. The name
+    // cannot clash with a user variable (see [`Scope::fresh_identifier`]).
+    let disc_ident = scope.fresh_identifier("enum_disc");
+
+    scope.enter_block();
+    scope.insert_variable(disc_ident.clone(), u8_ty.clone());
+
+    let analyzed_arms = arms
+        .iter()
+        .map(|(e, disc)| {
+            scope.enter_block();
+            let result =
+                Expression::analyze(e, expected_ty, scope).map(|expr| (Arc::new(expr), *disc));
+            scope.exit_block();
+            result
+        })
+        .collect::<Result<Vec<_>, _>>();
+    // Balance the `enter_block` above on every path, including the error path, before `?`.
+    scope.exit_block();
+    let analyzed_arms = analyzed_arms?;
+
+    let chain = build_u8_chain(
+        &disc_ident,
+        &analyzed_arms,
+        &eq8_call,
+        expected_ty,
+        &u8_ty,
+        span,
+    );
+
+    // Wrap in a block: `{ let <disc>: u8 = scrutinee; <comparison chain> }`.
+    let chain_expr = Arc::new(single_expr(chain, expected_ty, span));
+    let assign_stmt = Statement::Assignment(Assignment {
+        pattern: Pattern::Identifier(disc_ident),
+        expression: (*scrutinee).clone(),
+        span,
+    });
+    Ok(SingleExpressionInner::Expression(Arc::new(Expression {
+        inner: ExpressionInner::Block(Arc::from([assign_stmt]), Some(chain_expr)),
+        ty: expected_ty.clone(),
+        span,
+    })))
+}
+
+/// Build a nested boolean-`Match` chain that dispatches on the u8 discriminant.
+///
+/// Every variant, including the last, is guarded by an equality comparison. A `panic!()`
+/// on the final `false` branch ensures that any undeclared discriminant value fails the
+/// script rather than silently executing the last arm:
+///
+/// `if eq(disc, d[0]) { arms[0] } else if eq(disc, d[1]) { arms[1] } ... else { panic!() }`
+fn build_u8_chain(
+    disc_ident: &Identifier,
+    arms: &[(Arc<Expression>, u8)],
+    eq8_call: &CallName,
+    expected_ty: &ResolvedType,
+    u8_ty: &ResolvedType,
+    span: Span,
+) -> SingleExpressionInner {
+    debug_assert!(!arms.is_empty()); // guaranteed by the `>= 2` check in the caller
+
+    let (arm_expr, discriminant) = &arms[0];
+
+    let bool_ty = ResolvedType::boolean();
+    let disc_var = single_expr(
+        SingleExpressionInner::Variable(disc_ident.clone()),
+        u8_ty,
+        span,
+    );
+    let const_expr = single_expr(
+        SingleExpressionInner::Constant(Value::u8(*discriminant)),
+        u8_ty,
+        span,
+    );
+    let eq8_expr = Arc::new(single_expr(
+        SingleExpressionInner::Call(Call {
+            name: eq8_call.clone(),
+            args: Arc::from([disc_var, const_expr]),
+            span,
+        }),
+        &bool_ty,
+        span,
+    ));
+
+    let false_branch = if arms.len() == 1 {
+        // Last arm: an undeclared discriminant must not silently execute any arm.
+        Arc::new(single_expr(
+            SingleExpressionInner::Call(Call {
+                name: CallName::Panic,
+                args: Arc::from([]),
+                span,
+            }),
+            expected_ty,
+            span,
+        ))
+    } else {
+        let rest_inner = build_u8_chain(disc_ident, &arms[1..], eq8_call, expected_ty, u8_ty, span);
+        Arc::new(single_expr(rest_inner, expected_ty, span))
+    };
+
+    SingleExpressionInner::Match(Match {
+        scrutinee: eq8_expr,
+        left: MatchArm {
+            pattern: MatchPattern::False,
+            expression: false_branch,
+        },
+        right: MatchArm {
+            pattern: MatchPattern::True,
+            expression: arm_expr.clone(),
+        },
+        span,
+    })
+}
+
 impl AsRef<Span> for Assignment {
     fn as_ref(&self) -> &Span {
         &self.span
@@ -1835,6 +2187,241 @@ impl AsRef<Span> for Call {
 impl AsRef<Span> for Match {
     fn as_ref(&self) -> &Span {
         &self.span
+    }
+}
+
+#[cfg(test)]
+mod enum_tests {
+    use super::{ElementsJetHinter, Program};
+    use crate::driver::tests::setup_graph;
+    use crate::error::ErrorCollector;
+
+    fn analyze(src: &str) -> Result<(), String> {
+        let (graph, _ids, _dir) = setup_graph(vec![("main.simf", src)]);
+        let mut handler = ErrorCollector::new();
+        let driver_prog = graph
+            .linearize_and_build(&mut handler)
+            .unwrap()
+            .expect("driver build should succeed");
+        Program::analyze(&driver_prog, Box::new(ElementsJetHinter::new()))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn enum_declaration_registers_type_alias() {
+        let result = analyze(
+            "enum Color { Red = 1, Green = 2 }
+             fn main() { let _x: Color = witness::C; }",
+        );
+        assert!(
+            result.is_ok(),
+            "enum should register as type alias: {result:?}"
+        );
+    }
+
+    #[test]
+    fn enum_match_on_function_return() {
+        let result = analyze(
+            "enum Dir { Left = 1, Right = 2 }
+             fn wrap(d: Dir) -> Dir { d }
+             fn main() {
+                 match wrap(witness::D) {
+                     Dir::Left => assert!(jet::eq_32(0, 0)),
+                     Dir::Right => assert!(jet::eq_32(0, 0)),
+                 }
+             }",
+        );
+        assert!(
+            result.is_ok(),
+            "enum match on function return should analyze: {result:?}"
+        );
+    }
+
+    #[test]
+    fn enum_match_2_variants_desugars() {
+        let result = analyze(
+            "enum Coin { Heads = 1, Tails = 2 }
+             fn main() {
+                 match witness::C {
+                     Coin::Heads => assert!(jet::eq_32(0, 0)),
+                     Coin::Tails => assert!(jet::eq_32(0, 0)),
+                 }
+             }",
+        );
+        assert!(
+            result.is_ok(),
+            "2-variant enum match should analyze: {result:?}"
+        );
+    }
+
+    #[test]
+    fn enum_match_3_variants_desugars() {
+        let result = analyze(
+            "enum Path { A = 1, B = 2, C = 3 }
+             fn main() {
+                 match witness::P {
+                     Path::A => assert!(jet::eq_32(0, 0)),
+                     Path::B => assert!(jet::eq_32(0, 0)),
+                     Path::C => assert!(jet::eq_32(0, 0)),
+                 }
+             }",
+        );
+        assert!(
+            result.is_ok(),
+            "3-variant enum match should analyze: {result:?}"
+        );
+    }
+
+    #[test]
+    fn enum_match_arms_sorted_by_discriminant() {
+        // Arms in reverse discriminant order should still compile correctly.
+        let result = analyze(
+            "enum Path { A = 1, B = 2, C = 3 }
+             fn main() {
+                 match witness::P {
+                     Path::C => assert!(jet::eq_32(0, 0)),
+                     Path::A => assert!(jet::eq_32(0, 0)),
+                     Path::B => assert!(jet::eq_32(0, 0)),
+                 }
+             }",
+        );
+        assert!(
+            result.is_ok(),
+            "arms in any order should compile: {result:?}"
+        );
+    }
+
+    #[test]
+    fn enum_too_few_variants_is_error() {
+        let result = analyze("enum Bad { Only = 1 } fn main() {}");
+        assert!(result.is_err(), "single-variant enum should error");
+        assert!(
+            result.unwrap_err().contains("at least 2 variants"),
+            "expected 'at least 2 variants' in error"
+        );
+    }
+
+    #[test]
+    fn enum_duplicate_discriminant_is_error() {
+        let result = analyze("enum Bad { A = 1, B = 1 } fn main() {}");
+        assert!(result.is_err(), "duplicate discriminant should error");
+        assert!(
+            result.unwrap_err().contains("duplicate discriminant"),
+            "expected 'duplicate discriminant' in error"
+        );
+    }
+
+    #[test]
+    fn enum_duplicate_variant_name_is_error() {
+        let result = analyze("enum Bad { A = 1, A = 2 } fn main() {}");
+        assert!(result.is_err(), "duplicate variant name should error");
+        assert!(
+            result.unwrap_err().contains("duplicate variant name"),
+            "expected 'duplicate variant name' in error"
+        );
+    }
+
+    #[test]
+    fn enum_duplicate_name_is_error() {
+        // Duplicate detection happens during semantic analysis (`Program::analyze`),
+        // not during flattening, so go through the `analyze` helper like the sibling
+        // duplicate-variant/discriminant tests.
+        let result = analyze(
+            "enum Color { Red = 1, Green = 2 }
+             enum Color { Blue = 1, Yellow = 2 }
+             fn main() {}",
+        );
+        assert!(
+            result.is_err(),
+            "duplicate enum name should cause build failure"
+        );
+    }
+
+    #[test]
+    fn enum_match_missing_arm_is_error() {
+        let result = analyze(
+            "enum Path { A = 1, B = 2, C = 3 }
+             fn main() {
+                 match witness::P {
+                     Path::A => assert!(jet::eq_32(0, 0)),
+                     Path::B => assert!(jet::eq_32(0, 0)),
+                 }
+             }",
+        );
+        assert!(result.is_err(), "missing arm should error");
+        assert!(
+            result.unwrap_err().contains("must cover all"),
+            "expected 'must cover all' in error"
+        );
+    }
+
+    #[test]
+    fn enum_match_unknown_variant_is_error() {
+        let result = analyze(
+            "enum Path { A = 1, B = 2 }
+             fn main() {
+                 match witness::P {
+                     Path::A => assert!(jet::eq_32(0, 0)),
+                     Path::X => assert!(jet::eq_32(0, 0)),
+                 }
+             }",
+        );
+        assert!(result.is_err(), "unknown variant should error");
+        assert!(
+            result.unwrap_err().contains("not defined in enum"),
+            "expected 'not defined in enum' in error"
+        );
+    }
+
+    #[test]
+    fn enum_match_duplicate_arm_is_error() {
+        let result = analyze(
+            "enum Path { A = 1, B = 2 }
+             fn main() {
+                 match witness::P {
+                     Path::A => assert!(jet::eq_32(0, 0)),
+                     Path::A => assert!(jet::eq_32(0, 0)),
+                 }
+             }",
+        );
+        assert!(result.is_err(), "duplicate arm should error");
+        assert!(
+            result.unwrap_err().contains("duplicate arm"),
+            "expected 'duplicate arm' in error"
+        );
+    }
+
+    #[test]
+    fn enum_match_mixed_enum_names_is_error() {
+        let result = analyze(
+            "enum Path { A = 1, B = 2 }
+             enum Other { A = 1, B = 2 }
+             fn main() {
+                 match witness::P {
+                     Path::A => assert!(jet::eq_32(0, 0)),
+                     Other::B => assert!(jet::eq_32(0, 0)),
+                 }
+             }",
+        );
+        assert!(result.is_err(), "mixed enum names should error");
+        assert!(
+            result.unwrap_err().contains("same enum"),
+            "expected 'same enum' in error"
+        );
+    }
+
+    #[test]
+    fn enum_match_undefined_enum_is_error() {
+        let result = analyze(
+            "fn main() {
+                 match witness::P {
+                     Unknown::A => assert!(jet::eq_32(0, 0)),
+                     Unknown::B => assert!(jet::eq_32(0, 0)),
+                 }
+             }",
+        );
+        assert!(result.is_err(), "undefined enum should error");
     }
 }
 

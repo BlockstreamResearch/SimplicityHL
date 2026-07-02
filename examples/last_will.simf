@@ -40,12 +40,22 @@ fn refresh_spend(hot_sig: Signature) {
     recursive_covenant();
 }
 
+enum Action {
+    Inherit=1,
+    ColdSpend =2,
+    HotSpend =3,
+}
+
 fn main() {
-    match witness::INHERIT_OR_NOT {
-        Left(inheritor_sig: Signature) => inherit_spend(inheritor_sig),
-        Right(cold_or_hot: Either<Signature, Signature>) => match cold_or_hot {
-            Left(cold_sig: Signature) => cold_spend(cold_sig),
-            Right(hot_sig: Signature) => refresh_spend(hot_sig),
-        },
+    match witness::ACTION {
+        Action::Inherit => { 
+            let inheritor_sig: Signature = witness::INHERITOR_SIG;
+            inherit_spend(inheritor_sig)} ,
+        Action::ColdSpend => {
+            let cold_sig: Signature = witness::COLD_SIG;
+            cold_spend(cold_sig) },
+        Action::HotSpend => {
+            let hot_sig: Signature = witness::HOT_SIG;
+            refresh_spend(hot_sig) },
     }
 }

@@ -388,7 +388,10 @@ impl<'a> ImportContext<'a> {
             }
 
             // These items carry no import information at this stage and can be safely skipped.
-            parse::Item::TypeAlias(_) | parse::Item::Function(_) | parse::Item::Ignored => {}
+            parse::Item::TypeAlias(_)
+            | parse::Item::Function(_)
+            | parse::Item::EnumDeclaration(_)
+            | parse::Item::Ignored => {}
         }
     }
 
