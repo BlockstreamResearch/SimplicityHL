@@ -86,17 +86,17 @@ impl DependencyGraph {
     ///
     /// The resolved path becomes `crate::<module>::<mod_path...>`, where
     /// `<module>` is `file_N` for dependency files and is omitted when the
-    /// target is `MAIN_MODULE` (via `get_module_name`).
+    /// target is [`MAIN_MODULE`] (via [`DependencyGraph::get_module_name`]).
     ///
     /// ## Examples
     ///
     /// - `use base_math::simple_op::hash` → `use crate::file_2::hash`
-    /// - `use some_dep::item` (target = `MAIN_MODULE`) → `use crate::item`
+    /// - `use some_dep::item` (target = [`MAIN_MODULE`]) → `use crate::item`
     fn rewrite_use(&self, use_decl: &parse::UseDecl) -> parse::Item {
         let resolved = &self.use_cache[use_decl.span()];
         let target_id = self
             .source_map
-            .get_id(&resolved.path)
+            .id(&resolved.path)
             .expect("resolved path must be registered");
 
         let mut new_path = Vec::with_capacity(resolved.mod_path.len() + 2);
