@@ -23,12 +23,17 @@ struct Output {
     abi_meta: Option<AbiMeta>,
     /// Commitment Merkle Root (CMR) of the program, hex encoded.
     cmr: String,
+    /// Version of the compiler that produced this output. Different compiler
+    /// versions can produce different CMRs from the same source, so the version
+    /// travels with the artifact as metadata (it is not part of the program).
+    compiler_version: &'static str,
 }
 
 impl fmt::Display for Output {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Program:\n{}", self.program)?;
         writeln!(f, "CMR:\n{}", self.cmr)?;
+        writeln!(f, "Compiler version:\n{}", self.compiler_version)?;
         if let Some(witness) = &self.witness {
             writeln!(f, "Witness:\n{}", witness)?;
         }
@@ -249,6 +254,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         witness: witness_bytes.map(|bytes| Base64Display::new(&bytes, &STANDARD).to_string()),
         abi_meta: abi_opt,
         cmr: cmr_hex,
+        compiler_version: compiled.compiler_version(),
     };
 
     if output_json {

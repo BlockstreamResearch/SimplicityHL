@@ -112,6 +112,29 @@ fn cli_reserved_crate_mapping_fails() {
     );
 }
 
+/// The output carries the version of the compiler that produced it, so the exact
+/// compiler can be identified from a shared artifact (different versions can
+/// produce different CMRs from the same source). JSON output requires `serde`.
+#[cfg(feature = "serde")]
+#[test]
+fn cli_output_includes_compiler_version() {
+    let file = Path::new(env!("CARGO_TARGET_TMPDIR")).join("output_version.simf");
+    std::fs::write(&file, "simc \"*\";\nfn main() {}\n").expect("failed to write source file");
+    let output = Command::new(env!("CARGO_BIN_EXE_simc"))
+        .arg(&file)
+        .arg("--json")
+        .output()
+        .expect("failed to run simc");
+    assert!(output.status.success(), "simc --json must succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected = format!("\"compiler_version\":\"{}\"", env!("CARGO_PKG_VERSION"));
+    assert!(
+        stdout.contains(&expected),
+        "expected {expected} in the JSON output, got:\n{stdout}"
+    );
+}
+
 /// A compatible version directive compiles from the command line, with no
 /// missing-directive warning. `*` matches any compiler, so this stays valid across
 /// version bumps and acts as the positive control for the rejection tests below.
