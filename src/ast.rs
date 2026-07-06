@@ -797,6 +797,16 @@ impl Scope {
                 target_scope = inner;
             }
 
+            // Exhaustively destructure so that adding a field to `ModuleScope` is a
+            // compile error right here until `resolve_use` decides whether to import
+            // it. Nothing forced this before, which is how `enums` was silently missed.
+            let ModuleScope {
+                aliases: target_aliases,
+                enums: target_enums,
+                functions: target_functions,
+                submodules: target_submodules,
+            } = target_scope;
+
             let mut collected = Vec::with_capacity(use_decl_items.len());
             for (name, aliased) in use_decl_items {
                 if aliased.as_ref().is_some_and(|a| a.as_inner() == MAIN_STR) {
@@ -806,25 +816,46 @@ impl Scope {
                 let local_name = aliased.as_ref().unwrap_or(name);
 
                 let alias_res =
-                    Self::try_collect_item(name, local_name, &target_scope.aliases, &use_vis);
+                    Self::try_collect_item(name, local_name, target_aliases, &use_vis);
                 let func_res =
-                    Self::try_collect_item(name, local_name, &target_scope.functions, &use_vis);
+                    Self::try_collect_item(name, local_name, target_functions, &use_vis);
                 let mod_res =
-                    Self::try_collect_item(name, local_name, &target_scope.submodules, &use_vis);
+                    Self::try_collect_item(name, local_name, target_submodules, &use_vis);
 
-                collected.push((alias_res, func_res, mod_res));
+                // Enums live in a parallel map that carries no visibility of its own --
+                // an enum's visibility rides on its `u8` alias entry (see `insert_enum`).
+                // So if the alias was importable, bring its variant list across under the
+                // same local name; otherwise leave it behind with the rejected alias.
+                let enum_res = target_enums
+                    .get(&AliasName::from(name.clone()))
+                    .filter(|_| alias_res.is_ok())
+                    .map(|binding| (AliasName::from(local_name.clone()), binding.clone()));
+
+                collected.push((alias_res, func_res, mod_res, enum_res));
             }
             collected
         };
 
-        // Phase 2: insert into current scope
-        let current = self.current_module_mut();
-        for (alias_res, func_res, mod_res) in collected {
+        // Phase 2: insert into current scope. Same exhaustive destructure as Phase 1,
+        // so the *insert* side -- where the enum binding was originally dropped -- also
+        // fails to compile if a future `ModuleScope` field goes unhandled.
+        let ModuleScope {
+            aliases: current_aliases,
+            enums: current_enums,
+            functions: current_functions,
+            submodules: current_submodules,
+        } = self.current_module_mut();
+        for (alias_res, func_res, mod_res, enum_res) in collected {
             Self::resolve_processing_use_items_error(&[
-                Self::insert_collected(alias_res, &mut current.aliases),
-                Self::insert_collected(func_res, &mut current.functions),
-                Self::insert_collected(mod_res, &mut current.submodules),
+                Self::insert_collected(alias_res, current_aliases),
+                Self::insert_collected(func_res, current_functions),
+                Self::insert_collected(mod_res, current_submodules),
             ])?;
+            // Keep the enum binding in lockstep with its alias. The alias insert above
+            // already rejected any redefinition, so a plain insert is safe here.
+            if let Some((enum_name, binding)) = enum_res {
+                current_enums.insert(enum_name, binding);
+            }
         }
 
         Ok(())
