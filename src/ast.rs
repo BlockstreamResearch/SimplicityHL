@@ -2423,6 +2423,32 @@ mod enum_tests {
         );
         assert!(result.is_err(), "undefined enum should error");
     }
+
+    #[test]
+    fn imported_enum_can_be_matched() {
+        let result = analyze(
+            "mod m {
+                 pub enum Action {
+                     A = 0,
+                     B = 1,
+                 }
+             }
+
+             use crate::m::Action;
+
+             fn main() {
+                 let a: Action = 0;
+                 match a {
+                     Action::A => {},
+                     Action::B => {},
+                 }
+             }",
+        );
+        assert!(
+            result.is_ok(),
+            "matching on an imported enum should resolve its variants: {result:?}"
+        );
+    }
 }
 
 #[cfg(test)]
