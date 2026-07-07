@@ -27,6 +27,7 @@ pub mod test_utils;
 pub mod tracker;
 pub mod types;
 pub mod value;
+pub mod version;
 mod witness;
 
 use std::sync::Arc;
@@ -220,6 +221,14 @@ impl TemplateProgram {
         self.simfony.parameters()
     }
 
+    /// The version of the compiler that produced this program — this crate's version.
+    /// Meaningful for consumers that hold programs from multiple linked compiler
+    /// versions (different compiler versions can produce different CMRs from the
+    /// same source); the version itself is metadata and is not part of the program.
+    pub fn compiler_version(&self) -> &'static str {
+        version::SimcDirective::current_version()
+    }
+
     /// Access the witness types of the program.
     pub fn witness_types(&self) -> &WitnessTypes {
         self.simfony.witness_types()
@@ -350,6 +359,12 @@ impl CompiledProgram {
     /// Access the Simplicity target code, without witness data.
     pub fn commit(&self) -> Arc<CommitNode> {
         named::forget_names(&self.simplicity)
+    }
+
+    /// The version of the compiler that produced this program — this crate's version.
+    /// See [`TemplateProgram::compiler_version`].
+    pub fn compiler_version(&self) -> &'static str {
+        version::SimcDirective::current_version()
     }
 
     /// Satisfy the SimplicityHL program with the given `witness_values`.
@@ -1529,6 +1544,50 @@ fn main() {
         fn transfer_with_timeout_regression() {
             regression_test("transfer_with_timeout");
         }
+    }
+
+    // Smoke tests that the version check is wired into `TemplateProgram::new`: one
+    // compatible directive compiles, one incompatible directive aborts. The semver
+    // matching and per-kind messages are covered exhaustively in `version`'s unit
+    // tests, so they are not re-asserted through the pipeline here.
+    #[test]
+    fn compatible_directive_compiles() {
+        // Ranges cannot name pre-releases, so an `-rc` compiler substitutes its base version.
+        let version = crate::version::SimcDirective::current_version()
+            .split('-')
+            .next()
+            .unwrap();
+        let compatible = format!("simc \"{version}\";\nfn main() {{}}");
+        assert!(
+            TemplateProgram::new(compatible, Box::new(crate::ast::ElementsJetHinter::new()))
+                .is_ok()
+        );
+    }
+
+    /// The producing compiler's version is readable from the program objects.
+    #[test]
+    fn compiler_version_accessor() {
+        let template = TemplateProgram::new(
+            "fn main() {}",
+            Box::new(crate::ast::ElementsJetHinter::new()),
+        )
+        .unwrap();
+        assert_eq!(template.compiler_version(), env!("CARGO_PKG_VERSION"));
+        let compiled = template.instantiate(Arguments::default(), false).unwrap();
+        assert_eq!(compiled.compiler_version(), env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn incompatible_directive_aborts() {
+        let too_old = "simc \">= 99.99.99\";\nfn main() {}";
+        let err = TemplateProgram::new(too_old, Box::new(crate::ast::ElementsJetHinter::new()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Incompatible compiler version"),
+            "Expected 'Incompatible compiler version', got: {}",
+            err
+        );
     }
 }
 

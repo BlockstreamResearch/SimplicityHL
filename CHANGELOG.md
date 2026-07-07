@@ -1,3 +1,14 @@
+# Unreleased
+
+## Breaking Changes
+
+* Reserve the `simc` keyword for the compiler version directive: identifiers named `simc` no longer lex. [#263](https://github.com/BlockstreamResearch/SimplicityHL/pull/263)
+
+## Added
+
+* Add the optional `simc "<range>";` compiler version directive: a fail-fast SemVer compatibility check run on the raw source before lexing, covering the entry file and every reachable dependency. A missing directive produces a CLI warning; tooling can read the declared range without compiling via `version::SimcDirective::requirement_of`. See `doc/versioning.md`. [#263](https://github.com/BlockstreamResearch/SimplicityHL/pull/263)
+* Add `compiler_version` to `simc` output (JSON field and text printout) and `compiler_version()` accessors on `TemplateProgram` and `CompiledProgram`, identifying the exact compiler that produced a program. [#263](https://github.com/BlockstreamResearch/SimplicityHL/pull/263)
+
 # 0.6.0 - 2026-06-26
 
 ## Breaking Changes
