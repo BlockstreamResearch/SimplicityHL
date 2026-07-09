@@ -507,6 +507,9 @@ pub enum Error {
         alias: String,
         context: String,
     },
+    LinearizationCycleDetected {
+        deps: Vec<String>,
+    },
     InvalidDependencyIdentifier {
         alias: String,
     },
@@ -699,6 +702,10 @@ impl fmt::Display for Error {
             Error::DuplicateDependencyAlias { alias, context } => write!(
                 f,
                 "Duplicate dependency mapping: alias '{alias}' is defined multiple times for context '{context}'"
+            ),
+            Error::LinearizationCycleDetected { deps } => write!(
+                f,
+                "Circular dependency detected: {:?}", deps.join(" -> ")
             ),
             Error::InvalidDependencyIdentifier { alias } => write!(
                 f,

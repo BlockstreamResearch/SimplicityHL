@@ -200,7 +200,7 @@ impl DependencyGraph {
         root_program: &parse::Program,
         handler: &mut ErrorCollector,
         unstable_features: &UnstableFeatures,
-    ) -> Result<Option<Self>, String> {
+    ) -> Option<Self> {
         let mut graph = Self {
             modules: vec![SourceModule {
                 source: root_source.clone(),
@@ -223,10 +223,11 @@ impl DependencyGraph {
 
         while let Some(curr_id) = queue.pop_front() {
             let Some(current_source_module) = graph.modules.get(curr_id) else {
-                return Err(format!(
+                handler.push(RichError::new(Error::Internal { msg: format!(
                     "Internal Driver Error: Module ID {} is in the queue but missing from the graph.modules.",
                     curr_id
-                ));
+                ) }, Span::DUMMY));
+                return None;
             };
 
             // We need this to report errors inside THIS file.
@@ -255,9 +256,7 @@ impl DependencyGraph {
 
         graph.use_cache = use_cache;
 
-        // TODO: Consider getting rid of the 'String' error here and changing it to a more appropriate error
-        // (e.g. 'Result<Self, ErrorCollector>') after resolving https://github.com/BlockstreamResearch/SimplicityHL/issues/270.
-        Ok((!handler.has_errors()).then_some(graph))
+        (!handler.has_errors()).then_some(graph)
     }
 
     pub fn source_map(&self) -> &SourceMap {
@@ -537,8 +536,7 @@ pub(crate) mod tests {
             &main_program,
             &mut handler,
             &UnstableFeatures::all(),
-        )
-        .unwrap();
+        );
 
         let mut file_ids = HashMap::new();
 
