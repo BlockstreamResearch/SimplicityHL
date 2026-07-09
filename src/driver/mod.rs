@@ -29,6 +29,9 @@
 mod linearization;
 mod resolve_order;
 
+#[cfg(test)]
+mod version_tests;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -72,36 +75,48 @@ pub struct SourceMap {
     /// This serves as the exact inverse of the `lookup` map.
     ///
     /// This is highly useful for error reporting and diagnostics.
-    paths: Vec<CanonPath>,
+    entries: Vec<CanonSourceFile>,
 }
 
 impl SourceMap {
     fn new(root_source: CanonSourceFile) -> Self {
         let mut ids = HashMap::new();
+
         ids.insert(root_source.name().clone(), MAIN_MODULE);
+
         Self {
             ids,
-            paths: vec![root_source.name().clone()],
+            entries: vec![root_source],
         }
     }
 
-    fn insert(&mut self, path: CanonPath) {
-        let id = self.paths.len();
-        self.ids.insert(path.clone(), id);
-        self.paths.push(path);
-        debug_assert_eq!(self.ids.len(), self.paths.len());
+    fn insert(&mut self, entry: CanonSourceFile) {
+        let id = self.entries.len();
+
+        self.ids.insert(entry.name().clone(), id);
+        self.entries.push(entry);
+
+        debug_assert_eq!(self.ids.len(), self.entries.len());
     }
 
     fn len(&self) -> usize {
-        self.paths.len()
+        self.entries.len()
     }
 
-    pub fn get_id(&self, path: &CanonPath) -> Option<usize> {
+    pub fn id(&self, path: &CanonPath) -> Option<usize> {
         self.ids.get(path).copied()
     }
 
-    pub fn get_path(&self, id: usize) -> Option<&CanonPath> {
-        self.paths.get(id)
+    pub fn entry(&self, id: usize) -> Option<&CanonSourceFile> {
+        self.entries.get(id)
+    }
+
+    pub fn content(&self, id: usize) -> Option<Arc<str>> {
+        self.entries.get(id).map(|e| e.content().clone())
+    }
+
+    pub fn path(&self, id: usize) -> Option<&CanonPath> {
+        self.entries.get(id).map(|e| e.name())
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&CanonPath, &usize)> {
@@ -185,7 +200,7 @@ impl DependencyGraph {
         root_program: &parse::Program,
         handler: &mut ErrorCollector,
         unstable_features: &UnstableFeatures,
-    ) -> Result<Option<Self>, String> {
+    ) -> Option<Self> {
         let mut graph = Self {
             modules: vec![SourceModule {
                 source: root_source.clone(),
@@ -208,10 +223,11 @@ impl DependencyGraph {
 
         while let Some(curr_id) = queue.pop_front() {
             let Some(current_source_module) = graph.modules.get(curr_id) else {
-                return Err(format!(
+                handler.push(RichError::new(Error::Internal { msg: format!(
                     "Internal Driver Error: Module ID {} is in the queue but missing from the graph.modules.",
                     curr_id
-                ));
+                ) }, Span::DUMMY));
+                return None;
             };
 
             // We need this to report errors inside THIS file.
@@ -240,9 +256,7 @@ impl DependencyGraph {
 
         graph.use_cache = use_cache;
 
-        // TODO: Consider getting rid of the 'String' error here and changing it to a more appropriate error
-        // (e.g. 'Result<Self, ErrorCollector>') after resolving https://github.com/BlockstreamResearch/SimplicityHL/issues/270.
-        Ok((!handler.has_errors()).then_some(graph))
+        (!handler.has_errors()).then_some(graph)
     }
 
     pub fn source_map(&self) -> &SourceMap {
@@ -289,7 +303,7 @@ impl DependencyGraph {
                 continue;
             }
 
-            if let Some(existing_id) = self.source_map.get_id(&path) {
+            if let Some(existing_id) = self.source_map.id(&path) {
                 let deps = self.dependencies.entry(current.id).or_default();
                 if !deps.contains(&existing_id) {
                     deps.push(existing_id);
@@ -299,11 +313,27 @@ impl DependencyGraph {
 
             let new_id = self.source_map.len();
 
+            let Ok(content) = std::fs::read_to_string(path.as_path()) else {
+                let err = RichError::new(
+                    Error::FileNotFound {
+                        filename: PathBuf::from(path.as_path()),
+                    },
+                    import_span,
+                )
+                .with_source(current.source.clone());
+
+                ctx.handler.push(err);
+
+                // Safe to ignore output: previous `.contains` check prevents collisions.
+                let _ = ctx.invalid_imports.insert(path);
+                continue;
+            };
+
+            let source = CanonSourceFile::new(path.clone(), Arc::from(content));
+
             let Some(module) = Self::parse_and_get_source_module(
                 new_id,
-                &path,
-                &current.source,
-                import_span,
+                source.clone(),
                 ctx.handler,
                 ctx.unstable_features,
             ) else {
@@ -312,7 +342,7 @@ impl DependencyGraph {
                 continue;
             };
 
-            self.source_map.insert(path.clone());
+            self.source_map.insert(source);
             self.modules.push(module);
 
             self.dependencies
@@ -323,33 +353,17 @@ impl DependencyGraph {
         }
     }
 
-    /// This helper cleanly encapsulates the process of loading source text, parsing it
-    /// into an `parse::Program`, and combining them so the compiler can easily work with the file.
-    /// If the file is missing or contains syntax errors, it logs the diagnostic to the
+    /// This helper cleanly encapsulates the process of parsing source text into an
+    /// `parse::Program`, and combining them so the compiler can easily work with the file.
+    /// If the file is contains syntax errors, it logs the diagnostic to the
     /// `ErrorCollector` and safely returns `None`.
     fn parse_and_get_source_module(
         new_id: usize,
-        path: &CanonPath,
-        importer_source: &CanonSourceFile,
-        span: Span,
+        source: CanonSourceFile,
         handler: &mut ErrorCollector,
         unstable_features: &UnstableFeatures,
     ) -> Option<SourceModule> {
-        let Ok(content) = std::fs::read_to_string(path.as_path()) else {
-            let err = RichError::new(
-                Error::FileNotFound {
-                    filename: PathBuf::from(path.as_path()),
-                },
-                span,
-            )
-            .with_source(importer_source.clone());
-
-            handler.push(err);
-            return None;
-        };
-
         let mut error_handler = ErrorCollector::new();
-        let source = CanonSourceFile::new(path.clone(), Arc::from(content));
         let ast = parse::Program::parse_from_str_with_errors(
             new_id,
             source.clone(),
@@ -525,8 +539,7 @@ pub(crate) mod tests {
             &main_program,
             &mut handler,
             &UnstableFeatures::all(),
-        )
-        .unwrap();
+        );
 
         let mut file_ids = HashMap::new();
 
@@ -718,7 +731,7 @@ pub(crate) mod tests {
 
         // Assert: Size checks
         assert_eq!(graph.modules.len(), 3);
-        assert_eq!(graph.source_map.paths.len(), 3);
+        assert_eq!(graph.source_map.entries.len(), 3);
 
         // Assert: Ensure BFS assigned the IDs in the exact correct order
         let main_id = ids["main"];

@@ -27,6 +27,7 @@ pub mod test_utils;
 pub mod tracker;
 pub mod types;
 pub mod value;
+pub mod version;
 mod witness;
 
 use std::sync::Arc;
@@ -73,18 +74,18 @@ impl TemplateProgram {
         source: CanonSourceFile,
         dependency_map: &DependencyMap,
         unstable_features: &UnstableFeatures,
-    ) -> Result<String, String> {
+    ) -> Result<String, ErrorCollector> {
         let mut error_handler = ErrorCollector::new();
-        let (resolved_program, _) = Self::dependency_helper(
+        let Some((resolved_program, _)) = Self::dependency_helper(
             source,
             dependency_map,
             unstable_features,
             &mut error_handler,
-        )?;
+        ) else {
+            return Err(error_handler);
+        };
 
-        resolved_program
-            .ok_or_else(|| error_handler.to_string())
-            .map(|p| p.to_string())
+        Ok(resolved_program.to_string())
     }
 
     /// Parse the template of a SimplicityHL program.
@@ -101,15 +102,14 @@ impl TemplateProgram {
         let mut error_handler = ErrorCollector::new();
 
         let build_program = || -> Result<Self, ()> {
-            let (resolved_program, source_map) = Self::dependency_helper(
+            let Some((resolved_program, source_map)) = Self::dependency_helper(
                 source.clone(),
                 dependency_map,
                 unstable_features,
                 &mut error_handler,
-            )
-            .map_err(|_| ())?;
-
-            let resolved_program = resolved_program.ok_or(())?;
+            ) else {
+                return Err(());
+            };
 
             let ast_program = ast::Program::analyze(&resolved_program, jet_hinter.clone_box())
                 .with_source(source.clone())
@@ -185,39 +185,38 @@ impl TemplateProgram {
         dependency_map: &DependencyMap,
         unstable_features: &UnstableFeatures,
         handler: &mut ErrorCollector,
-    ) -> Result<(Option<parse::Program>, SourceMap), String> {
+    ) -> Option<(parse::Program, SourceMap)> {
         let program = parse::Program::parse_from_str_with_errors(
             MAIN_MODULE,
             source.clone(),
             unstable_features,
             handler,
-        )
-        .ok_or_else(|| handler.to_string())?;
+        )?;
 
-        // TODO: we should remove this errors push after refactoring errors
         let graph = DependencyGraph::new(
             source,
             Arc::from(dependency_map.clone()),
             &program,
             handler,
             unstable_features,
-        )
-        .map_err(|e| {
-            handler.push(error::RichError::parsing_error(&e));
-            handler.to_string()
-        })?
-        .ok_or_else(|| handler.to_string())?;
+        )?;
 
         let program = graph.linearize_and_build(handler);
 
-        program
-            .map(|opt| (opt, graph.source_map().clone()))
-            .inspect_err(|e| handler.push(error::RichError::parsing_error(e)))
+        program.map(|opt| (opt, graph.source_map().clone()))
     }
 
     /// Access the parameters of the program.
     pub fn parameters(&self) -> &Parameters {
         self.simfony.parameters()
+    }
+
+    /// The version of the compiler that produced this program — this crate's version.
+    /// Meaningful for consumers that hold programs from multiple linked compiler
+    /// versions (different compiler versions can produce different CMRs from the
+    /// same source); the version itself is metadata and is not part of the program.
+    pub fn compiler_version(&self) -> &'static str {
+        version::SimcDirective::current_version()
     }
 
     /// Access the witness types of the program.
@@ -350,6 +349,12 @@ impl CompiledProgram {
     /// Access the Simplicity target code, without witness data.
     pub fn commit(&self) -> Arc<CommitNode> {
         named::forget_names(&self.simplicity)
+    }
+
+    /// The version of the compiler that produced this program — this crate's version.
+    /// See [`TemplateProgram::compiler_version`].
+    pub fn compiler_version(&self) -> &'static str {
+        version::SimcDirective::current_version()
     }
 
     /// Satisfy the program with the given `witness_values`.
@@ -1767,6 +1772,50 @@ fn main() {
         fn transfer_with_timeout_regression() {
             regression_test("transfer_with_timeout");
         }
+    }
+
+    // Smoke tests that the version check is wired into `TemplateProgram::new`: one
+    // compatible directive compiles, one incompatible directive aborts. The semver
+    // matching and per-kind messages are covered exhaustively in `version`'s unit
+    // tests, so they are not re-asserted through the pipeline here.
+    #[test]
+    fn compatible_directive_compiles() {
+        // Ranges cannot name pre-releases, so an `-rc` compiler substitutes its base version.
+        let version = crate::version::SimcDirective::current_version()
+            .split('-')
+            .next()
+            .unwrap();
+        let compatible = format!("simc \"{version}\";\nfn main() {{}}");
+        assert!(
+            TemplateProgram::new(compatible, Box::new(crate::ast::ElementsJetHinter::new()))
+                .is_ok()
+        );
+    }
+
+    /// The producing compiler's version is readable from the program objects.
+    #[test]
+    fn compiler_version_accessor() {
+        let template = TemplateProgram::new(
+            "fn main() {}",
+            Box::new(crate::ast::ElementsJetHinter::new()),
+        )
+        .unwrap();
+        assert_eq!(template.compiler_version(), env!("CARGO_PKG_VERSION"));
+        let compiled = template.instantiate(Arguments::default(), false).unwrap();
+        assert_eq!(compiled.compiler_version(), env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn incompatible_directive_aborts() {
+        let too_old = "simc \">= 99.99.99\";\nfn main() {}";
+        let err = TemplateProgram::new(too_old, Box::new(crate::ast::ElementsJetHinter::new()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Incompatible compiler version"),
+            "Expected 'Incompatible compiler version', got: {}",
+            err
+        );
     }
 }
 

@@ -485,6 +485,15 @@ pub enum Error {
     UnstableFeature {
         feature: UnstableFeature,
     },
+    InvalidSimcVersionSyntax {
+        err: String,
+    },
+    SimcVersionMismatch {
+        required: String,
+        current: String,
+    },
+    MalformedSimcDirective,
+    ReservedSimcKeyword,
     DependencyPathNotFound {
         path: PathBuf,
     },
@@ -497,6 +506,9 @@ pub enum Error {
     DuplicateDependencyAlias {
         alias: String,
         context: String,
+    },
+    LinearizationCycleDetected {
+        deps: Vec<String>,
     },
     InvalidDependencyIdentifier {
         alias: String,
@@ -660,6 +672,21 @@ impl fmt::Display for Error {
                 f,
                 "The '{feature}' feature is not enabled.\nEnable it with: -Z {feature}"
             ),
+            Error::InvalidSimcVersionSyntax { err } => {
+                write!(f, "Invalid version requirement in `simc` directive: {err}")
+            }
+            Error::SimcVersionMismatch { required, current } => write!(
+                f,
+                "Incompatible compiler version: file requires `{required}`, but the compiler is `{current}`. Update the compiler or the `simc` directive."
+            ),
+            Error::MalformedSimcDirective => write!(
+                f,
+                "Malformed compiler version directive: expected `simc \"<version>\";`"
+            ),
+            Error::ReservedSimcKeyword => write!(
+                f,
+                "`simc` is reserved for the compiler version directive, which must be the first item in the file and may appear at most once"
+            ),
             Error::DependencyPathNotFound { path } => write!(
                 f,
                 "Path not found: {}", path.display()
@@ -675,6 +702,10 @@ impl fmt::Display for Error {
             Error::DuplicateDependencyAlias { alias, context } => write!(
                 f,
                 "Duplicate dependency mapping: alias '{alias}' is defined multiple times for context '{context}'"
+            ),
+            Error::LinearizationCycleDetected { deps } => write!(
+                f,
+                "Circular dependency detected: {:?}", deps.join(" -> ")
             ),
             Error::InvalidDependencyIdentifier { alias } => write!(
                 f,
@@ -1106,6 +1137,71 @@ let x: u32 = Left(
   |
 3 | 
   | ^ Cannot parse: eof"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_compiler_version_invalid_syntax() {
+        let file = "simc \"abc\";\nfn main() {}";
+        let error = Error::InvalidSimcVersionSyntax {
+            err: "unexpected character 'a'".to_string(),
+        }
+        .with_span(Span::new_in_default_file(0..11))
+        .with_content(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | simc "abc";
+  | ^^^^^^^^^^^ Invalid version requirement in `simc` directive: unexpected character 'a'"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_compiler_version_mismatch() {
+        let file = "simc \">= 0.6.0\";\nfn main() {}";
+        let error = Error::SimcVersionMismatch {
+            required: ">= 0.6.0".to_string(),
+            current: "0.5.0".to_string(),
+        }
+        .with_span(Span::new_in_default_file(0..16))
+        .with_content(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | simc ">= 0.6.0";
+  | ^^^^^^^^^^^^^^^^ Incompatible compiler version: file requires `>= 0.6.0`, but the compiler is `0.5.0`. Update the compiler or the `simc` directive."#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_malformed_directive() {
+        let file = "simc \"1.0\"\nfn main() {}";
+        let error = Error::MalformedSimcDirective
+            .with_span(Span::new_in_default_file(0..10))
+            .with_content(Arc::from(file));
+
+        let expected = r#"
+  |
+1 | simc "1.0"
+  | ^^^^^^^^^^ Malformed compiler version directive: expected `simc "<version>";`"#;
+
+        assert_eq!(&expected[1..], &error.to_string());
+    }
+
+    #[test]
+    fn display_reserved_simc_keyword() {
+        let file = "fn main() {}\nsimc \"1.0\";";
+        let error = Error::ReservedSimcKeyword
+            .with_span(Span::new_in_default_file(13..17))
+            .with_content(Arc::from(file));
+
+        let expected = r#"
+  |
+2 | simc "1.0";
+  | ^^^^ `simc` is reserved for the compiler version directive, which must be the first item in the file and may appear at most once"#;
 
         assert_eq!(&expected[1..], &error.to_string());
     }

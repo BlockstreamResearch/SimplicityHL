@@ -7,14 +7,14 @@
 //! DFS is a better option.
 
 use std::collections::HashSet;
-use std::fmt;
 
 use crate::driver::DependencyGraph;
+use crate::error::{Error, RichError, Span};
 
 /// This is a core component of the [`DependencyGraph`].
 impl DependencyGraph {
     /// Returns the deterministic, BOTTOM-UP load order of dependencies.
-    pub(super) fn linearize(&self) -> Result<Vec<usize>, LinearizationError> {
+    pub(super) fn linearize(&self) -> Result<Vec<usize>, RichError> {
         let mut visited = HashSet::new();
         let mut visiting = Vec::new();
         let mut order = Vec::new();
@@ -35,18 +35,21 @@ impl DependencyGraph {
         visited: &mut HashSet<usize>,
         visiting: &mut Vec<usize>,
         order: &mut Vec<usize>,
-    ) -> Result<(), LinearizationError> {
+    ) -> Result<(), RichError> {
         // If we have already fully processed this module, skip it (Diamond Deduplication)
         if visited.contains(&module) {
             return Ok(());
         }
 
         if let Some(cycle_start) = visiting.iter().position(|&m| m == module) {
-            return Err(LinearizationError::CycleDetected(
-                visiting[cycle_start..]
-                    .iter()
-                    .map(|&id| self.modules[id].source.str_name())
-                    .collect(),
+            return Err(RichError::new(
+                Error::LinearizationCycleDetected {
+                    deps: visiting[cycle_start..]
+                        .iter()
+                        .map(|&id| self.modules[id].source.str_name())
+                        .collect(),
+                },
+                Span::DUMMY,
             ));
         }
 
@@ -71,22 +74,6 @@ impl DependencyGraph {
         order.push(module);
 
         Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub enum LinearizationError {
-    /// Raised when a circular dependency (e.g., A -> B -> A) is detected.
-    CycleDetected(Vec<String>),
-}
-
-impl fmt::Display for LinearizationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LinearizationError::CycleDetected(cycle) => {
-                write!(f, "Circular dependency detected: {:?}", cycle.join(" -> "))
-            }
-        }
     }
 }
 
@@ -149,10 +136,11 @@ mod tests {
         ]);
 
         let order = graph.linearize();
-        assert!(matches!(
-            order,
-            Err(LinearizationError::CycleDetected { .. })
-        ));
+        let err = order
+            .expect_err("expected linearizatoin to fail")
+            .error()
+            .clone();
+        assert!(matches!(err, Error::LinearizationCycleDetected { .. }));
     }
 
     #[test]

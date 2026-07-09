@@ -2486,10 +2486,9 @@ mod scope_resolution_tests {
         let (graph, _ids, _dir) = setup_graph(files);
 
         let mut error_handler = ErrorCollector::new();
-        let driver_program = graph
-            .linearize_and_build(&mut error_handler)
-            .unwrap()
-            .expect("driver build should succeed");
+        let Some(driver_program) = graph.linearize_and_build(&mut error_handler) else {
+            panic!("{}", &error_handler.to_string());
+        };
 
         Program::analyze(&driver_program, Box::new(ElementsJetHinter))
             .map(|_| ())

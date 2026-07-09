@@ -6,6 +6,7 @@ use chumsky::{error::Rich, extra, span::SimpleSpan, text, IterParser, Parser};
 use crate::driver::CRATE_STR;
 use crate::error::{Error, RichError, Span};
 use crate::str::{Binary, Decimal, Hexadecimal};
+use crate::version::SIMC_STR;
 
 pub type Spanned<T> = (T, SimpleSpan);
 pub type Tokens<'src> = Vec<(Token<'src>, crate::error::Span)>;
@@ -24,6 +25,10 @@ pub enum Token<'src> {
     Match,
     Enum,
     Crate,
+    /// Reserved for the compiler version directive, which the version prescan
+    /// consumes before lexing; [`lex`] reports any occurrence as an error and drops
+    /// the token.
+    Simc,
 
     // Control symbols
     Arrow,
@@ -84,6 +89,7 @@ impl<'src> fmt::Display for Token<'src> {
             Token::Match => write!(f, "match"),
             Token::Enum => write!(f, "enum"),
             Token::Crate => write!(f, "{}", CRATE_STR),
+            Token::Simc => write!(f, "{}", SIMC_STR),
 
             Token::Arrow => write!(f, "->"),
             Token::DoubleColon => write!(f, "::"),
@@ -119,6 +125,45 @@ impl<'src> fmt::Display for Token<'src> {
             Token::BlockComment => write!(f, "block_comment"),
         }
     }
+}
+
+/// Recognizer for a `// ...` line comment.
+fn line_comment<'src>(
+) -> impl Parser<'src, &'src str, (), extra::Err<Rich<'src, char, SimpleSpan>>> + Clone {
+    just("//")
+        .then(any().and_is(just('\n').not()).repeated())
+        .ignored()
+}
+
+/// Recognizer for a (possibly nested) `/* ... */` block comment; an unterminated
+/// comment is reported and swallows the rest of the input.
+fn block_comment<'src>(
+) -> impl Parser<'src, &'src str, (), extra::Err<Rich<'src, char, SimpleSpan>>> + Clone {
+    recursive(|block| {
+        just("/*")
+            .map_with(|_, e| e.span())
+            .then(choice((block, any().and_is(just("*/").not()).ignored())).repeated())
+            .then(just("*/").or_not())
+            .validate(|((open_span, ()), close), _span, emit| {
+                if close.is_none() {
+                    emit.emit(Rich::custom(open_span, "Unclosed block comment"));
+                }
+            })
+    })
+}
+
+/// Trivia — whitespace and comments — shared with the version-directive scanner
+/// (`version::SimcDirective::scan`) so the lexer and the scanner agree on comment
+/// syntax.
+pub(crate) fn trivia<'src>(
+) -> impl Parser<'src, &'src str, (), extra::Err<Rich<'src, char, SimpleSpan>>> {
+    choice((
+        line_comment(),
+        block_comment(),
+        any().filter(|c: &char| c.is_whitespace()).ignored(),
+    ))
+    .repeated()
+    .ignored()
 }
 
 pub fn lexer<'src>(
@@ -161,6 +206,7 @@ pub fn lexer<'src>(
         "match" => Token::Match,
         "enum" => Token::Enum,
         CRATE_STR => Token::Crate,
+        SIMC_STR => Token::Simc,
         "true" => Token::Bool(true),
         "false" => Token::Bool(false),
         _ => Token::Ident(s),
@@ -197,22 +243,8 @@ pub fn lexer<'src>(
         just(">").to(Token::RAngle),
     ));
 
-    let comment = just("//")
-        .ignore_then(any().and_is(just('\n').not()).repeated())
-        .to(Token::Comment);
-
-    let block_comment = recursive(|block| {
-        just("/*")
-            .map_with(|_, e| e.span())
-            .then(choice((block.ignored(), any().and_is(just("*/").not()).ignored())).repeated())
-            .then(just("*/").or_not())
-            .validate(|((open_span, _content), close), _span, emit| {
-                if close.is_none() {
-                    emit.emit(Rich::custom(open_span, "Unclosed block comment"));
-                }
-                Token::BlockComment
-            })
-    });
+    let comment = line_comment().to(Token::Comment);
+    let block_comment = block_comment().to(Token::BlockComment);
     let token = choice((
         comment,
         block_comment,
@@ -235,38 +267,53 @@ pub fn lexer<'src>(
         .collect()
 }
 
-/// Lexes an input string into a stream of tokens with spans.
+/// Lexes an input string into a stream of tokens with spans, beginning at byte
+/// offset `start` — the end of the version directive per `SimcDirective::prescan`,
+/// or `0`. Spans are reported relative to the full input.
 ///
 /// All comments in the input code are discarded.
-pub fn lex(file_id: usize, input: &str) -> (Option<Tokens<'_>>, Vec<crate::error::RichError>) {
-    let (tokens, errors) = lexer().parse(input).into_output_errors();
+pub fn lex(
+    file_id: usize,
+    input: &str,
+    start: usize,
+) -> (Option<Tokens<'_>>, Vec<crate::error::RichError>) {
+    let (tokens, lex_errors) = lexer().parse(&input[start..]).into_output_errors();
+    let shift = |span: SimpleSpan| Span::new(file_id, span.start + start..span.end + start);
 
+    // The reserved-keyword errors come first: a stray directive also produces
+    // follow-up errors for its `"<range>";` remnant, and the sentinel is their cause.
+    let mut errors: Vec<RichError> = Vec::new();
     let tokens = tokens.map(|vec| {
         vec.into_iter()
-            .filter(|(tok, _)| !matches!(tok, Token::Comment | Token::BlockComment))
-            .map(|(tok, span)| (tok, Span::from_chumsky(file_id, span)))
+            .filter_map(|(tok, span)| match tok {
+                Token::Comment | Token::BlockComment => None,
+                // The reserved keyword is a sentinel: the prescan consumed the one
+                // legitimate directive before lexing, so any occurrence is misplaced.
+                Token::Simc => {
+                    errors.push(RichError::new(Error::ReservedSimcKeyword, shift(span)));
+                    None
+                }
+                tok => Some((tok, shift(span))),
+            })
             .collect()
     });
 
-    let errors = errors
-        .into_iter()
-        .map(|err| {
-            RichError::new(
-                Error::CannotParse {
-                    msg: err.reason().to_string(),
-                },
-                Span::from_chumsky(file_id, *err.span()),
-            )
-        })
-        .collect();
+    errors.extend(lex_errors.into_iter().map(|err| {
+        RichError::new(
+            Error::CannotParse {
+                msg: err.reason().to_string(),
+            },
+            shift(*err.span()),
+        )
+    }));
 
     (tokens, errors)
 }
 
 /// A list of all reserved keywords.
 pub const KEYWORDS: &[&str] = &[
-    "pub", "use", "as", "fn", "let", "type", "mod", "const", "match", "enum", CRATE_STR, "true",
-    "false",
+    "pub", "use", "as", "fn", "let", "type", "mod", "const", "match", "enum", CRATE_STR, SIMC_STR,
+    "true", "false",
 ];
 
 /// Checks whether a given string is a keyword.
@@ -367,6 +414,31 @@ mod tests {
         assert_eq!(errors[1].to_string(), "Unclosed block comment");
 
         assert_eq!(tokens, Some(vec![Token::BlockComment]));
+    }
+
+    #[test]
+    fn simc_is_reserved() {
+        // The prescan consumes the one legitimate leading directive before lexing,
+        // so `lex` reports any `simc` it sees and drops the sentinel token.
+        for src in ["simc", "fn simc() {}", "fn f() {}\nsimc"] {
+            let (tokens, errors) = super::lex(0, src, 0);
+            assert!(
+                errors.iter().any(|e| e.to_string().contains("reserved")),
+                "expected a reserved-keyword error for {src:?}, got: {errors:?}"
+            );
+            assert!(
+                tokens
+                    .expect("recovery keeps the stream")
+                    .iter()
+                    .all(|(tok, _)| !matches!(tok, Token::Simc)),
+                "the sentinel must not reach the token stream for {src:?}"
+            );
+        }
+
+        // Identifiers merely starting with `simc` are ordinary identifiers.
+        let (tokens, errors) = lex("simcfoo");
+        assert!(errors.is_empty(), "unexpected: {errors:?}");
+        assert_eq!(tokens, Some(vec![Token::Ident("simcfoo")]));
     }
 
     #[test]

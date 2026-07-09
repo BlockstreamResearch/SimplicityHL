@@ -31,6 +31,7 @@ use crate::str::{
 };
 use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
 use crate::unstable::{impl_require_feature, UnstableFeature, UnstableFeatures};
+use crate::version::SimcDirective;
 
 /// A program is a sequence of items.
 #[derive(Clone, Debug)]
@@ -1371,7 +1372,17 @@ type ParseError<'src> = extra::Err<RichError>;
 /// This implementation only returns first encountered error.
 impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
     fn parse_from_str(s: &str) -> Result<Self, RichError> {
-        let (tokens, mut lex_errs) = crate::lexer::lex(MAIN_MODULE, s);
+        let (tokens, mut lex_errs) = crate::lexer::lex(MAIN_MODULE, s, 0);
+
+        // The `simc` directive is source-file syntax, so fragments have no prescan
+        // and `simc` lexes as a reserved keyword. Its `"<range>";` remnant does not
+        // lex either, so the first reserved-keyword error is reported alone.
+        if let Some(err) = lex_errs
+            .iter()
+            .find(|e| matches!(e.error(), Error::ReservedSimcKeyword))
+        {
+            return Err(err.clone());
+        }
 
         let Some(tokens) = tokens else {
             return Err(lex_errs.pop().unwrap_or(RichError::parsing_error(
@@ -1407,14 +1418,36 @@ impl<A: ChumskyParse + crate::unstable::RequireFeature + std::fmt::Debug> ParseF
         handler: &mut ErrorCollector,
     ) -> Option<Self> {
         let source: SourceFile = source.into();
-        let src = source.content().to_string();
+        let content = source.content();
 
-        let (tokens, lex_errs) = crate::lexer::lex(file_id, &src);
+        // Handle the `simc` directive before lexing: an incompatible or malformed
+        // directive is reported as the only diagnostic (the rest is noise), and
+        // lexing starts right after a valid one, so the lexer and grammar never
+        // see it.
+        let start = match SimcDirective::prescan(&content, file_id) {
+            Ok(start) => start,
+            Err((err, span)) => {
+                handler.push(RichError::new(err, span).with_source(source));
+                return None;
+            }
+        };
+
+        let (tokens, mut lex_errs) = crate::lexer::lex(file_id, &content, start);
+        // A stray `simc` makes every other diagnostic noise — its `"<range>";` remnant
+        // does not lex — so the reserved-keyword errors are reported alone.
+        if lex_errs
+            .iter()
+            .any(|e| matches!(e.error(), Error::ReservedSimcKeyword))
+        {
+            lex_errs.retain(|e| matches!(e.error(), Error::ReservedSimcKeyword));
+            handler.extend(source, lex_errs);
+            return None;
+        }
         let lex_ok = lex_errs.is_empty();
         handler.extend(source.clone(), lex_errs);
         let tokens = tokens?;
 
-        let eoi = Span::eof(file_id, src.len());
+        let eoi = Span::eof(file_id, content.len());
         let (ast, parse_errs) = A::parser()
             .parse(tokens.as_slice().map(eoi, |(t, s)| (t, s)))
             .into_output_errors();
@@ -2868,6 +2901,14 @@ mod test {
             .error()
             .to_string()
             .contains("Type alias `Ctx8` is already exists as built-in alias"));
+    }
+
+    #[test]
+    fn test_fragment_rejects_version_directive() {
+        let err = TypeAlias::parse_from_str("simc \"*\"; type Ctx8 = u32")
+            .expect_err("a version directive must not be accepted in a fragment");
+
+        assert!(matches!(err.error(), Error::ReservedSimcKeyword));
     }
 
     #[test]

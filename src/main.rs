@@ -3,6 +3,7 @@ use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
 use simplicityhl::ast::ElementsJetHinter;
+use simplicityhl::version::SimcDirective;
 use simplicityhl::{
     resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
     CompiledProgram,
@@ -22,12 +23,17 @@ struct Output {
     abi_meta: Option<AbiMeta>,
     /// Commitment Merkle Root (CMR) of the program, hex encoded.
     cmr: String,
+    /// Version of the compiler that produced this output. Different compiler
+    /// versions can produce different CMRs from the same source, so the version
+    /// travels with the artifact as metadata (it is not part of the program).
+    compiler_version: &'static str,
 }
 
 impl fmt::Display for Output {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Program:\n{}", self.program)?;
         writeln!(f, "CMR:\n{}", self.cmr)?;
+        writeln!(f, "Compiler version:\n{}", self.compiler_version)?;
         if let Some(witness) = &self.witness {
             writeln!(f, "Witness:\n{}", witness)?;
         }
@@ -112,6 +118,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prog_file = matches.get_one::<String>("prog_file").unwrap();
     let main_path = CanonPath::canonicalize(Path::new(prog_file))?;
     let main_text = std::fs::read_to_string(main_path.as_path()).map_err(|e| e.to_string())?;
+    // Entry file only; deps are still version-checked in the driver, just not warned.
+    if let Some(warning) = SimcDirective::missing_warning(&main_text) {
+        eprintln!("Warning: {warning}");
+    }
     let include_debug_symbols = matches.get_flag("debug");
     let output_json = matches.get_flag("json");
     let abi_param = matches.get_flag("abi");
@@ -244,6 +254,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         witness: witness_bytes.map(|bytes| Base64Display::new(&bytes, &STANDARD).to_string()),
         abi_meta: abi_opt,
         cmr: cmr_hex,
+        compiler_version: compiled.compiler_version(),
     };
 
     if output_json {
