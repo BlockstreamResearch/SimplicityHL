@@ -2224,10 +2224,7 @@ mod enum_tests {
     fn analyze(src: &str) -> Result<(), String> {
         let (graph, _ids, _dir) = setup_graph(vec![("main.simf", src)]);
         let mut handler = ErrorCollector::new();
-        let driver_prog = graph
-            .linearize_and_build(&mut handler)
-            .unwrap()
-            .expect("driver build should succeed");
+        let driver_prog = graph.linearize_and_build(&mut handler).unwrap();
         Program::analyze(&driver_prog, Box::new(ElementsJetHinter::new()))
             .map(|_| ())
             .map_err(|e| e.to_string())
