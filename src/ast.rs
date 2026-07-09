@@ -797,9 +797,6 @@ impl Scope {
                 target_scope = inner;
             }
 
-            // Exhaustively destructure so that adding a field to `ModuleScope` is a
-            // compile error right here until `resolve_use` decides whether to import
-            // it. Nothing forced this before, which is how `enums` was silently missed.
             let ModuleScope {
                 aliases: target_aliases,
                 enums: target_enums,
@@ -815,12 +812,9 @@ impl Scope {
 
                 let local_name = aliased.as_ref().unwrap_or(name);
 
-                let alias_res =
-                    Self::try_collect_item(name, local_name, target_aliases, &use_vis);
-                let func_res =
-                    Self::try_collect_item(name, local_name, target_functions, &use_vis);
-                let mod_res =
-                    Self::try_collect_item(name, local_name, target_submodules, &use_vis);
+                let alias_res = Self::try_collect_item(name, local_name, target_aliases, &use_vis);
+                let func_res = Self::try_collect_item(name, local_name, target_functions, &use_vis);
+                let mod_res = Self::try_collect_item(name, local_name, target_submodules, &use_vis);
 
                 // Enums live in a parallel map that carries no visibility of its own --
                 // an enum's visibility rides on its `u8` alias entry (see `insert_enum`).
