@@ -6,13 +6,13 @@ use crate::str::{Identifier, ModuleName};
 /// This is a core component of the [`DependencyGraph`].
 impl DependencyGraph {
     /// Resolves the dependency graph and constructs the final AST program.
-    pub fn linearize_and_build(
-        &self,
-        handler: &mut ErrorCollector,
-    ) -> Result<Option<parse::Program>, String> {
+    pub fn linearize_and_build(&self, handler: &mut ErrorCollector) -> Option<parse::Program> {
         match self.linearize() {
-            Ok(order) => Ok(self.build_program(&order, handler)),
-            Err(err) => Err(err.to_string()),
+            Ok(order) => self.build_program(&order, handler),
+            Err(err) => {
+                handler.push(err);
+                None
+            }
         }
     }
 
@@ -130,10 +130,9 @@ mod flattening_tests {
         let (graph, ids, _dir) = setup_graph(files);
         let mut error_handler = ErrorCollector::new();
 
-        let program = graph
-            .linearize_and_build(&mut error_handler)
-            .expect("Linearize should not fail in this test")
-            .expect("Build should succeed and return Some(Program)");
+        let Some(program) = graph.linearize_and_build(&mut error_handler) else {
+            panic!("{}", &error_handler.to_string());
+        };
 
         (program, ids)
     }
@@ -243,8 +242,8 @@ mod flattening_tests {
         let driver_program = graph.linearize_and_build(&mut error_handler);
 
         assert!(
-            matches!(driver_program, Ok(None)),
-            "Expected the build to fail and return Ok(None), but got: {:?}",
+            driver_program.is_none(),
+            "Expected the build to fail and return None, but got: {:?}",
             driver_program
         );
 
