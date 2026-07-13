@@ -106,7 +106,7 @@ impl CanonPath {
     ///
     /// Returns a `String` containing the OS error if the path does not exist or
     /// cannot be accessed. The caller is expected to map this into a more specific
-    /// compiler diagnostic (e.g., `RichError`).
+    /// compiler diagnostic.
     pub fn canonicalize(path: &Path) -> Result<Self, String> {
         // We use `map_err` here to intercept the generic OS error and enrich
         // it with the specific path that failed

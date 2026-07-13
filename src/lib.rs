@@ -41,11 +41,10 @@ pub use simplicity::elements;
 
 use crate::debug::DebugSymbols;
 use crate::driver::{DependencyGraph, SourceMap, MAIN_MODULE};
-use crate::error::{ErrorCollector, WithContent, WithSource as _};
+use crate::error::DiagnosticManager;
 use crate::parse::ParseFromStrWithErrors;
 use crate::resolution::DependencyMap;
 use crate::source::CanonSourceFile;
-use crate::source::SourceFile;
 pub use crate::types::ResolvedType;
 pub use crate::unstable::{UnstableFeature, UnstableFeatures};
 pub use crate::value::Value;
@@ -59,7 +58,7 @@ pub struct TemplateProgram {
     simfony: ast::Program,
     file: Arc<str>,
     jet_hinter: Box<dyn ast::JetHinter>,
-    source_map: SourceMap,
+    diagnostics: DiagnosticManager,
     resolved_program: parse::Program,
 }
 
@@ -74,15 +73,15 @@ impl TemplateProgram {
         source: CanonSourceFile,
         dependency_map: &DependencyMap,
         unstable_features: &UnstableFeatures,
-    ) -> Result<String, ErrorCollector> {
-        let mut error_handler = ErrorCollector::new();
-        let Some((resolved_program, _)) = Self::dependency_helper(
+    ) -> Result<String, DiagnosticManager> {
+        let (program, diagnostics) = DependencyGraph::build_program(
             source,
-            dependency_map,
+            Arc::from(dependency_map.clone()),
             unstable_features,
-            &mut error_handler,
-        ) else {
-            return Err(error_handler);
+        );
+
+        let Some(resolved_program) = program else {
+            return Err(diagnostics);
         };
 
         Ok(resolved_program.to_string())
@@ -98,35 +97,31 @@ impl TemplateProgram {
         dependency_map: &DependencyMap,
         unstable_features: &UnstableFeatures,
         jet_hinter: Box<dyn ast::JetHinter>,
-    ) -> Result<Self, ErrorCollector> {
-        let mut error_handler = ErrorCollector::new();
+    ) -> Result<Self, DiagnosticManager> {
+        let file = source.content();
+        let (program, mut diagnostics) = DependencyGraph::build_program(
+            source,
+            Arc::from(dependency_map.clone()),
+            unstable_features,
+        );
 
-        let build_program = || -> Result<Self, ()> {
-            let Some((resolved_program, source_map)) = Self::dependency_helper(
-                source.clone(),
-                dependency_map,
-                unstable_features,
-                &mut error_handler,
-            ) else {
-                return Err(());
-            };
-
-            let ast_program = ast::Program::analyze(&resolved_program, jet_hinter.clone_box())
-                .with_source(source.clone())
-                .map_err(|e| error_handler.push(e))?;
-
-            Ok(Self {
-                simfony: ast_program,
-                file: source.content(),
-                jet_hinter,
-                source_map,
-                resolved_program,
-            })
+        let Some(resolved_program) = program else {
+            return Err(diagnostics);
         };
 
-        match build_program() {
-            Ok(instance) => Ok(instance),
-            Err(()) => Err(error_handler),
+        // TODO: Add multierror to analyze
+        match ast::Program::analyze(&resolved_program, jet_hinter.clone_box()) {
+            Ok(simfony) => Ok(Self {
+                simfony,
+                file,
+                jet_hinter,
+                diagnostics,
+                resolved_program,
+            }),
+            Err(e) => {
+                diagnostics.push(e);
+                Err(diagnostics)
+            }
         }
     }
 
@@ -138,7 +133,7 @@ impl TemplateProgram {
     pub fn new<Str: Into<Arc<str>>>(
         s: Str,
         jet_hinter: Box<dyn ast::JetHinter>,
-    ) -> Result<Self, ErrorCollector> {
+    ) -> Result<Self, DiagnosticManager> {
         Self::new_with_unstable(s, &UnstableFeatures::none(), jet_hinter)
     }
 
@@ -148,62 +143,32 @@ impl TemplateProgram {
         s: Str,
         unstable_features: &UnstableFeatures,
         jet_hinter: Box<dyn ast::JetHinter>,
-    ) -> Result<Self, ErrorCollector> {
+    ) -> Result<Self, DiagnosticManager> {
+        let mut diagnostics = DiagnosticManager::default();
         let file = s.into();
-        let source = SourceFile::anonymous(file.clone());
-        let mut error_handler = ErrorCollector::new();
 
-        let parsed_program = parse::Program::parse_from_str_with_errors(
+        let Some(resolved_program) = parse::Program::parse_from_str_with_errors(
             MAIN_MODULE,
-            source,
+            &file,
             unstable_features,
-            &mut error_handler,
-        );
+            &mut diagnostics,
+        ) else {
+            return Err(diagnostics);
+        };
 
-        if let Some(program) = parsed_program {
-            let Ok(ast_program) = ast::Program::analyze(&program, jet_hinter.clone_box())
-                .with_content(Arc::clone(&file))
-                .map_err(|e| error_handler.push(e))
-            else {
-                Err(error_handler)?
-            };
-
-            Ok(Self {
-                simfony: ast_program,
+        match ast::Program::analyze(&resolved_program, jet_hinter.clone_box()) {
+            Ok(simfony) => Ok(Self {
+                simfony,
                 file,
                 jet_hinter,
-                source_map: SourceMap::default(),
-                resolved_program: program,
-            })
-        } else {
-            Err(error_handler)?
+                diagnostics,
+                resolved_program,
+            }),
+            Err(e) => {
+                diagnostics.push(e);
+                Err(diagnostics)
+            }
         }
-    }
-
-    fn dependency_helper(
-        source: CanonSourceFile,
-        dependency_map: &DependencyMap,
-        unstable_features: &UnstableFeatures,
-        handler: &mut ErrorCollector,
-    ) -> Option<(parse::Program, SourceMap)> {
-        let program = parse::Program::parse_from_str_with_errors(
-            MAIN_MODULE,
-            source.clone(),
-            unstable_features,
-            handler,
-        )?;
-
-        let graph = DependencyGraph::new(
-            source,
-            Arc::from(dependency_map.clone()),
-            &program,
-            handler,
-            unstable_features,
-        )?;
-
-        let program = graph.linearize_and_build(handler);
-
-        program.map(|opt| (opt, graph.source_map().clone()))
     }
 
     /// Access the parameters of the program.
@@ -239,14 +204,11 @@ impl TemplateProgram {
             .is_consistent(self.simfony.parameters())
             .map_err(|error| error.to_string())?;
 
-        let commit = self
-            .simfony
-            .compile(
-                arguments,
-                include_debug_symbols,
-                self.jet_hinter.clone_box(),
-            )
-            .with_content(Arc::clone(&self.file))?;
+        let commit = self.simfony.compile(
+            arguments,
+            include_debug_symbols,
+            self.jet_hinter.clone_box(),
+        )?;
 
         Ok(CompiledProgram {
             debug_symbols: self.simfony.debug_symbols(self.file.as_ref()),
@@ -263,8 +225,12 @@ impl TemplateProgram {
         })
     }
 
-    pub fn source_map(&self) -> &SourceMap {
-        &self.source_map
+    pub fn source_map(&self) -> Option<&SourceMap> {
+        self.diagnostics.sources()
+    }
+
+    pub fn diagnostics(&self) -> &DiagnosticManager {
+        &self.diagnostics
     }
 
     pub fn resolved_program(&self) -> &parse::Program {
@@ -302,7 +268,7 @@ impl CompiledProgram {
             unstable_features,
             jet_hinter.clone_box(),
         )
-        .map_err(|e| e.to_string())
+        .map_err(|diagnostics| diagnostics.render_to_string())
         .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -337,7 +303,7 @@ impl CompiledProgram {
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
         TemplateProgram::new_with_unstable(s, unstable_features, jet_hinter.clone_box())
-            .map_err(|e| e.to_string())
+            .map_err(|error| error.to_string())
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
 
@@ -589,20 +555,20 @@ pub(crate) mod tests {
 
         match TemplateProgram::flatten(source, dependency_map, &UnstableFeatures::all()) {
             Ok(single_file) => single_file,
-            Err(error) => panic!("{error}"),
+            Err(error) => panic!("{}", &error),
         }
     }
 
     pub(crate) fn format_program_file(prog_path: &Path) -> String {
         let file = Arc::<str>::from(std::fs::read_to_string(prog_path).unwrap());
-        let source = SourceFile::anonymous(file.clone());
 
-        let mut error_handler = ErrorCollector::new();
+        let mut diagnostics = DiagnosticManager::new();
+
         let parse_program = parse::Program::parse_from_str_with_errors(
             MAIN_MODULE,
-            source,
+            &file,
             &UnstableFeatures::all(),
-            &mut error_handler,
+            &mut diagnostics,
         )
         .unwrap();
         parse_program.to_string()
@@ -665,7 +631,7 @@ pub(crate) mod tests {
                 Box::new(ElementsJetHinter::new()),
             ) {
                 Ok(x) => x,
-                Err(error) => panic!("{error}"),
+                Err(error) => panic!("{}", &error),
             };
 
             Self {
@@ -690,7 +656,7 @@ pub(crate) mod tests {
                 Box::new(ElementsJetHinter::new()),
             ) {
                 Ok(x) => x,
-                Err(error) => panic!("{error}"),
+                Err(error) => panic!("{}", &error),
             };
             Self {
                 program,
@@ -1633,7 +1599,8 @@ mod error_tests {
 
         assert!(
             err.to_string().contains(&dependency_source),
-            "expected diagnostic to point at dependency source {dependency_source}, got:\n{err}"
+            "expected diagnostic to point at dependency source {dependency_source}, got:\n{}",
+            err
         );
     }
 
@@ -1683,7 +1650,8 @@ mod error_tests {
 
         assert!(
             err.to_string().contains("missing.simf"),
-            "diagnostic should mention the missing module path, got:\n{err}"
+            "diagnostic should mention the missing module path, got:\n{}",
+            err
         );
     }
 }

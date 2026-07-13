@@ -1,4 +1,7 @@
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::fmt;
+use std::io::{self, Write};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,16 +10,16 @@ use chumsky::error::Error as ChumskyError;
 use chumsky::input::ValueInput;
 use chumsky::label::LabelError;
 use chumsky::span::SimpleSpan;
-use chumsky::text::Char;
 use chumsky::util::MaybeRef;
 use chumsky::DefaultExpected;
 
+use ariadne::{Cache, Color, Config, Label as AriadneLabel, Report, ReportKind, Source};
+
 use itertools::Itertools;
 
-use crate::driver::CRATE_STR;
+use crate::driver::{SourceMap, CRATE_STR, MAIN_MODULE};
 use crate::lexer::Token;
 use crate::parse::MatchPattern;
-use crate::source::SourceFile;
 use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName, WitnessName};
 use crate::types::{ResolvedType, UIntType};
 use crate::unstable::UnstableFeature;
@@ -32,8 +35,36 @@ pub struct Span {
     pub end: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+/// A span-anchored annotation attached to a diagnostic.
+///
+/// Used only for secondary highlights. The primary location is carried
+/// by [`Diagnostic::location`].
+#[derive(Debug, Clone)]
+pub struct Label {
+    pub span: Span,
+    pub message: String,
+}
+
+/// Where the diagnostic points.
+///
+/// - `Code`: Inside a file, at a specific span. Normal case.
+/// - `File`: The whole file. E.g. "main must be in the entry file".
+/// - `Global`: The whole build. E.g. dependency cycle, missing crate root.
+#[derive(Debug, Clone)]
+pub enum Location {
+    Code(Span),
+    File(usize),
+    Global,
+}
+
 impl Span {
-    pub(crate) const DUMMY: Self = Self::new(0, 0..0);
+    pub(crate) const DUMMY: Self = Self::new(MAIN_MODULE, 0..0);
 
     /// Create a new span.
     ///
@@ -55,8 +86,8 @@ impl Span {
         Self::new(file_id, source_len..source_len)
     }
 
-    pub const fn from_chumsky(file_id: usize, span: SimpleSpan<usize>) -> Self {
-        Self::new(file_id, span.start..span.end)
+    pub const fn from_chumsky(file_id: usize, span: SimpleSpan, start: usize) -> Self {
+        Self::new(file_id, span.start + start..span.end + start)
     }
 
     /// Return a slice from the given `file` that corresponds to the span.
@@ -111,218 +142,159 @@ impl<'a> arbitrary::Arbitrary<'a> for Span {
     }
 }
 
-/// Helper trait to convert `Result<T, E>` into `Result<T, RichError>`.
+/// Helper trait to convert `Result<T, E>` into `Result<T, Diagnostic>`.
 pub trait WithSpan<T> {
     /// Update the result with the affected span.
-    fn with_span<S: Into<Span>>(self, span: S) -> Result<T, RichError>;
+    fn with_span<S: Into<Span>>(self, span: S) -> Result<T, Diagnostic>;
 }
 
 impl<T, E: Into<Error>> WithSpan<T> for Result<T, E> {
-    fn with_span<S: Into<Span>>(self, span: S) -> Result<T, RichError> {
+    fn with_span<S: Into<Span>>(self, span: S) -> Result<T, Diagnostic> {
         self.map_err(|e| e.into().with_span(span.into()))
     }
 }
 
-/// Helper trait to update `Result<A, RichError>` with the affected source file.
-pub trait WithContent<T> {
-    /// Update the result with the affected source file.
-    ///
-    /// Enable pretty errors.
-    fn with_content<C: Into<Arc<str>>>(self, content: C) -> Result<T, RichError>;
-}
-
-impl<T> WithContent<T> for Result<T, RichError> {
-    fn with_content<C: Into<Arc<str>>>(self, content: C) -> Result<T, RichError> {
-        self.map_err(|e| e.with_content(content.into()))
-    }
-}
-
-/// Helper trait to update `Result<A, RichError>` with the affected source file.
-pub trait WithSource<T> {
-    /// Update the result with the affected source file.
-    ///
-    /// Enable pretty errors.
-    fn with_source<S: Into<SourceFile>>(self, source: S) -> Result<T, RichError>;
-}
-
-impl<T> WithSource<T> for Result<T, RichError> {
-    fn with_source<S: Into<SourceFile>>(self, source: S) -> Result<T, RichError> {
-        self.map_err(|e| e.with_source(source.into()))
-    }
-}
-
-/// An error enriched with context.
+/// A single diagnostic ready to be rendered.
 ///
-/// Records _what_ happened and _where_.
+/// Records *what* went wrong, *where*, and any extra context that helps
+/// the user act on it.
 #[derive(Debug, Clone)]
-pub struct RichError {
+pub struct Diagnostic {
+    /// How the diagnostic is classified for display and exit code.
+    severity: Severity,
+
     /// The error that occurred.
     ///
-    /// Wrapped in a `Box` to keep the `RichError` struct small on the stack,
+    /// Wrapped in a `Box` to keep the [`Error`] struct small on the stack,
     /// ensuring cheap moves when returning errors inside a `Result`.
     error: Box<Error>,
 
-    /// Area that the error spans inside the file.
-    span: Span,
+    location: Location,
 
-    /// File context in which the error occurred.
-    ///
-    /// Required to print pretty errors.
-    source: Option<SourceFile>,
+    /// Additional highlights attached to secondary spans.
+    /// Used for "X conflicts with Y" style errors. For example
+    /// a "redefined function" error.
+    secondary: Vec<Label>,
+
+    /// Free-form notes shown below the code snippet.
+    notes: Vec<Arc<str>>,
+
+    /// A single actionable suggestion, if one applies.
+    help: Option<Arc<str>>,
 }
 
-impl RichError {
+impl Diagnostic {
     /// Create a new error with context.
-    pub fn new(error: Error, span: Span) -> RichError {
-        RichError {
+    pub fn new(error: Error, span: Span) -> Self {
+        Self {
+            severity: Severity::Error,
             error: Box::new(error),
+            location: Location::Code(span),
+            secondary: Vec::new(),
+            notes: Vec::new(),
+            help: None,
+        }
+    }
+
+    /// Create a warning attached to a code span.
+    pub fn warning(error: Error, span: Span) -> Self {
+        Self {
+            severity: Severity::Warning,
+            ..Self::new(error, span)
+        }
+    }
+
+    pub fn file(error: Error, file_id: usize) -> Self {
+        Self {
+            location: Location::File(file_id),
+            ..Self::new(error, Span::DUMMY)
+        }
+    }
+
+    pub fn global(error: Error) -> Self {
+        Self {
+            location: Location::Global,
+            ..Self::new(error, Span::DUMMY)
+        }
+    }
+
+    pub fn with_secondary(mut self, span: Span, message: impl Into<String>) -> Self {
+        self.secondary.push(Label {
             span,
-            source: None,
-        }
+            message: message.into(),
+        });
+        self
     }
 
-    /// Adds raw source code content to the error context.
-    ///
-    /// Use this when the error occurs in an environment without a backing physical file
-    /// (e.g., raw string input for single-file program) to enable basic error formatting.
-    pub fn with_content(self, program_content: Arc<str>) -> Self {
-        Self {
-            error: self.error,
-            span: self.span,
-            source: Some(SourceFile::anonymous(program_content)),
-        }
+    pub fn with_note(mut self, note: impl Into<Arc<str>>) -> Self {
+        self.notes.push(note.into());
+        self
     }
 
-    /// Add the source file where the error occurred.
-    ///
-    /// Enable pretty errors.
-    pub fn with_source(self, source: impl Into<SourceFile>) -> Self {
-        Self {
-            error: self.error,
-            span: self.span,
-            source: Some(source.into()),
-        }
+    pub fn with_help(mut self, help: impl Into<Arc<str>>) -> Self {
+        self.help = Some(help.into());
+        self
     }
 
-    /// Constructs an error that is very unlikely to be encountered, but indicates
-    /// a problem on the parsing side.
-    pub fn parsing_error(reason: &str) -> Self {
-        Self {
-            error: Box::new(Error::CannotParse {
-                msg: reason.to_string(),
-            }),
-            span: Span::DUMMY,
-            source: None,
-        }
-    }
-
-    pub fn source(&self) -> &Option<SourceFile> {
-        &self.source
+    pub fn severity(&self) -> &Severity {
+        &self.severity
     }
 
     pub fn error(&self) -> &Error {
         &self.error
     }
 
-    pub fn span(&self) -> &Span {
-        &self.span
+    /// Returns where the diagnostic points: a code span, a whole file, or
+    /// the whole build.
+    pub fn location(&self) -> &Location {
+        &self.location
+    }
+
+    /// Returns the secondary labels, additional highlights that give
+    /// context for the primary error.
+    pub fn secondary(&self) -> &[Label] {
+        &self.secondary
+    }
+
+    /// Returns the free-form notes attached to this diagnostic.
+    pub fn notes(&self) -> &[Arc<str>] {
+        &self.notes
+    }
+
+    /// Returns the actionable suggestion, if one was set.
+    pub fn help(&self) -> &Option<Arc<str>> {
+        &self.help
     }
 }
 
-impl fmt::Display for RichError {
+impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fn get_line_col(file: &str, offset: usize) -> (usize, usize) {
-            let mut line = 1;
-            let mut col = 0;
-
-            let slice = file.get(0..offset).unwrap_or_default();
-
-            for char in slice.chars() {
-                if char.is_newline() {
-                    line += 1;
-                    col = 0;
-                } else {
-                    col += char.len_utf16();
-                }
-            }
-
-            (line, col + 1)
-        }
-
-        let Some(source) = &self.source else {
-            return write!(f, "{}", self.error);
-        };
-
-        let content = source.content();
-
-        if content.is_empty() {
-            return write!(f, "{}", self.error);
-        }
-
-        let (start_line, start_col) = get_line_col(&content, self.span.start);
-        let (end_line, end_col) = get_line_col(&content, self.span.end);
-
-        let start_line_index = start_line - 1;
-
-        let n_spanned_lines = end_line - start_line_index;
-        let line_num_width = end_line.to_string().len();
-
-        if let Some(name) = source.name() {
-            writeln!(
-                f,
-                "{:>width$}--> {}:{}:{}",
-                "",
-                name.display(),
-                start_line,
-                start_col,
-                width = line_num_width
-            )?;
-        }
-
-        writeln!(f, "{:width$} |", " ", width = line_num_width)?;
-
-        let mut lines = content
-            .split(|c: char| c.is_newline())
-            .skip(start_line_index)
-            .peekable();
-        let start_line_len = lines
-            .peek()
-            .map_or(0, |l| l.chars().map(char::len_utf16).sum());
-
-        for (relative_line_index, line_str) in lines.take(n_spanned_lines).enumerate() {
-            let line_num = start_line_index + relative_line_index + 1;
-            writeln!(f, "{line_num:line_num_width$} | {line_str}")?;
-        }
-
-        let is_multiline = end_line > start_line;
-
-        let (underline_start, underline_length) = match is_multiline {
-            true => (0, start_line_len),
-            false => (start_col, (end_col - start_col).max(1)),
-        };
-        write!(f, "{:width$} |", " ", width = line_num_width)?;
-        write!(f, "{:width$}", " ", width = underline_start)?;
-        write!(f, "{:^<width$} ", "", width = underline_length)?;
+        // A bare Diagnostic has no source text; that lives in the SourceMap.
+        // Rich, span-highlighted output is produced by DiagnosticManager::render.
         write!(f, "{}", self.error)
     }
 }
 
-impl std::error::Error for RichError {}
-
-impl From<RichError> for Error {
-    fn from(error: RichError) -> Self {
-        *error.error
+impl From<Diagnostic> for Error {
+    fn from(diag: Diagnostic) -> Self {
+        *diag.error
     }
 }
 
-impl From<RichError> for String {
-    fn from(error: RichError) -> Self {
-        error.to_string()
+impl From<Diagnostic> for String {
+    fn from(diag: Diagnostic) -> Self {
+        diag.to_string()
+    }
+}
+
+impl std::error::Error for Diagnostic {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.error.source()
     }
 }
 
 /// Implementation of traits for using inside `chumsky` parsers.
-impl<'tokens, 'src: 'tokens, I> ChumskyError<'tokens, I> for RichError
+impl<'tokens, 'src: 'tokens, I> ChumskyError<'tokens, I> for Diagnostic
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
 {
@@ -337,7 +309,7 @@ where
 }
 
 impl<'tokens, 'src: 'tokens, I> LabelError<'tokens, I, DefaultExpected<'tokens, Token<'src>>>
-    for RichError
+    for Diagnostic
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
 {
@@ -362,19 +334,18 @@ where
 
         let found_string = found.map(|t| t.to_string());
 
-        Self {
-            error: Box::new(Error::Syntax {
+        Self::new(
+            Error::Syntax {
                 expected: expected_tokens,
                 label: None,
                 found: found_string,
-            }),
+            },
             span,
-            source: None,
-        }
+        )
     }
 }
 
-impl<'tokens, 'src: 'tokens, I> LabelError<'tokens, I, &'tokens str> for RichError
+impl<'tokens, 'src: 'tokens, I> LabelError<'tokens, I, &'tokens str> for Diagnostic
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
 {
@@ -389,15 +360,14 @@ where
         let expected_strings: Vec<String> = expected.into_iter().map(|s| s.to_string()).collect();
         let found_string = found.map(|t| t.to_string());
 
-        Self {
-            error: Box::new(Error::Syntax {
+        Self::new(
+            Error::Syntax {
                 expected: expected_strings,
                 label: None,
                 found: found_string,
-            }),
+            },
             span,
-            source: None,
-        }
+        )
     }
 
     fn label_with(&mut self, label: &'tokens str) {
@@ -410,69 +380,287 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ErrorCollector {
-    /// Collected errors.
-    errors: Vec<RichError>,
+#[derive(Debug, Clone, Default)]
+pub struct DiagnosticManager {
+    diags: Vec<Diagnostic>,
+    error_count: usize,
+    sources: Option<SourceMap>,
 }
 
-impl Default for ErrorCollector {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::error::Error for ErrorCollector {}
-
-impl ErrorCollector {
+impl DiagnosticManager {
     pub fn new() -> Self {
-        Self { errors: Vec::new() }
+        Self::default()
     }
 
-    /// Extend existing errors with specific `RichError`.
-    /// We assume that `RichError` contains `SourceFile`.
-    pub fn push(&mut self, error: RichError) {
-        self.errors.push(error);
+    pub(crate) fn with_sources(&mut self, sources: SourceMap) {
+        self.sources = Some(sources);
+    }
+
+    /// Extend existing errors with specific `Diagnostic`.
+    pub fn push(&mut self, diag: Diagnostic) {
+        if matches!(diag.severity, Severity::Error) {
+            self.error_count += 1;
+        }
+
+        self.diags.push(diag);
     }
 
     /// Appends new errors, tagging them with the provided source context.
     /// Automatically handles both single-file and multi-file environments.
-    pub fn extend(
-        &mut self,
-        source: impl Into<SourceFile> + Clone,
-        errors: impl IntoIterator<Item = RichError>,
-    ) {
-        let new_errors = errors
-            .into_iter()
-            .map(|err| err.with_source(source.clone()));
-
-        self.errors.extend(new_errors);
-    }
-
-    /// The same idea applies to the `extend()` function.
-    pub fn extend_with_handler(
-        &mut self,
-        source: impl Into<SourceFile> + Clone,
-        handler: &ErrorCollector,
-    ) {
-        self.extend(source, handler.errors.iter().cloned());
-    }
-
-    pub fn get(&self) -> &[RichError] {
-        &self.errors
+    pub fn extend(&mut self, iter: impl IntoIterator<Item = Diagnostic>) {
+        for diag in iter {
+            self.push(diag);
+        }
     }
 
     pub fn has_errors(&self) -> bool {
-        !self.errors.is_empty()
+        self.error_count > 0
+    }
+
+    pub fn error_count(&self) -> usize {
+        self.error_count
+    }
+
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diags
+    }
+
+    pub fn sources(&self) -> Option<&SourceMap> {
+        self.sources.as_ref()
+    }
+
+    // TODO(perf): rebuild-per-call cache + sources clone.
+    // Revisit after diagnostic refactor lands.
+    /// Render all diagnostics to `w` using `ariadne`.
+    pub fn render(&self, with_color: bool, mut w: impl Write) -> std::io::Result<()> {
+        // Empty-SourceMap fallback.
+        //
+        // The only caller that hits this branch is the legacy one-file program
+        // flow, which bypasses the driver. All modern paths (LSP, `simc`,
+        // Simplex, and the Web build via `TemplateProgram::flatten`) register
+        // sources with the driver and hit the `RenderCache`-based render below.
+        //
+        // Legacy callers get message-only output — no source snippets, no
+        // line/column info. Once the legacy flow migrates or is removed, this
+        // branch can go.
+        let Some(sources) = self.sources() else {
+            return write!(w, "{self}");
+        };
+
+        let mut cache = RenderCache::new(sources);
+
+        for diag in &self.diags {
+            render_one(diag, &mut cache, with_color, &mut w)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn render_to_string(&self) -> String {
+        let mut buf = Vec::new();
+        self.render(false, &mut buf)
+            .expect("writing to Vec never fails");
+        String::from_utf8(buf).expect("ariadne output is valid utf-8")
     }
 }
 
-impl fmt::Display for ErrorCollector {
+impl fmt::Display for DiagnosticManager {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for err in self.get() {
-            writeln!(f, "{err}\n")?;
+        // Message-only, no source snippets. Callers that want rich output
+        // with span highlighting must call `render` or `render_to_string`
+        // explicitly, because `fmt::Formatter` can't carry the color flag
+        // or surface I/O errors.
+        for diag in &self.diags {
+            writeln!(f, "{diag}")?;
         }
         Ok(())
+    }
+}
+
+impl std::error::Error for DiagnosticManager {}
+
+/// Lazy ariadne cache that memoises `Source` construction across labels
+/// within a single `render` call.
+#[derive(Debug)]
+pub(crate) struct RenderCache<'a> {
+    pub(crate) sources: &'a SourceMap,
+    built: HashMap<usize, Source<Arc<str>>>,
+}
+
+impl<'a> RenderCache<'a> {
+    fn new(sources: &'a SourceMap) -> Self {
+        Self {
+            sources,
+            built: HashMap::new(),
+        }
+    }
+}
+
+impl<'a> Cache<usize> for RenderCache<'a> {
+    type Storage = Arc<str>;
+
+    fn fetch(&mut self, id: &usize) -> Result<&ariadne::Source<Arc<str>>, Box<dyn fmt::Debug>> {
+        match self.built.entry(*id) {
+            Entry::Occupied(e) => Ok(e.into_mut()),
+
+            Entry::Vacant(e) => {
+                let Some(content) = self.sources.content(*id) else {
+                    return Err(Box::new(format!("unknown file_id: {id}")));
+                };
+
+                Ok(e.insert(Source::from(content)))
+            }
+        }
+    }
+
+    fn display<'b>(&self, id: &'b usize) -> Option<Box<dyn std::fmt::Display + 'b>> {
+        self.sources.path(*id).map(|path| {
+            Box::new(path.as_path().display().to_string()) as Box<dyn fmt::Display + 'b>
+        })
+    }
+}
+
+fn render_one(
+    diag: &Diagnostic,
+    cache: &mut RenderCache,
+    with_color: bool,
+    w: &mut impl Write,
+) -> std::io::Result<()> {
+    match &diag.location {
+        Location::Code(span) => render_code(diag, *span, cache, with_color, w),
+        Location::File(file_id) => render_file(diag, *file_id, cache.sources, w),
+        Location::Global => render_global(diag, w),
+    }
+}
+
+fn render_code(
+    diag: &Diagnostic,
+    span: Span,
+    cache: &mut RenderCache,
+    with_color: bool,
+    w: &mut impl Write,
+) -> std::io::Result<()> {
+    if cache.sources.content(span.file_id).is_none() {
+        return render_missing_source(diag, span.file_id, w);
+    };
+
+    let span_range = span.start..span.end;
+
+    let mut report = Report::build(kind(diag.severity), (span.file_id, span_range.clone()))
+        .with_config(
+            Config::default()
+                .with_index_type(ariadne::IndexType::Byte)
+                .with_char_set(if with_color {
+                    ariadne::CharSet::Unicode
+                } else {
+                    ariadne::CharSet::Ascii
+                })
+                .with_color(with_color),
+        )
+        .with_message(diag.error.to_string())
+        .with_label(
+            // Consider polishing adding `with_message("")` string
+            AriadneLabel::new((span.file_id, span_range)).with_color(Color::Red),
+        );
+
+    for label in &diag.secondary {
+        if cache.sources.content(label.span.file_id).is_none() {
+            debug_assert!(
+                false,
+                "secondary label references unregistered file_id {}",
+                label.span.file_id
+            );
+            continue;
+        };
+
+        report = report.with_label(
+            AriadneLabel::new((label.span.file_id, label.span.start..label.span.end))
+                .with_message(&label.message)
+                .with_color(Color::Blue),
+        );
+    }
+
+    for note in &diag.notes {
+        report = report.with_note(note.as_ref());
+    }
+
+    if let Some(help) = &diag.help {
+        report = report.with_help(help);
+    }
+
+    report.finish().write(cache, &mut *w)
+}
+
+fn render_file(
+    diag: &Diagnostic,
+    file_id: usize,
+    sources: &SourceMap,
+    w: &mut impl Write,
+) -> std::io::Result<()> {
+    let Some(path) = sources.path(file_id) else {
+        return render_missing_source(diag, file_id, w);
+    };
+
+    writeln!(
+        w,
+        "{}: {}\n --> {}",
+        severity_prefix(diag.severity),
+        diag.error,
+        path.as_path().display()
+    )?;
+    write_notes_and_help(diag, w)
+}
+
+fn render_global(diag: &Diagnostic, w: &mut impl Write) -> std::io::Result<()> {
+    writeln!(w, "{}: {}", severity_prefix(diag.severity), diag.error)?;
+    write_notes_and_help(diag, w)
+}
+
+/// Fallback for diagnostics whose file isn't in the `SourceMap`.
+///
+/// Calling this function *is* the bug signal: if we got here, some pass
+/// constructed a `Span` with a `file_id` that was never registered. The
+/// `debug_assert!` fires in dev/test builds so the source-map bug is
+/// caught early; in release we degrade the diagnostic to message-only
+/// rather than panicking in the error-rendering path.
+fn render_missing_source(diag: &Diagnostic, file_id: usize, w: &mut impl Write) -> io::Result<()> {
+    debug_assert!(
+        false,
+        "diagnostic references unregistered file_id: {file_id}, check span construction"
+    );
+
+    writeln!(w, "{}: {}", severity_prefix(diag.severity), diag.error)?;
+    writeln!(
+        w,
+        " = note: (internal) source for file_id: {file_id} not registered; snippet unavailable"
+    )?;
+
+    write_notes_and_help(diag, w)
+}
+
+fn write_notes_and_help(diag: &Diagnostic, w: &mut impl Write) -> io::Result<()> {
+    for note in &diag.notes {
+        writeln!(w, " = note: {note}")?;
+    }
+
+    if let Some(help) = &diag.help {
+        writeln!(w, " = help: {help}")?;
+    }
+
+    Ok(())
+}
+
+fn kind(sev: Severity) -> ReportKind<'static> {
+    match sev {
+        Severity::Error => ReportKind::Error,
+        Severity::Warning => ReportKind::Warning,
+    }
+}
+
+fn severity_prefix(sev: Severity) -> &'static str {
+    match sev {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
     }
 }
 
@@ -936,8 +1124,8 @@ impl std::error::Error for Error {
 
 impl Error {
     /// Update the error with the affected span.
-    pub fn with_span(self, span: Span) -> RichError {
-        RichError::new(self, span)
+    pub fn with_span(self, span: Span) -> Diagnostic {
+        Diagnostic::new(self, span)
     }
 }
 
@@ -961,9 +1149,9 @@ impl From<simplicity::types::Error> for Error {
 
 #[cfg(test)]
 mod tests {
-    use crate::driver::MAIN_MODULE;
-
     use super::*;
+
+    use crate::driver::MAIN_MODULE;
 
     impl Span {
         pub const fn new_in_default_file(range: Range<usize>) -> Self {
@@ -971,296 +1159,171 @@ mod tests {
         }
     }
 
-    const CONTENT: &str = r#"let a1: List<u32, 5> = None;
-let x: u32 = Left(
-    Right(0)
-);"#;
-    const EMPTY_FILE: &str = "";
-
     #[test]
-    fn display_single_line() {
-        let error = Error::ListBoundPow2 { bound: 5 }
-            .with_span(Span::new_in_default_file(13..19))
-            .with_content(Arc::from(CONTENT));
-        let expected = r#"
-  |
-1 | let a1: List<u32, 5> = None;
-  |              ^^^^^^ Expected a power of two greater than one (2, 4, 8, 16, 32, ...) as list bound, found 5"#;
-        assert_eq!(&expected[1..], &error.to_string());
+    fn has_errors_ignores_warnings() {
+        let mut m = DiagnosticManager::new();
+
+        let warning = Diagnostic::warning(Error::MainNoInputs, Span::DUMMY);
+        m.push(warning);
+        assert!(!m.has_errors());
+
+        let error = Diagnostic::new(Error::MainNoInputs, Span::DUMMY);
+        m.push(error);
+        assert!(m.has_errors());
     }
 
     #[test]
-    fn display_multi_line() {
-        let error = Error::CannotParse {
-            msg: "Expected value of type `u32`, got `Either<Either<_, u32>, _>`".to_string(),
+    fn with_span_attaches_location() {
+        let result: Result<(), Error> = Err(Error::MainRequired);
+        let diag = result.with_span(Span::new(0, 5..10)).unwrap_err();
+        assert!(matches!(diag.location(), Location::Code(s) if s.start == 5 && s.end == 10));
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+
+    use crate::driver::MAIN_MODULE;
+    use crate::resolution::tests::canon;
+    use crate::source::CanonSourceFile;
+    use crate::test_utils::TempWorkspace;
+
+    use std::sync::Arc;
+
+    const CONTENT: &str = "let a1: List<u32, 5> = None;\nlet x: u32 = Left(\n    Right(0)\n);";
+
+    /// A [`DiagnosticManager`] over one real file named `main.simf`.
+    ///
+    /// The file must exist on disk because [`CanonSourceFile`] canonicalizes.
+    /// Rendering never reads it back (the content lives in the [`SourceMap`])
+    /// so the workspace is kept alive only so a failing test can be inspected.
+    struct Fixture {
+        _ws: TempWorkspace,
+        manager: DiagnosticManager,
+        /// Absolute path of `main.simf`, stripped from rendered output.
+        abs_path: String,
+    }
+
+    impl Fixture {
+        fn new(content: &str) -> Self {
+            let ws = TempWorkspace::new("render");
+            let path = canon(&ws.create_file("main.simf", content));
+            let abs_path = path.as_path().display().to_string();
+
+            let sources = SourceMap::with_source(CanonSourceFile::new(path, Arc::from(content)));
+            let mut manager = DiagnosticManager::default();
+            manager.with_sources(sources);
+
+            Self {
+                _ws: ws,
+                manager,
+                abs_path,
+            }
         }
-        .with_span(Span::new_in_default_file(41..CONTENT.len()))
-        .with_content(Arc::from(CONTENT));
-        let expected = r#"
-  |
-2 | let x: u32 = Left(
-3 |     Right(0)
-4 | );
-  | ^^^^^^^^^^^^^^^^^^ Cannot parse: Expected value of type `u32`, got `Either<Either<_, u32>, _>`"#;
-        assert_eq!(&expected[1..], &error.to_string());
-    }
 
-    #[test]
-    fn display_entire_file() {
-        let error = Error::CannotParse {
-            msg: "This span covers the entire file".to_string(),
+        fn push(&mut self, diag: Diagnostic) {
+            self.manager.push(diag);
         }
-        .with_span(Span::from(CONTENT))
-        .with_content(Arc::from(CONTENT));
-        let expected = r#"
-  |
-1 | let a1: List<u32, 5> = None;
-2 | let x: u32 = Left(
-3 |     Right(0)
-4 | );
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Cannot parse: This span covers the entire file"#;
-        assert_eq!(&expected[1..], &error.to_string());
-    }
 
-    #[test]
-    fn display_no_file() {
-        let error = Error::CannotParse {
-            msg: "This error has no file".to_string(),
+        /// Render with color off, the temp-dir path replaced by `main.simf`,
+        /// and trailing whitespace stripped; ariadne pads gutter-only lines.
+        fn render(&self) -> String {
+            self.manager
+                .render_to_string()
+                .replace(&self.abs_path, "main.simf")
+                .lines()
+                .map(str::trim_end)
+                .collect::<Vec<_>>()
+                .join("\n")
         }
-        .with_span(Span::from(EMPTY_FILE));
-        let expected = "Cannot parse: This error has no file";
-        assert_eq!(&expected, &error.to_string());
+    }
 
-        let error = Error::CannotParse {
-            msg: "This error has no file".to_string(),
-        }
-        .with_span(Span::new_in_default_file(5..10));
-        assert_eq!(&expected, &error.to_string());
+    fn expect(actual: &str, expected: &str) {
+        assert_eq!(actual, expected.trim_start_matches('\n').trim_end());
+    }
+
+    fn span(range: std::ops::Range<usize>) -> Span {
+        Span::new(MAIN_MODULE, range)
     }
 
     #[test]
-    fn display_empty_file() {
-        let error = Error::CannotParse {
-            msg: "This error has an empty file".to_string(),
-        }
-        .with_span(Span::from(EMPTY_FILE))
-        .with_content(Arc::from(EMPTY_FILE));
-        let expected = "Cannot parse: This error has an empty file";
-        assert_eq!(&expected, &error.to_string());
-    }
-
-    #[test]
-    fn display_with_utf16_chars() {
-        let file = "/*😀*/ let a: u8 = 65536;";
-        let error = Error::CannotParse {
-            msg: "number too large to fit in target type".to_string(),
-        }
-        .with_span(Span::new_in_default_file(21..26))
-        .with_content(Arc::from(file));
-
-        let expected = r#"
-  |
-1 | /*😀*/ let a: u8 = 65536;
-  |                    ^^^^^ Cannot parse: number too large to fit in target type"#;
-
-        assert_eq!(&expected[1..], &error.to_string());
-    }
-
-    #[test]
-    fn multiline_display_with_utf16_chars() {
-        let file = r#"/*😀 this symbol should not break the rendering*/
-let a: u8 = 65536;
-let x: u32 = Left(
-    Right(0)
-);"#;
-        let error = Error::CannotParse {
-            msg: "This span covers the entire file".to_string(),
-        }
-        .with_span(Span::from(file))
-        .with_content(Arc::from(file));
-
-        let expected = r#"
-  |
-1 | /*😀 this symbol should not break the rendering*/
-2 | let a: u8 = 65536;
-3 | let x: u32 = Left(
-4 |     Right(0)
-5 | );
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Cannot parse: This span covers the entire file"#;
-
-        assert_eq!(&expected[1..], &error.to_string());
-    }
-
-    #[test]
-    fn display_with_unicode_separator() {
-        let file = "let a: u8 = 65536;\u{2028}let b: u8 = 0;";
-        let error = Error::CannotParse {
-            msg: "number too large to fit in target type".to_string(),
-        }
-        .with_span(Span::new_in_default_file(12..17))
-        .with_content(Arc::from(file));
-
-        let expected = r#"
-  |
-1 | let a: u8 = 65536;
-  |             ^^^^^ Cannot parse: number too large to fit in target type"#;
-
-        assert_eq!(&expected[1..], &error.to_string());
-    }
-
-    #[test]
-    fn display_span_as_point() {
-        let file = "fn main()";
-        let error = Error::Grammar {
-            msg: "Error span at (0,0)".to_string(),
-        }
-        .with_span(Span::new_in_default_file(0..0))
-        .with_content(Arc::from(file));
-
-        let expected = r#"
-  |
-1 | fn main()
-  | ^ Grammar error: Error span at (0,0)"#;
-        assert_eq!(&expected[1..], &error.to_string());
-    }
-
-    #[test]
-    fn display_span_as_point_on_trailing_empty_line() {
-        let file = "fn main(){\n    let a:\n";
-        let error = Error::CannotParse {
-            msg: "eof".to_string(),
-        }
-        .with_span(Span::new_in_default_file(file.len()..file.len()))
-        .with_content(Arc::from(file));
-
-        let expected = r#"
-  |
-3 | 
-  | ^ Cannot parse: eof"#;
-
-        assert_eq!(&expected[1..], &error.to_string());
-    }
-
-    #[test]
-    fn display_compiler_version_invalid_syntax() {
-        let file = "simc \"abc\";\nfn main() {}";
-        let error = Error::InvalidSimcVersionSyntax {
-            err: "unexpected character 'a'".to_string(),
-        }
-        .with_span(Span::new_in_default_file(0..11))
-        .with_content(Arc::from(file));
-
-        let expected = r#"
-  |
-1 | simc "abc";
-  | ^^^^^^^^^^^ Invalid version requirement in `simc` directive: unexpected character 'a'"#;
-
-        assert_eq!(&expected[1..], &error.to_string());
-    }
-
-    #[test]
-    fn display_compiler_version_mismatch() {
-        let file = "simc \">= 0.6.0\";\nfn main() {}";
-        let error = Error::SimcVersionMismatch {
-            required: ">= 0.6.0".to_string(),
-            current: "0.5.0".to_string(),
-        }
-        .with_span(Span::new_in_default_file(0..16))
-        .with_content(Arc::from(file));
-
-        let expected = r#"
-  |
-1 | simc ">= 0.6.0";
-  | ^^^^^^^^^^^^^^^^ Incompatible compiler version: file requires `>= 0.6.0`, but the compiler is `0.5.0`. Update the compiler or the `simc` directive."#;
-
-        assert_eq!(&expected[1..], &error.to_string());
-    }
-
-    #[test]
-    fn display_malformed_directive() {
-        let file = "simc \"1.0\"\nfn main() {}";
-        let error = Error::MalformedSimcDirective
-            .with_span(Span::new_in_default_file(0..10))
-            .with_content(Arc::from(file));
-
-        let expected = r#"
-  |
-1 | simc "1.0"
-  | ^^^^^^^^^^ Malformed compiler version directive: expected `simc "<version>";`"#;
-
-        assert_eq!(&expected[1..], &error.to_string());
-    }
-
-    #[test]
-    fn display_reserved_simc_keyword() {
-        let file = "fn main() {}\nsimc \"1.0\";";
-        let error = Error::ReservedSimcKeyword
-            .with_span(Span::new_in_default_file(13..17))
-            .with_content(Arc::from(file));
-
-        let expected = r#"
-  |
-2 | simc "1.0";
-  | ^^^^ `simc` is reserved for the compiler version directive, which must be the first item in the file and may appear at most once"#;
-
-        assert_eq!(&expected[1..], &error.to_string());
-    }
-
-    // --- Tests with filename ---
-    #[test]
-    fn display_single_line_with_file() {
-        let source = SourceFile::new(std::path::Path::new("src/main.simf"), Arc::from(CONTENT));
-        let error = Error::ListBoundPow2 { bound: 5 }
-            .with_span(Span::new_in_default_file(13..19))
-            .with_source(source);
-
-        let expected = r#"
- --> src/main.simf:1:14
-  |
-1 | let a1: List<u32, 5> = None;
-  |              ^^^^^^ Expected a power of two greater than one (2, 4, 8, 16, 32, ...) as list bound, found 5"#;
-        assert_eq!(&expected[1..], &error.to_string());
-    }
-
-    #[test]
-    fn display_multi_line_with_file() {
-        let source = SourceFile::new(std::path::Path::new("lib/parser.simf"), Arc::from(CONTENT));
-        let error = Error::CannotParse {
-            msg: "Expected value of type `u32`, got `Either<Either<_, u32>, _>`".to_string(),
-        }
-        .with_span(Span::new_in_default_file(41..CONTENT.len()))
-        .with_source(source);
-
-        let expected = r#"
- --> lib/parser.simf:2:13
-  |
-2 | let x: u32 = Left(
-3 |     Right(0)
-4 | );
-  | ^^^^^^^^^^^^^^^^^^ Cannot parse: Expected value of type `u32`, got `Either<Either<_, u32>, _>`"#;
-        assert_eq!(&expected[1..], &error.to_string());
-    }
-
-    #[test]
-    fn display_entire_file_with_file() {
-        let source = SourceFile::new(
-            std::path::Path::new("tests/integration.simf"),
-            Arc::from(CONTENT),
+    fn golden_full_diagnostic() {
+        let mut fixture = Fixture::new(CONTENT);
+        fixture.push(
+            Diagnostic::new(Error::ListBoundPow2 { bound: 5 }, span(13..19))
+                .with_secondary(span(0..2), "declared here")
+                .with_note("first note")
+                .with_note("second note")
+                .with_help("use 4 or 8"),
         );
-        let error = Error::CannotParse {
-            msg: "This span covers the entire file".to_string(),
-        }
-        .with_span(Span::from(CONTENT))
-        .with_source(source);
 
-        let expected = r#"
- --> tests/integration.simf:1:1
-  |
-1 | let a1: List<u32, 5> = None;
-2 | let x: u32 = Left(
-3 |     Right(0)
-4 | );
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Cannot parse: This span covers the entire file"#;
-        assert_eq!(&expected[1..], &error.to_string());
+        expect(
+            &fixture.render(),
+            r#"
+Error: Expected a power of two greater than one (2, 4, 8, 16, 32, ...) as list bound, found 5
+   ,-[main.simf:1:14]
+   |
+ 1 | let a1: List<u32, 5> = None;
+   | ^|           ^^^^^^
+   |  `------------------- declared here
+   |
+   | Help: use 4 or 8
+   |
+   | Note 1: first note
+   |
+   | Note 2: second note
+---'"#,
+        );
+    }
+
+    #[test]
+    fn caret_lands_on_byte_offset_after_emoji() {
+        // Pins the `IndexType::Byte` decision. Under `IndexType::Char`, ariadne
+        // reads our byte offset as a char offset and underlines the wrong text.
+        let mut fixture = Fixture::new("/*😀*/ let a: u8 = 65536;");
+        fixture.push(Diagnostic::new(
+            Error::CannotParse {
+                msg: "too large".into(),
+            },
+            span(21..26),
+        ));
+
+        expect(
+            &fixture.render(),
+            r#"
+Error: Cannot parse: too large
+   ,-[main.simf:1:19]
+   |
+ 1 | /*😀*/ let a: u8 = 65536;
+---'"#,
+        );
+    }
+
+    #[test]
+    fn secondary_label_message_is_forwarded() {
+        let mut fixture = Fixture::new(CONTENT);
+
+        fixture.push(
+            Diagnostic::new(Error::ListBoundPow2 { bound: 5 }, span(13..19))
+                .with_secondary(span(0..2), "declared here"),
+        );
+
+        assert!(fixture.render().contains("declared here"));
+    }
+
+    #[test]
+    fn warning_severity_reaches_report_kind() {
+        let mut fixture = Fixture::new(CONTENT);
+        fixture.push(Diagnostic::warning(Error::MainNoInputs, span(0..3)));
+        let out = fixture.render();
+
+        assert!(out.contains("Warning"), "{out}");
+        assert!(!out.contains("Error"), "{out}");
+    }
+
+    #[test]
+    fn empty_manager_renders_nothing() {
+        assert_eq!(Fixture::new(CONTENT).render(), "");
     }
 }

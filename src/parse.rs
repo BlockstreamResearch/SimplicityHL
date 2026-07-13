@@ -18,13 +18,12 @@ use either::Either;
 use miniscript::iter::{Tree, TreeLike};
 
 use crate::driver::{CRATE_STR, MAIN_MODULE};
-use crate::error::ErrorCollector;
-use crate::error::{Error, RichError, Span};
+use crate::error::DiagnosticManager;
+use crate::error::{Diagnostic, Error, Span};
 use crate::impl_eq_hash;
 use crate::lexer::Token;
 use crate::num::NonZeroPow2Usize;
 use crate::pattern::Pattern;
-use crate::source::SourceFile;
 use crate::str::{
     AliasName, Binary, Decimal, FunctionName, Hexadecimal, Identifier, JetName, ModuleName,
     SymbolName, WitnessName,
@@ -162,8 +161,8 @@ impl UseDecl {
     ///
     /// # Errors
     ///
-    /// Returns a `RichError` if the use declaration path is completely empty.
-    pub fn drp_name(&self) -> Result<&str, RichError> {
+    /// Returns a `Diagnostic` if the use declaration path is completely empty.
+    pub fn drp_name(&self) -> Result<&str, Diagnostic> {
         let parts: Vec<&str> = self.path().iter().map(|iden| iden.as_inner()).collect();
         parts.first().copied().ok_or_else(|| {
             Error::CannotParse {
@@ -1177,20 +1176,20 @@ impl_parse_wrapped_string!(ModuleName, "module name");
 /// Copy of [`FromStr`] that internally uses the `chumsky` parser.
 pub trait ParseFromStr: Sized {
     /// Parse a value from the string `s`.
-    fn parse_from_str(s: &str) -> Result<Self, RichError>;
+    fn parse_from_str(s: &str) -> Result<Self, Diagnostic>;
 }
 
 /// Trait for parsing with collection of errors.
 pub trait ParseFromStrWithErrors: Sized {
-    /// Parse a value from the string `s` with Errors.
+    /// Parse a value from the string `content` with Errors.
     ///
     /// Feature-gated syntax in the parsed AST is checked against
-    /// `unstable_features`; uses of disabled features are pushed to `handler`.
+    /// `unstable_features`; uses of disabled features are pushed to `diagnostics`.
     fn parse_from_str_with_errors(
         file_id: usize,
-        source: impl Into<SourceFile>,
+        content: &str,
         unstable_features: &UnstableFeatures,
-        handler: &mut ErrorCollector,
+        diagnostics: &mut DiagnosticManager,
     ) -> Option<Self>;
 }
 
@@ -1203,11 +1202,11 @@ pub trait ChumskyParse: Sized {
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>;
 }
 
-type ParseError<'src> = extra::Err<RichError>;
+type ParseError<'src> = extra::Err<Diagnostic>;
 
 /// This implementation only returns first encountered error.
 impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
-    fn parse_from_str(s: &str) -> Result<Self, RichError> {
+    fn parse_from_str(s: &str) -> Result<Self, Diagnostic> {
         let (tokens, mut lex_errs) = crate::lexer::lex(MAIN_MODULE, s, 0);
 
         // The `simc` directive is source-file syntax, so fragments have no prescan
@@ -1215,15 +1214,17 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
         // lex either, so the first reserved-keyword error is reported alone.
         if let Some(err) = lex_errs
             .iter()
-            .find(|e| matches!(e.error(), Error::ReservedSimcKeyword))
+            .find(|diag| matches!(diag.error(), Error::ReservedSimcKeyword))
         {
             return Err(err.clone());
         }
 
         let Some(tokens) = tokens else {
-            return Err(lex_errs.pop().unwrap_or(RichError::parsing_error(
-                "Empty token stream without an error.",
-            )));
+            return Err(lex_errs
+                .pop()
+                .unwrap_or(Diagnostic::global(Error::CannotParse {
+                    msg: "Empty token stream without an error".to_string(),
+                })));
         };
 
         let (ast, parse_errs) = A::parser()
@@ -1236,7 +1237,9 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
             .into_output_errors();
 
         if parse_errs.is_empty() {
-            Ok(ast.ok_or(RichError::parsing_error("Empty AST without an error."))?)
+            Ok(ast.ok_or(Diagnostic::global(Error::CannotParse {
+                msg: "Empty AST without an error.".to_string(),
+            }))?)
         } else {
             let err = parse_errs.first().unwrap().clone();
             Err(err)
@@ -1249,26 +1252,25 @@ impl<A: ChumskyParse + crate::unstable::RequireFeature + std::fmt::Debug> ParseF
 {
     fn parse_from_str_with_errors(
         file_id: usize,
-        source: impl Into<SourceFile>,
+        content: &str,
         unstable_features: &UnstableFeatures,
-        handler: &mut ErrorCollector,
+        diagnostics: &mut DiagnosticManager,
     ) -> Option<Self> {
-        let source: SourceFile = source.into();
-        let content = source.content();
+        let before = diagnostics.error_count();
 
         // Handle the `simc` directive before lexing: an incompatible or malformed
         // directive is reported as the only diagnostic (the rest is noise), and
         // lexing starts right after a valid one, so the lexer and grammar never
         // see it.
-        let start = match SimcDirective::prescan(&content, file_id) {
+        let start = match SimcDirective::prescan(content, file_id) {
             Ok(start) => start,
             Err((err, span)) => {
-                handler.push(RichError::new(err, span).with_source(source));
+                diagnostics.push(Diagnostic::new(err, span));
                 return None;
             }
         };
 
-        let (tokens, mut lex_errs) = crate::lexer::lex(file_id, &content, start);
+        let (tokens, mut lex_errs) = crate::lexer::lex(file_id, content, start);
         // A stray `simc` makes every other diagnostic noise — its `"<range>";` remnant
         // does not lex — so the reserved-keyword errors are reported alone.
         if lex_errs
@@ -1276,11 +1278,11 @@ impl<A: ChumskyParse + crate::unstable::RequireFeature + std::fmt::Debug> ParseF
             .any(|e| matches!(e.error(), Error::ReservedSimcKeyword))
         {
             lex_errs.retain(|e| matches!(e.error(), Error::ReservedSimcKeyword));
-            handler.extend(source, lex_errs);
+            diagnostics.extend(lex_errs);
             return None;
         }
         let lex_ok = lex_errs.is_empty();
-        handler.extend(source.clone(), lex_errs);
+        diagnostics.extend(lex_errs);
         let tokens = tokens?;
 
         let eoi = Span::eof(file_id, content.len());
@@ -1288,15 +1290,15 @@ impl<A: ChumskyParse + crate::unstable::RequireFeature + std::fmt::Debug> ParseF
             .parse(tokens.as_slice().map(eoi, |(t, s)| (t, s)))
             .into_output_errors();
         let parse_ok = parse_errs.is_empty();
-        handler.extend(source.clone(), parse_errs);
+        diagnostics.extend(parse_errs);
 
         if let (Some(ast), true) = (&ast, lex_ok && parse_ok) {
-            unstable_features.check_program(ast, &source, handler);
+            unstable_features.check_program(ast, diagnostics);
         }
 
         // TODO: We should return parsed result if we found errors, but because analyzing in `ast` module
         // is not handling poisoned tree right now, we don't return parsed result
-        if handler.has_errors() {
+        if diagnostics.error_count() > before {
             None
         } else {
             ast
@@ -2697,42 +2699,45 @@ mod test {
     #[test]
     fn test_double_colon() {
         let input = "fn main() { let ab: u8 = <(u4, u4)> : :into((0b1011, 0b1101)); }";
-        let source = SourceFile::anonymous(Arc::from(input));
-        let mut error_handler = ErrorCollector::new();
+        let mut diagnostics = DiagnosticManager::new();
+
         let parsed_program = Program::parse_from_str_with_errors(
             MAIN_MODULE,
-            source,
+            input,
             &UnstableFeatures::all(),
-            &mut error_handler,
+            &mut diagnostics,
         );
 
         assert!(parsed_program.is_none());
-        assert!(ErrorCollector::to_string(&error_handler).contains("Expected '::', found ':'"));
+        assert!(diagnostics.to_string().contains("Expected '::', found ':'"));
     }
 
     #[test]
     fn test_double_double_colon() {
         let input = "fn main() { let pk: Pubkey = witnes::::PK; }";
-        let source = SourceFile::anonymous(Arc::from(input));
-        let mut error_handler = ErrorCollector::new();
+        let mut diagnostics = DiagnosticManager::new();
+
         let parsed_program = Program::parse_from_str_with_errors(
             MAIN_MODULE,
-            source,
+            input,
             &UnstableFeatures::all(),
-            &mut error_handler,
+            &mut diagnostics,
         );
 
         assert!(parsed_program.is_none());
-        assert!(ErrorCollector::to_string(&error_handler).contains("Expected ';', found '::'"));
+        assert!(&diagnostics.to_string().contains("Expected ';', found '::'"));
     }
 
     /// Parse `input` and return whether it was rejected and the collected error text.
     fn parse_with(input: &str, features: &UnstableFeatures) -> (bool, String) {
-        let source = SourceFile::anonymous(Arc::from(input));
-        let mut handler = ErrorCollector::new();
+        let mut diagnostics = DiagnosticManager::new();
         let program =
-            Program::parse_from_str_with_errors(MAIN_MODULE, source, features, &mut handler);
-        (program.is_none(), ErrorCollector::to_string(&handler))
+            Program::parse_from_str_with_errors(MAIN_MODULE, input, features, &mut diagnostics);
+
+        let rejected = program.is_none();
+        let text = diagnostics.to_string();
+
+        (rejected, text)
     }
 
     #[test]

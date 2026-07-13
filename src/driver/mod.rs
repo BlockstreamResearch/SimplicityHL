@@ -36,7 +36,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::error::{Error, ErrorCollector, RichError, Span};
+use crate::error::{Diagnostic, DiagnosticManager, Error, Span};
 use crate::parse::{self, ParseFromStrWithErrors};
 use crate::resolution::{DependencyMap, ResolvedUse};
 use crate::source::{CanonPath, CanonSourceFile};
@@ -62,7 +62,7 @@ struct SourceModule {
 }
 
 /// Record of all modules that was discovered.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SourceMap {
     /// Fast lookup: `CanonPath` -> Module ID.
     /// A reverse index mapping absolute file paths to their internal IDs.
@@ -79,18 +79,18 @@ pub struct SourceMap {
 }
 
 impl SourceMap {
-    fn new(root_source: CanonSourceFile) -> Self {
+    pub(crate) fn with_source(source: CanonSourceFile) -> Self {
         let mut ids = HashMap::new();
 
-        ids.insert(root_source.name().clone(), MAIN_MODULE);
+        ids.insert(source.name().clone(), MAIN_MODULE);
 
         Self {
             ids,
-            entries: vec![root_source],
+            entries: vec![source],
         }
     }
 
-    fn insert(&mut self, entry: CanonSourceFile) {
+    pub(crate) fn insert(&mut self, entry: CanonSourceFile) {
         let id = self.entries.len();
 
         self.ids.insert(entry.name().clone(), id);
@@ -99,7 +99,7 @@ impl SourceMap {
         debug_assert_eq!(self.ids.len(), self.entries.len());
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
@@ -146,15 +146,18 @@ pub(crate) struct DependencyGraph {
     /// pointers (e.g., `List<Module*>`). In Rust, doing this requires either
     /// lifetimes or performance-heavy reference counting (`Rc<RefCell<T>>`).
     ///
-    /// Using a flat `Vec` as a memory arena is the idiomatic Rust solution.
-    modules: Vec<SourceModule>,
+    /// An entry should exist only for files that parsed successfully.
+    ///
+    /// A missing key for an id present in `sources` means the file was poisoned
+    /// during discovery and its imports were not propagated.
+    modules: HashMap<usize, SourceModule>,
 
     /// The configuration environment.
     /// Used to resolve external library dependencies and invoke their associated functions.
     dependency_map: Arc<DependencyMap>,
 
-    /// Fast bidirectional lookup between `CanonPath` and Module IDs.
-    source_map: SourceMap,
+    /// Fast bidirectional lookup between `CanonPath` and Module IDs
+    sources: SourceMap,
 
     /// Memoizes [`crate::resolution::DependencyMap::resolve_path_internal`] results,
     /// keyed by the source [`Span`] of each `use` declaration, so the resolver runs
@@ -173,47 +176,98 @@ pub(crate) struct DependencyGraph {
 }
 
 impl DependencyGraph {
-    /// Initializes a new `ProjectGraph` by parsing the root program and discovering all dependencies.
+    /// Compile a project into a single `parse::Program`.
     ///
-    /// Performs a BFS to recursively parse `use` statements,
-    /// building a DAG of the project's modules.
+    /// Runs both driver phases: dependency discovery, then linearization and
+    /// assembly. The returned [`DiagnosticManager`] has its [`SourceMap`]
+    /// attached and is ready to render.
     ///
     /// # Arguments
     ///
-    /// * `root_source` - The `SourceFile` representing the entry point of the project.
+    /// * `root_source` - The entry-point source file of the project.
     /// * `dependency_map` - The context-aware mapping rules used to resolve external imports.
-    /// * `root_program` - A reference to the already-parsed AST of the root file.
-    /// * `handler` - The diagnostics collector used to record resolution and parsing errors.
+    /// * `unstable_features` - Feature gates active for this compilation
     ///
     /// # Returns
     ///
-    /// * `Ok(Some(Self))` - If the entire project graph was successfully resolved and parsed.
-    /// * `Ok(None)` - If the graph traversal completed, but one or more modules contained
-    ///   errors (which have been safely logged into the `handler`).
-    ///
-    /// # Errors
-    ///
-    /// This function will return an `Err(String)` only for critical internal compiler errors.
-    pub fn new(
+    /// * `(Some(graph), diagnostics)` if the graph was built without errors.
+    ///   Warnings may be present in `diagnostics`; sources are on the graph.
+    /// * `(None, diagnostics)` if any error was reported. Sources are on
+    ///   the diagnostics manager, ready for rendering.
+    pub fn build_program(
         root_source: CanonSourceFile,
         dependency_map: Arc<DependencyMap>,
-        root_program: &parse::Program,
-        handler: &mut ErrorCollector,
         unstable_features: &UnstableFeatures,
-    ) -> Option<Self> {
-        let mut graph = Self {
-            modules: vec![SourceModule {
+    ) -> (Option<parse::Program>, DiagnosticManager) {
+        let (graph, mut diagnostics) =
+            Self::build_graph(root_source, dependency_map, unstable_features);
+
+        let Some(graph) = graph else {
+            return (None, diagnostics);
+        };
+
+        let program = graph.linearize_and_assemble(&mut diagnostics);
+        diagnostics.with_sources(graph.sources);
+        (program, diagnostics)
+    }
+
+    /// Build the dependency graph without linearizing. Exposed for tests
+    /// that need to inspect the intermediate graph state.
+    fn build_graph(
+        root_source: CanonSourceFile,
+        dependency_map: Arc<DependencyMap>,
+        unstable_features: &UnstableFeatures,
+    ) -> (Option<Self>, DiagnosticManager) {
+        let mut diagnostics = DiagnosticManager::default();
+        let sources = SourceMap::with_source(root_source.clone());
+
+        let Some(program) = parse::Program::parse_from_str_with_errors(
+            MAIN_MODULE,
+            &root_source.content(),
+            unstable_features,
+            &mut diagnostics,
+        ) else {
+            diagnostics.with_sources(sources);
+            return (None, diagnostics);
+        };
+
+        let mut modules = HashMap::new();
+        modules.insert(
+            MAIN_MODULE,
+            SourceModule {
                 source: root_source.clone(),
-                program: root_program.clone(),
-            }],
+                program,
+            },
+        );
+
+        // Build the graph
+        let mut graph = Self {
+            modules,
             dependency_map,
-            source_map: SourceMap::new(root_source),
+            sources,
             use_cache: HashMap::new(),
             dependencies: HashMap::new(),
         };
 
-        graph.dependencies.insert(MAIN_MODULE, Vec::new());
+        graph.discover_dependencies(&mut diagnostics, unstable_features);
 
+        if diagnostics.has_errors() {
+            diagnostics.with_sources(graph.sources);
+            (None, diagnostics)
+        } else {
+            (Some(graph), diagnostics)
+        }
+    }
+
+    /// BFS over `use` declarations, populating `modules`, `dependencies`,
+    /// and `use_cache`. Errors go into `diagnostics`; no `Result` because
+    /// partial state on failure is still useful for reporting.
+    fn discover_dependencies(
+        &mut self,
+        diagnostics: &mut DiagnosticManager,
+        unstable_features: &UnstableFeatures,
+    ) {
+        self.dependencies.insert(MAIN_MODULE, Vec::new());
         let mut use_cache = HashMap::new();
         let mut queue = VecDeque::new();
         queue.push_back(MAIN_MODULE);
@@ -222,12 +276,15 @@ impl DependencyGraph {
         let mut invalid_imports = HashSet::new();
 
         while let Some(curr_id) = queue.pop_front() {
-            let Some(current_source_module) = graph.modules.get(curr_id) else {
-                handler.push(RichError::new(Error::Internal { msg: format!(
-                    "Internal Driver Error: Module ID {} is in the queue but missing from the graph.modules.",
-                    curr_id
-                ) }, Span::DUMMY));
-                return None;
+            let Some(current_source_module) = self.modules.get(&curr_id) else {
+                debug_assert!(
+                    false,
+                    "poisoned invariant broken: id {curr_id} popped without a module"
+                );
+                diagnostics.push(Diagnostic::global(Error::Internal {
+                    msg: format!("module id {curr_id} missing from graph; aborting compilation"),
+                }));
+                return;
             };
 
             // We need this to report errors inside THIS file.
@@ -240,27 +297,21 @@ impl DependencyGraph {
             let valid_imports = Self::resolve_imports(
                 &current_source_module.program,
                 &current,
-                &graph.dependency_map,
+                &self.dependency_map,
                 &mut use_cache,
-                handler,
+                diagnostics,
             );
 
             let mut ctx = LoadContext {
                 invalid_imports: &mut invalid_imports,
-                handler,
+                diagnostics,
                 queue: &mut queue,
                 unstable_features,
             };
-            graph.load_and_parse_dependencies(&current, valid_imports, &mut ctx);
+            self.load_and_parse_dependencies(&current, valid_imports, &mut ctx);
         }
 
-        graph.use_cache = use_cache;
-
-        (!handler.has_errors()).then_some(graph)
-    }
-
-    pub fn source_map(&self) -> &SourceMap {
-        &self.source_map
+        self.use_cache = use_cache;
     }
 
     /// PHASE 1 OF GRAPH CONSTRUCTION: Resolves all `use` declarations within a single
@@ -274,13 +325,13 @@ impl DependencyGraph {
         current_module: &CurrentModule,
         dependency_map: &DependencyMap,
         use_cache: &mut HashMap<Span, ResolvedUse>,
-        handler: &mut ErrorCollector,
+        diagnostics: &mut DiagnosticManager,
     ) -> Vec<(CanonPath, Span)> {
         let mut ctx = ImportContext {
             current: current_module.clone(),
             dependency_map,
             use_cache,
-            handler,
+            diagnostics,
         };
 
         let mut valid_imports = Vec::new();
@@ -303,7 +354,7 @@ impl DependencyGraph {
                 continue;
             }
 
-            if let Some(existing_id) = self.source_map.id(&path) {
+            if let Some(existing_id) = self.sources.id(&path) {
                 let deps = self.dependencies.entry(current.id).or_default();
                 if !deps.contains(&existing_id) {
                     deps.push(existing_id);
@@ -311,30 +362,32 @@ impl DependencyGraph {
                 continue;
             }
 
-            let new_id = self.source_map.len();
-
             let Ok(content) = std::fs::read_to_string(path.as_path()) else {
-                let err = RichError::new(
+                let err = Diagnostic::new(
                     Error::FileNotFound {
                         filename: PathBuf::from(path.as_path()),
                     },
                     import_span,
-                )
-                .with_source(current.source.clone());
+                );
 
-                ctx.handler.push(err);
+                ctx.diagnostics.push(err);
 
                 // Safe to ignore output: previous `.contains` check prevents collisions.
                 let _ = ctx.invalid_imports.insert(path);
                 continue;
             };
 
+            // Store source inside source_map, before checking is it valid or not.
             let source = CanonSourceFile::new(path.clone(), Arc::from(content));
 
-            let Some(module) = Self::parse_and_get_source_module(
+            // Must be read before inserting!
+            let new_id = self.sources.len();
+            self.sources.insert(source.clone());
+
+            let Some(parsed_program) = Self::parse_and_get_source_module(
                 new_id,
-                source.clone(),
-                ctx.handler,
+                &source.content(),
+                ctx.diagnostics,
                 ctx.unstable_features,
             ) else {
                 // Safe to ignore output: previous `.contains` check prevents collisions.
@@ -342,9 +395,12 @@ impl DependencyGraph {
                 continue;
             };
 
-            self.source_map.insert(source);
-            self.modules.push(module);
+            let module = SourceModule {
+                source: source.clone(),
+                program: parsed_program,
+            };
 
+            self.modules.insert(new_id, module);
             self.dependencies
                 .entry(current.id)
                 .or_default()
@@ -359,24 +415,24 @@ impl DependencyGraph {
     /// `ErrorCollector` and safely returns `None`.
     fn parse_and_get_source_module(
         new_id: usize,
-        source: CanonSourceFile,
-        handler: &mut ErrorCollector,
+        content: &str,
+        diagnostics: &mut DiagnosticManager,
         unstable_features: &UnstableFeatures,
-    ) -> Option<SourceModule> {
-        let mut error_handler = ErrorCollector::new();
+    ) -> Option<parse::Program> {
+        let before = diagnostics.error_count();
+
         let ast = parse::Program::parse_from_str_with_errors(
             new_id,
-            source.clone(),
+            content,
             unstable_features,
-            &mut error_handler,
+            diagnostics,
         );
 
-        if error_handler.has_errors() {
-            handler.extend_with_handler(source, &error_handler);
+        if diagnostics.error_count() > before {
             return None;
         }
 
-        ast.map(|program| SourceModule { source, program })
+        ast
     }
 }
 
@@ -386,7 +442,7 @@ struct ImportContext<'a> {
     current: CurrentModule,
     dependency_map: &'a DependencyMap,
     use_cache: &'a mut HashMap<Span, ResolvedUse>,
-    handler: &'a mut ErrorCollector,
+    diagnostics: &'a mut DiagnosticManager,
 }
 
 impl<'a> ImportContext<'a> {
@@ -408,7 +464,7 @@ impl<'a> ImportContext<'a> {
 
     /// Resolves a single `use` declaration, caches the result for reuse during
     /// later graph construction phases, and returns the resolved path and span.
-    /// Returns `None` and reports to `handler` if resolution fails.
+    /// Returns `None` and reports to `diagnostics` if resolution fails.
     fn resolve_single(&mut self, use_decl: &parse::UseDecl) -> Option<(CanonPath, Span)> {
         let resolved = match self
             .dependency_map
@@ -416,8 +472,7 @@ impl<'a> ImportContext<'a> {
         {
             Ok(res) => res,
             Err(err) => {
-                self.handler
-                    .push(err.with_source(self.current.source.clone()));
+                self.diagnostics.push(err);
                 return None;
             }
         };
@@ -432,10 +487,11 @@ impl<'a> ImportContext<'a> {
                 "Reevaluated an existing use_decl. Old value was: {:?}",
                 old_value
             );
-            let err = RichError::new(Error::Internal { msg }, span)
-                .with_source(self.current.source.clone());
-            self.handler.push(err);
+
+            let err = Diagnostic::new(Error::Internal { msg }, span);
+            self.diagnostics.push(err);
         }
+
         Some(result)
     }
 }
@@ -444,7 +500,7 @@ impl<'a> ImportContext<'a> {
 /// Lives only for the duration of [`DependencyGraph::new`].
 struct LoadContext<'a> {
     invalid_imports: &'a mut HashSet<CanonPath>,
-    handler: &'a mut ErrorCollector,
+    diagnostics: &'a mut DiagnosticManager,
     queue: &'a mut VecDeque<usize>,
     unstable_features: &'a UnstableFeatures,
 }
@@ -482,77 +538,59 @@ pub(crate) mod tests {
     ///    This will be empty if graph creation fails.
     /// 3. `TempWorkspace`: The temporary directory instance. This must be kept in scope by the caller so
     ///    the OS doesn't delete the files before the test finishes.
-    /// 4. `ErrorCollector`: The handler containing any logged errors, useful fo
+    /// 4. `DiagnosticManager`: The manager containing any logged errors.
     pub(crate) fn setup_graph_raw(
         files: Vec<(&str, &str)>,
     ) -> (
         Option<DependencyGraph>,
         HashMap<String, usize>,
         TempWorkspace,
-        ErrorCollector,
+        DiagnosticManager,
     ) {
         let ws = TempWorkspace::new("graph");
-        let mut handler = ErrorCollector::new();
 
         // Create base directories
         let workspace_dir = canon(&ws.create_dir("workspace"));
         let lib_dir = canon(&ws.create_dir("workspace/libs/lib"));
 
         // Set up the dependency map for imports (e.g. `use lib::...`)
-        let map =
+        let dependency_map =
             Arc::new(build_map(&workspace_dir, &[(&workspace_dir, "lib", &lib_dir)]).unwrap());
 
-        let mut root_file_path = None;
-        let mut root_content = String::new();
-
         // Create all requested files
+        let mut root_source_opt = None;
         for (path, content) in files {
             let full_path = format!("workspace/{}", path);
-            let created_file = canon(&ws.create_file(&full_path, content));
+            let created = canon(&ws.create_file(&full_path, content));
 
             if path == "main.simf" {
-                root_file_path = Some(created_file);
-                root_content = content.to_string();
+                root_source_opt = Some(CanonSourceFile::new(created, Arc::from(content)));
             }
         }
+        let root_source = root_source_opt.expect("main.simf must be defined in file list");
 
-        let root_p = root_file_path.expect("main.simf must be defined in file list");
-        let main_canon_source = CanonSourceFile::new(root_p, Arc::from(root_content));
+        let (graph_opt, diagnostics) =
+            DependencyGraph::build_graph(root_source, dependency_map, &UnstableFeatures::all());
 
-        let main_program_option = parse::Program::parse_from_str_with_errors(
-            MAIN_MODULE,
-            main_canon_source.clone(),
-            &UnstableFeatures::all(),
-            &mut handler,
-        );
-
-        let Some(main_program) = main_program_option else {
-            return (None, HashMap::new(), ws, handler);
+        let file_ids = match &graph_opt {
+            Some(graph) => build_file_ids(&graph.sources),
+            None => diagnostics
+                .sources()
+                .map(build_file_ids)
+                .unwrap_or_default(),
         };
 
-        let graph_option = DependencyGraph::new(
-            main_canon_source,
-            map,
-            &main_program,
-            &mut handler,
-            &UnstableFeatures::all(),
-        );
+        (graph_opt, file_ids, ws, diagnostics)
+    }
 
-        let mut file_ids = HashMap::new();
-
-        if let Some(ref graph) = graph_option {
-            for (path, id) in graph.source_map.iter() {
-                let file_stem = path
-                    .as_path()
-                    .file_stem()
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string();
-                file_ids.insert(file_stem, *id);
-            }
-        }
-
-        (graph_option, file_ids, ws, handler)
+    fn build_file_ids(sources: &SourceMap) -> HashMap<String, usize> {
+        sources
+            .iter()
+            .filter_map(|(path, id)| {
+                let stem = path.as_path().file_stem()?;
+                Some((stem.to_string_lossy().into_owned(), *id))
+            })
+            .collect()
     }
 
     /// Initializes a complete graph environment for testing, expecting strict success.
@@ -579,17 +617,22 @@ pub(crate) mod tests {
     /// to standard error if the parser or graph builder encounters any issues.
     pub(crate) fn setup_graph(
         files: Vec<(&str, &str)>,
-    ) -> (DependencyGraph, HashMap<String, usize>, TempWorkspace) {
-        let (graph_option, file_ids, ws, handler) = setup_graph_raw(files);
+    ) -> (
+        DependencyGraph,
+        HashMap<String, usize>,
+        TempWorkspace,
+        DiagnosticManager,
+    ) {
+        let (graph_option, file_ids, ws, diagnostics) = setup_graph_raw(files);
 
         let Some(graph) = graph_option else {
             panic!(
                 "Parser or DependencyGraph Error in Test Setup:\n{}",
-                handler
+                diagnostics
             );
         };
 
-        (graph, file_ids, ws)
+        (graph, file_ids, ws, diagnostics)
     }
 
     #[test]
@@ -598,7 +641,7 @@ pub(crate) mod tests {
         // root.simf -> "use lib::math::some_func;"
         // libs/lib/math.simf -> ""
 
-        let (graph, ids, _ws) = setup_graph(vec![
+        let (graph, ids, _ws, _diags) = setup_graph(vec![
             ("main.simf", "use lib::math::some_func;"),
             ("libs/lib/math.simf", ""),
         ]);
@@ -625,7 +668,7 @@ pub(crate) mod tests {
         // B -> imports Common
         // Expected: Common loaded ONLY ONCE.
 
-        let (graph, ids, _ws) = setup_graph(vec![
+        let (graph, ids, _ws, _diags) = setup_graph(vec![
             ("main.simf", "use lib::A::foo; use lib::B::bar;"),
             ("libs/lib/A.simf", "use crate::Common::dummy1;"),
             ("libs/lib/B.simf", "use crate::Common::dummy2;"),
@@ -670,7 +713,7 @@ pub(crate) mod tests {
         // A -> imports B
         // B -> imports A
 
-        let (graph, ids, _ws) = setup_graph(vec![
+        let (graph, ids, _ws, _diags) = setup_graph(vec![
             ("main.simf", "use lib::A::entry;"),
             ("libs/lib/A.simf", "use crate::B::func;"),
             ("libs/lib/B.simf", "use crate::A::func;"),
@@ -701,7 +744,7 @@ pub(crate) mod tests {
         // Setup: root imports from "unknown", which is not in our dependency map.
         // We use `setup_graph_raw` because we expect graph generation to fail and
         // emit an error, rather than panicking the standard test helper.
-        let (graph_option, _ids, _ws, handler) =
+        let (graph_option, _ids, _ws, diagnostics) =
             setup_graph_raw(vec![("main.simf", "use unknown::library::item;")]);
 
         assert!(
@@ -710,7 +753,7 @@ pub(crate) mod tests {
         );
 
         assert!(
-            handler.has_errors(),
+            diagnostics.has_errors(),
             "The ErrorCollector should have logged an error about the unmapped import"
         );
     }
@@ -720,7 +763,7 @@ pub(crate) mod tests {
         // Goal: Verify that a simple chain (main -> a -> b) correctly pushes items
         // into the vectors and builds the adjacency list in BFS order.
 
-        let (graph, ids, _ws) = setup_graph(vec![
+        let (graph, ids, _ws, _diags) = setup_graph(vec![
             ("main.simf", "use lib::A::mock_item;"),
             ("libs/lib/A.simf", "use crate::B::mock_item;"),
             ("libs/lib/B.simf", ""),
@@ -728,7 +771,7 @@ pub(crate) mod tests {
 
         // Assert: Size checks
         assert_eq!(graph.modules.len(), 3);
-        assert_eq!(graph.source_map.entries.len(), 3);
+        assert_eq!(graph.sources.len(), 3);
 
         // Assert: Ensure BFS assigned the IDs in the exact correct order
         let main_id = ids["main"];
