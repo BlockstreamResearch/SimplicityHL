@@ -679,7 +679,11 @@ pub(crate) mod tests {
             arguments_file_path: P,
         ) -> TestCase<CompiledProgram> {
             let arguments_text = std::fs::read_to_string(arguments_file_path).unwrap();
-            let arguments = match serde_json::from_str::<Arguments>(&arguments_text) {
+            let unresolved = match serde_json::from_str::<UnresolvedValues>(&arguments_text) {
+                Ok(x) => x,
+                Err(error) => panic!("{error}"),
+            };
+            let arguments = match unresolved.resolve(self.program.parameters()) {
                 Ok(x) => x,
                 Err(error) => panic!("{error}"),
             };
@@ -741,7 +745,11 @@ pub(crate) mod tests {
             witness_file_path: P,
         ) -> TestCase<SatisfiedProgram> {
             let witness_text = std::fs::read_to_string(witness_file_path).unwrap();
-            let witness_values = match serde_json::from_str::<WitnessValues>(&witness_text) {
+            let unresolved = match serde_json::from_str::<UnresolvedValues>(&witness_text) {
+                Ok(x) => x,
+                Err(error) => panic!("{error}"),
+            };
+            let witness_values = match unresolved.resolve(self.program.witness_types()) {
                 Ok(x) => x,
                 Err(error) => panic!("{error}"),
             };
