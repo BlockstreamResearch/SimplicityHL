@@ -13,6 +13,14 @@ use std::path::Path;
 use std::{env, fmt};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
+/// One witness node of the program: its name and the Simplicity type of the
+/// value it expects. See [`Output::witness_layout`].
+struct WitnessLayoutEntry {
+    name: String,
+    ty: String,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 /// The compilation output.
 struct Output {
     /// Simplicity program result, base64 encoded.
@@ -27,6 +35,11 @@ struct Output {
     /// versions can produce different CMRs from the same source, so the version
     /// travels with the artifact as metadata (it is not part of the program).
     compiler_version: &'static str,
+    /// Every witness node of the program, in the post order in which the nodes
+    /// occur in the target code — the order in which tooling must assign values
+    /// to satisfy the program without recompiling it.
+    /// See `CompiledProgram::witness_layout`.
+    witness_layout: Vec<WitnessLayoutEntry>,
 }
 
 impl fmt::Display for Output {
@@ -36,6 +49,12 @@ impl fmt::Display for Output {
         writeln!(f, "Compiler version:\n{}", self.compiler_version)?;
         if let Some(witness) = &self.witness {
             writeln!(f, "Witness:\n{}", witness)?;
+        }
+        if !self.witness_layout.is_empty() {
+            writeln!(f, "Witness layout:")?;
+            for (index, entry) in self.witness_layout.iter().enumerate() {
+                writeln!(f, "{index}: {}: {}", entry.name, entry.ty)?;
+            }
         }
         if let Some(witness) = &self.abi_meta {
             writeln!(f, "ABI meta:\n{:?}", witness)?;
@@ -47,6 +66,11 @@ impl fmt::Display for Output {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command = {
         Command::new(env!("CARGO_BIN_NAME"))
+            // `--version` is the machine handshake for tooling that drives `simc`
+            // as a subprocess: the CLI is additive-only from 0.7.0 on (flags and
+            // output fields are never removed or reshaped), so the compiler
+            // version is the only version there is.
+            .version(env!("CARGO_PKG_VERSION"))
             .about(
                 "\
                 Compile the given SimplicityHL program and print the resulting Simplicity base64 string.\n\
@@ -195,6 +219,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let source = CanonSourceFile::new(main_path.clone(), std::sync::Arc::from(main_text));
+
     let compiled = match CompiledProgram::new_with_dep(
         source,
         &dependencies,
@@ -249,12 +274,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let cmr_hex = compiled.commit().cmr().to_string();
+    let witness_layout = compiled
+        .witness_layout()
+        .iter()
+        .map(|(name, ty)| WitnessLayoutEntry {
+            name: name.to_string(),
+            ty: ty.to_string(),
+        })
+        .collect();
     let output = Output {
         program: Base64Display::new(&program_bytes, &STANDARD).to_string(),
         witness: witness_bytes.map(|bytes| Base64Display::new(&bytes, &STANDARD).to_string()),
         abi_meta: abi_opt,
         cmr: cmr_hex,
         compiler_version: compiled.compiler_version(),
+        witness_layout,
     };
 
     if output_json {

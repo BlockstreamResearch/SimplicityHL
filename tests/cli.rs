@@ -285,3 +285,48 @@ fn cli_dependency_version_mismatch_rejected() {
         "expected an incompatible-version error pointing at the dependency, got:\n{stderr}"
     );
 }
+
+/// `--version` prints the compiler version and exits, without requiring a
+/// program file — the handshake tooling performs before driving `simc` as a
+/// subprocess (the CLI is additive-only, so the compiler version is the only
+/// version there is).
+#[test]
+fn cli_version() {
+    let output = Command::new(env!("CARGO_BIN_EXE_simc"))
+        .arg("--version")
+        .output()
+        .expect("failed to run simc");
+    assert!(output.status.success(), "simc --version must succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        format!("simc {}", env!("CARGO_PKG_VERSION")),
+        "got:\n{stdout}"
+    );
+}
+
+/// The output lists every witness node with its name and Simplicity type, in
+/// the order tooling must use to satisfy the program without recompiling it.
+/// JSON output requires `serde`.
+#[cfg(feature = "serde")]
+#[test]
+fn cli_output_includes_witness_layout() {
+    let file = Path::new(env!("CARGO_TARGET_TMPDIR")).join("witness_layout.simf");
+    std::fs::write(
+        &file,
+        "fn main() {\n    let a: u16 = witness::A;\n    assert!(jet::eq_16(a, 7));\n}\n",
+    )
+    .expect("failed to write source file");
+    let output = Command::new(env!("CARGO_BIN_EXE_simc"))
+        .arg(&file)
+        .arg("--json")
+        .output()
+        .expect("failed to run simc");
+    assert!(output.status.success(), "simc --json must succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"witness_layout\":[{\"name\":\"A\",\"ty\":\"2^16\"}]"),
+        "expected the witness layout in the JSON output, got:\n{stdout}"
+    );
+}
