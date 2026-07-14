@@ -48,6 +48,8 @@ use crate::source::CanonSourceFile;
 pub use crate::types::ResolvedType;
 pub use crate::unstable::{UnstableFeature, UnstableFeatures};
 pub use crate::value::Value;
+#[cfg(feature = "serde")]
+pub use crate::witness::UnresolvedValues;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 
 /// The template of a SimplicityHL program.
@@ -321,6 +323,11 @@ impl CompiledProgram {
     /// See [`TemplateProgram::compiler_version`].
     pub fn compiler_version(&self) -> &'static str {
         version::SimcDirective::current_version()
+    }
+
+    /// Access the witness types declared by the program.
+    pub fn witness_types(&self) -> &WitnessTypes {
+        &self.witness_types
     }
 
     /// Satisfy the SimplicityHL program with the given `witness_values`.

@@ -5,17 +5,24 @@ use crate::parse::ParseFromStr;
 use crate::str::WitnessName;
 use crate::types::ResolvedType;
 use crate::value::Value;
-use crate::witness::{Arguments, WitnessValues};
+use crate::witness::{Arguments, UnresolvedValue, UnresolvedValues, WitnessValues};
 use crate::{AbiMeta, Parameters, WitnessTypes};
 use serde::{de, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 
-struct WitnessMapVisitor;
+/// Visitor for a map from witness names to values of type `V`, rejecting duplicate names.
+struct NamedMapVisitor<V>(std::marker::PhantomData<V>);
 
-impl<'de> de::Visitor<'de> for WitnessMapVisitor {
-    type Value = HashMap<WitnessName, Value>;
+impl<V> NamedMapVisitor<V> {
+    const fn new() -> Self {
+        Self(std::marker::PhantomData)
+    }
+}
+
+impl<'de, V: Deserialize<'de>> de::Visitor<'de> for NamedMapVisitor<V> {
+    type Value = HashMap<WitnessName, V>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a map with string keys and value-map values")
+        formatter.write_str("a map with string keys")
     }
 
     fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
@@ -23,7 +30,7 @@ impl<'de> de::Visitor<'de> for WitnessMapVisitor {
         M: de::MapAccess<'de>,
     {
         let mut map = HashMap::new();
-        while let Some((key, value)) = access.next_entry::<WitnessName, Value>()? {
+        while let Some((key, value)) = access.next_entry::<WitnessName, V>()? {
             if map.insert(key.shallow_clone(), value).is_some() {
                 return Err(de::Error::custom(format!("Name `{key}` is assigned twice")));
             }
@@ -38,8 +45,54 @@ impl<'de> Deserialize<'de> for WitnessValues {
         D: Deserializer<'de>,
     {
         deserializer
-            .deserialize_map(WitnessMapVisitor)
+            .deserialize_map(NamedMapVisitor::<Value>::new())
             .map(Self::from)
+    }
+}
+
+struct UnresolvedValueVisitor;
+
+impl<'de> de::Visitor<'de> for UnresolvedValueVisitor {
+    type Value = UnresolvedValue;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a value string or a map with \"value\" and \"type\" fields")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(UnresolvedValue::Untyped(value.to_owned()))
+    }
+
+    fn visit_map<M>(self, access: M) -> Result<Self::Value, M::Error>
+    where
+        M: de::MapAccess<'de>,
+    {
+        ValueMapVisitor
+            .visit_map(access)
+            .map(UnresolvedValue::Typed)
+    }
+}
+
+impl<'de> Deserialize<'de> for UnresolvedValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(UnresolvedValueVisitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for UnresolvedValues {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer
+            .deserialize_map(NamedMapVisitor::<UnresolvedValue>::new())
+            .map(Self::from_map)
     }
 }
 
@@ -109,7 +162,7 @@ impl<'de> Deserialize<'de> for Arguments {
         D: Deserializer<'de>,
     {
         deserializer
-            .deserialize_map(WitnessMapVisitor)
+            .deserialize_map(NamedMapVisitor::<Value>::new())
             .map(Self::from)
     }
 }
