@@ -6,7 +6,7 @@ use simplicityhl::ast::ElementsJetHinter;
 use simplicityhl::version::SimcDirective;
 use simplicityhl::{
     resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
-    CompiledProgram,
+    CompiledProgram, TemplateProgram,
 };
 use simplicityhl::{UnstableFeature, UnstableFeatures};
 use std::path::Path;
@@ -18,6 +18,24 @@ use std::{env, fmt};
 struct WitnessLayoutEntry {
     name: String,
     ty: String,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+/// The output of `--abi-only`: a program's declared parameter and witness types,
+/// obtained without compiling it and without requiring arguments (so a parametric
+/// program can be typed out of process).
+struct AbiOnlyOutput {
+    /// Declared parameter and witness types of the program.
+    abi_meta: AbiMeta,
+    /// Version of the compiler that produced this ABI.
+    compiler_version: &'static str,
+}
+
+impl fmt::Display for AbiOnlyOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Compiler version:\n{}", self.compiler_version)?;
+        writeln!(f, "ABI meta:\n{:?}", self.abi_meta)
+    }
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -127,6 +145,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .help("Additional ABI .simf contract types"),
             )
             .arg(
+                Arg::new("abi_only")
+                    .long("abi-only")
+                    .action(ArgAction::SetTrue)
+                    .help("Emit only the program's ABI (parameter/witness types), without compiling it or requiring arguments"),
+            )
+            .arg(
                 Arg::new("unstable_features")
                     .long("unstable-feature")
                     .short('Z')
@@ -149,6 +173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let include_debug_symbols = matches.get_flag("debug");
     let output_json = matches.get_flag("json");
     let abi_param = matches.get_flag("abi");
+    let abi_only = matches.get_flag("abi_only");
 
     let unstable_features = matches
         .get_many::<UnstableFeature>("unstable_features")
@@ -219,6 +244,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let source = CanonSourceFile::new(main_path.clone(), std::sync::Arc::from(main_text));
+
+    // `--abi-only`: type the program without compiling it. Uses the args-free
+    // `TemplateProgram` path, so it works for parametric programs (no `--args` needed) —
+    // the case that plain `--abi` cannot serve.
+    if abi_only {
+        let template = match TemplateProgram::new_with_dep(
+            source,
+            &dependencies,
+            &unstable_features,
+            Box::new(ElementsJetHinter::new()),
+        ) {
+            Ok(template) => template,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        };
+        let output = AbiOnlyOutput {
+            abi_meta: template.generate_abi_meta()?,
+            compiler_version: SimcDirective::current_version(),
+        };
+
+        if output_json {
+            #[cfg(not(feature = "serde"))]
+            {
+                return Err(
+                    "Program was compiled without the 'serde' feature and cannot output JSON."
+                        .into(),
+                );
+            }
+
+            #[cfg(feature = "serde")]
+            {
+                println!("{}", serde_json::to_string(&output)?);
+                return Ok(());
+            }
+        }
+
+        println!("{}", output);
+        return Ok(());
+    }
 
     let compiled = match CompiledProgram::new_with_dep(
         source,

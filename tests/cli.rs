@@ -305,6 +305,42 @@ fn cli_version() {
     );
 }
 
+/// `--abi-only` types a program without compiling it and without requiring
+/// arguments — so it works even for a program that declares a `param`, which plain
+/// `--abi` (which fully compiles) cannot. JSON output requires `serde`.
+#[cfg(feature = "serde")]
+#[test]
+fn cli_abi_only_types_parametric_program() {
+    let file = Path::new(env!("CARGO_TARGET_TMPDIR")).join("abi_only.simf");
+    std::fs::write(
+        &file,
+        "fn main() {\n    let a: u16 = witness::A;\n    assert!(jet::eq_16(a, param::LIMIT));\n}\n",
+    )
+    .expect("failed to write source file");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_simc"))
+        .arg(&file)
+        .arg("--abi-only")
+        .arg("--json")
+        .output()
+        .expect("failed to run simc");
+    assert!(
+        output.status.success(),
+        "simc --abi-only must succeed on a parametric program: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"witness_types\":{\"A\":\"u16\"}"),
+        "expected the witness type in the ABI output, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("\"parameter_types\":{\"LIMIT\":\"u16\"}"),
+        "expected the parameter type in the ABI output, got:\n{stdout}"
+    );
+}
+
 /// The output lists every witness node with its name and Simplicity type, in
 /// the order tooling must use to satisfy the program without recompiling it.
 /// JSON output requires `serde`.
