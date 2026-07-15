@@ -58,6 +58,12 @@ struct Output {
     /// to satisfy the program without recompiling it.
     /// See `CompiledProgram::witness_layout`.
     witness_layout: Vec<WitnessLayoutEntry>,
+    /// Debug symbols of the program, keyed by node CMR (hex). Present only when
+    /// compiled with `--debug`: the debug instrumentation changes the program
+    /// (and thus its CMR), so the symbols always describe exactly the program in
+    /// this output.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    debug_symbols: Option<simplicityhl::debug::DebugSymbols>,
 }
 
 impl fmt::Display for Output {
@@ -76,6 +82,9 @@ impl fmt::Display for Output {
         }
         if let Some(witness) = &self.abi_meta {
             writeln!(f, "ABI meta:\n{:?}", witness)?;
+        }
+        if let Some(symbols) = &self.debug_symbols {
+            writeln!(f, "Debug symbols:\n{:?}", symbols)?;
         }
         Ok(())
     }
@@ -355,6 +364,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cmr: cmr_hex,
         compiler_version: compiled.compiler_version(),
         witness_layout,
+        debug_symbols: include_debug_symbols.then(|| compiled.debug_symbols().clone()),
     };
 
     if output_json {

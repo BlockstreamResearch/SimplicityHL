@@ -366,3 +366,48 @@ fn cli_output_includes_witness_layout() {
         "expected the witness layout in the JSON output, got:\n{stdout}"
     );
 }
+
+/// `--debug` adds a `debug_symbols` map to the JSON output — CMR-keyed entries for
+/// the instrumented calls — and without the flag the field is absent entirely, so
+/// existing consumers see byte-identical output. The instrumentation changes the
+/// program (and its CMR), which is why the symbols only ever travel with a `--debug`
+/// compile: they always describe exactly the program in the same output.
+#[cfg(feature = "serde")]
+#[test]
+fn cli_debug_symbols_in_json_output() {
+    let file = Path::new(env!("CARGO_TARGET_TMPDIR")).join("debug_symbols.simf");
+    std::fs::write(
+        &file,
+        "fn main() {\n    let x: u32 = dbg!(0);\n    assert!(jet::is_zero_32(x));\n}\n",
+    )
+    .expect("failed to write source file");
+
+    let plain = Command::new(env!("CARGO_BIN_EXE_simc"))
+        .arg(&file)
+        .arg("--json")
+        .output()
+        .expect("failed to run simc");
+    assert!(plain.status.success(), "simc --json must succeed");
+    let plain_stdout = String::from_utf8_lossy(&plain.stdout);
+    assert!(
+        !plain_stdout.contains("debug_symbols"),
+        "without --debug the field must be absent, got:\n{plain_stdout}"
+    );
+
+    let debug = Command::new(env!("CARGO_BIN_EXE_simc"))
+        .arg(&file)
+        .arg("--json")
+        .arg("--debug")
+        .output()
+        .expect("failed to run simc");
+    assert!(debug.status.success(), "simc --json --debug must succeed");
+    let debug_stdout = String::from_utf8_lossy(&debug.stdout);
+    assert!(
+        debug_stdout.contains("\"debug_symbols\":{"),
+        "expected a debug_symbols map in the JSON output, got:\n{debug_stdout}"
+    );
+    assert!(
+        debug_stdout.contains("\"name\":{\"debug\":\"u32\"}"),
+        "expected the dbg! entry with its type, got:\n{debug_stdout}"
+    );
+}
