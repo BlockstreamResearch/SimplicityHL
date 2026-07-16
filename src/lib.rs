@@ -65,7 +65,9 @@ pub struct TemplateProgram {
 
 impl TemplateProgram {
     /// Parses and flattens a multi-file program into a single enriched [`parse::Program`]
-    /// with all imports resolved and each file wrapped in a `unit_N` module.
+    /// with all imports resolved: the entry file's items stay at the top level and
+    /// each dependency file is wrapped in a `unit_N` module, so the flattened
+    /// output is itself a valid entry file.
     ///
     /// ## Errors
     ///
@@ -355,6 +357,33 @@ impl CompiledProgram {
     /// See [`TemplateProgram::compiler_version`].
     pub fn compiler_version(&self) -> &'static str {
         version::SimcDirective::current_version()
+    }
+
+    /// The witness layout of the program: the name and Simplicity value type of
+    /// every witness node, in the post order in which the nodes occur in the
+    /// Simplicity target code.
+    ///
+    /// This is the contract for external tooling that satisfies a program without
+    /// this compiler's frontend: witness nodes are never shared at commitment
+    /// time, and [`Self::commit`] preserves node order, so the `k`-th witness
+    /// node encountered in post order takes a value of the type described by the
+    /// `k`-th entry of this layout. A name can appear in several entries when the
+    /// program references the same witness more than once; every occurrence takes
+    /// the same value, exactly as [`Self::satisfy`] assigns it.
+    pub fn witness_layout(&self) -> Vec<(crate::str::WitnessName, Arc<simplicity::types::Final>)> {
+        use simplicity::dag::DagLike as _;
+
+        self.simplicity
+            .as_ref()
+            .post_order_iter::<simplicity::dag::InternalSharing>()
+            .filter_map(|item| match item.node.inner() {
+                simplicity::node::Inner::Witness(name) => Some((
+                    name.shallow_clone(),
+                    Arc::clone(&item.node.cached_data().arrow().target),
+                )),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Satisfy the SimplicityHL program with the given `witness_values`.
@@ -1578,6 +1607,149 @@ fn main() {
             "Expected 'Incompatible compiler version', got: {}",
             err
         );
+    }
+
+    /// A program with two witnesses of distinct types, for the layout tests.
+    fn two_witness_program() -> CompiledProgram {
+        let src = "fn main() {
+            let a: u16 = witness::A;
+            let b: u32 = witness::B;
+            assert!(jet::eq_16(a, 7));
+            assert!(jet::eq_32(b, 9));
+        }";
+        CompiledProgram::new(
+            src,
+            Arguments::default(),
+            false,
+            Box::new(crate::ast::ElementsJetHinter::new()),
+        )
+        .unwrap()
+    }
+
+    /// The witness values matching [`two_witness_program`].
+    fn two_witness_values() -> WitnessValues {
+        let mut values = std::collections::HashMap::new();
+        values.insert(
+            crate::str::WitnessName::from_str_unchecked("A"),
+            Value::from(crate::value::UIntValue::U16(7)),
+        );
+        values.insert(
+            crate::str::WitnessName::from_str_unchecked("B"),
+            Value::from(crate::value::UIntValue::U32(9)),
+        );
+        WitnessValues::from(values)
+    }
+
+    /// The layout lists every witness node with its name and Simplicity type,
+    /// in the order the nodes occur in the target code.
+    #[test]
+    fn witness_layout_names_and_types() {
+        let layout = two_witness_program().witness_layout();
+        let entries: Vec<(&str, String)> = layout
+            .iter()
+            .map(|(name, ty)| (name.as_inner(), ty.to_string()))
+            .collect();
+        assert_eq!(
+            entries,
+            [("A", "2^16".to_string()), ("B", "2^32".to_string())]
+        );
+    }
+
+    /// The layout order is the satisfaction order: assigning values to witness
+    /// nodes *by layout index* — on the name-free commit program, through the
+    /// consensus encode/decode round-trip — yields the same redeem program as
+    /// [`CompiledProgram::satisfy`] assigning them by name. This is the contract
+    /// external tooling relies on to satisfy a program without the compiler's
+    /// frontend.
+    #[test]
+    fn witness_layout_populates_by_index() {
+        use simplicity::dag::PostOrderIterItem;
+        use simplicity::node::{self, Converter, Inner, NoWitness};
+
+        /// Assigns the `k`-th witness node the `k`-th of the given values.
+        struct IndexPopulator {
+            values: Vec<simplicity::Value>,
+            next: usize,
+        }
+
+        impl Converter<node::Commit, node::Redeem> for IndexPopulator {
+            type Error = String;
+
+            fn convert_witness(
+                &mut self,
+                _: &PostOrderIterItem<&CommitNode>,
+                _: &NoWitness,
+            ) -> Result<simplicity::Value, Self::Error> {
+                let value = self
+                    .values
+                    .get(self.next)
+                    .cloned()
+                    .ok_or("more witness nodes than layout entries")?;
+                self.next += 1;
+                Ok(value)
+            }
+
+            fn convert_disconnect(
+                &mut self,
+                _: &PostOrderIterItem<&CommitNode>,
+                _: Option<&Arc<RedeemNode>>,
+                _: &node::NoDisconnect,
+            ) -> Result<Arc<RedeemNode>, Self::Error> {
+                unreachable!("SimplicityHL does not use disconnect right now")
+            }
+
+            fn convert_data(
+                &mut self,
+                data: &PostOrderIterItem<&CommitNode>,
+                inner: Inner<&Arc<RedeemNode>, &Arc<RedeemNode>, &simplicity::Value>,
+            ) -> Result<Arc<node::RedeemData>, Self::Error> {
+                let inner = inner
+                    .map(|node| node.cached_data())
+                    .map_disconnect(|node| node.cached_data())
+                    .map_witness(simplicity::Value::shallow_clone);
+                Ok(Arc::new(node::RedeemData::new(
+                    data.node.cached_data().arrow().shallow_clone(),
+                    inner,
+                )))
+            }
+        }
+
+        let compiled = two_witness_program();
+        let witness_values = two_witness_values();
+        let expected = compiled
+            .satisfy(witness_values.shallow_clone())
+            .unwrap()
+            .redeem()
+            .to_vec_with_witness();
+
+        // Order the values per the layout, converted exactly as satisfaction does.
+        let ordered: Vec<simplicity::Value> = compiled
+            .witness_layout()
+            .iter()
+            .map(|(name, _)| {
+                simplicity::Value::from(crate::value::StructuralValue::from(
+                    witness_values.get(name).unwrap(),
+                ))
+            })
+            .collect();
+
+        // Round-trip the name-free program through the consensus serialization,
+        // as tooling that holds only the program bytes would.
+        let bytes = compiled.commit().to_vec_without_witness();
+        let decoded = CommitNode::decode::<_, simplicity::jet::Elements>(
+            simplicity::BitIter::from(&bytes[..]),
+        )
+        .unwrap();
+
+        let mut populator = IndexPopulator {
+            values: ordered,
+            next: 0,
+        };
+        let redeem = decoded
+            .convert::<simplicity::dag::InternalSharing, _, _>(&mut populator)
+            .unwrap();
+        assert_eq!(populator.next, populator.values.len());
+        assert_eq!(redeem.to_vec_with_witness(), expected);
     }
 }
 

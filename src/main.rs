@@ -6,11 +6,37 @@ use simplicityhl::ast::ElementsJetHinter;
 use simplicityhl::version::SimcDirective;
 use simplicityhl::{
     resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
-    CompiledProgram,
+    CompiledProgram, TemplateProgram,
 };
 use simplicityhl::{UnstableFeature, UnstableFeatures};
 use std::path::Path;
 use std::{env, fmt};
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+/// One witness node of the program: its name and the Simplicity type of the
+/// value it expects. See [`Output::witness_layout`].
+struct WitnessLayoutEntry {
+    name: String,
+    ty: String,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+/// The output of `--abi-only`: a program's declared parameter and witness types,
+/// obtained without compiling it and without requiring arguments (so a parametric
+/// program can be typed out of process).
+struct AbiOnlyOutput {
+    /// Declared parameter and witness types of the program.
+    abi_meta: AbiMeta,
+    /// Version of the compiler that produced this ABI.
+    compiler_version: &'static str,
+}
+
+impl fmt::Display for AbiOnlyOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Compiler version:\n{}", self.compiler_version)?;
+        writeln!(f, "ABI meta:\n{:?}", self.abi_meta)
+    }
+}
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 /// The compilation output.
@@ -27,6 +53,17 @@ struct Output {
     /// versions can produce different CMRs from the same source, so the version
     /// travels with the artifact as metadata (it is not part of the program).
     compiler_version: &'static str,
+    /// Every witness node of the program, in the post order in which the nodes
+    /// occur in the target code — the order in which tooling must assign values
+    /// to satisfy the program without recompiling it.
+    /// See `CompiledProgram::witness_layout`.
+    witness_layout: Vec<WitnessLayoutEntry>,
+    /// Debug symbols of the program, keyed by node CMR (hex). Present only when
+    /// compiled with `--debug`: the debug instrumentation changes the program
+    /// (and thus its CMR), so the symbols always describe exactly the program in
+    /// this output.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    debug_symbols: Option<simplicityhl::debug::DebugSymbols>,
 }
 
 impl fmt::Display for Output {
@@ -37,8 +74,17 @@ impl fmt::Display for Output {
         if let Some(witness) = &self.witness {
             writeln!(f, "Witness:\n{}", witness)?;
         }
+        if !self.witness_layout.is_empty() {
+            writeln!(f, "Witness layout:")?;
+            for (index, entry) in self.witness_layout.iter().enumerate() {
+                writeln!(f, "{index}: {}: {}", entry.name, entry.ty)?;
+            }
+        }
         if let Some(witness) = &self.abi_meta {
             writeln!(f, "ABI meta:\n{:?}", witness)?;
+        }
+        if let Some(symbols) = &self.debug_symbols {
+            writeln!(f, "Debug symbols:\n{:?}", symbols)?;
         }
         Ok(())
     }
@@ -47,6 +93,11 @@ impl fmt::Display for Output {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command = {
         Command::new(env!("CARGO_BIN_NAME"))
+            // `--version` is the machine handshake for tooling that drives `simc`
+            // as a subprocess: the CLI is additive-only from 0.7.0 on (flags and
+            // output fields are never removed or reshaped), so the compiler
+            // version is the only version there is.
+            .version(env!("CARGO_PKG_VERSION"))
             .about(
                 "\
                 Compile the given SimplicityHL program and print the resulting Simplicity base64 string.\n\
@@ -103,6 +154,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .help("Additional ABI .simf contract types"),
             )
             .arg(
+                Arg::new("abi_only")
+                    .long("abi-only")
+                    .action(ArgAction::SetTrue)
+                    .help("Emit only the program's ABI (parameter/witness types), without compiling it or requiring arguments"),
+            )
+            .arg(
                 Arg::new("unstable_features")
                     .long("unstable-feature")
                     .short('Z')
@@ -125,6 +182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let include_debug_symbols = matches.get_flag("debug");
     let output_json = matches.get_flag("json");
     let abi_param = matches.get_flag("abi");
+    let abi_only = matches.get_flag("abi_only");
 
     let unstable_features = matches
         .get_many::<UnstableFeature>("unstable_features")
@@ -195,6 +253,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let source = CanonSourceFile::new(main_path.clone(), std::sync::Arc::from(main_text));
+
+    // `--abi-only`: type the program without compiling it. Uses the args-free
+    // `TemplateProgram` path, so it works for parametric programs (no `--args` needed) —
+    // the case that plain `--abi` cannot serve.
+    if abi_only {
+        let template = match TemplateProgram::new_with_dep(
+            source,
+            &dependencies,
+            &unstable_features,
+            Box::new(ElementsJetHinter::new()),
+        ) {
+            Ok(template) => template,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        };
+        let output = AbiOnlyOutput {
+            abi_meta: template.generate_abi_meta()?,
+            compiler_version: SimcDirective::current_version(),
+        };
+
+        if output_json {
+            #[cfg(not(feature = "serde"))]
+            {
+                return Err(
+                    "Program was compiled without the 'serde' feature and cannot output JSON."
+                        .into(),
+                );
+            }
+
+            #[cfg(feature = "serde")]
+            {
+                println!("{}", serde_json::to_string(&output)?);
+                return Ok(());
+            }
+        }
+
+        println!("{}", output);
+        return Ok(());
+    }
+
     let compiled = match CompiledProgram::new_with_dep(
         source,
         &dependencies,
@@ -249,12 +349,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let cmr_hex = compiled.commit().cmr().to_string();
+    let witness_layout = compiled
+        .witness_layout()
+        .iter()
+        .map(|(name, ty)| WitnessLayoutEntry {
+            name: name.to_string(),
+            ty: ty.to_string(),
+        })
+        .collect();
     let output = Output {
         program: Base64Display::new(&program_bytes, &STANDARD).to_string(),
         witness: witness_bytes.map(|bytes| Base64Display::new(&bytes, &STANDARD).to_string()),
         abi_meta: abi_opt,
         cmr: cmr_hex,
         compiler_version: compiled.compiler_version(),
+        witness_layout,
+        debug_symbols: include_debug_symbols.then(|| compiled.debug_symbols().clone()),
     };
 
     if output_json {

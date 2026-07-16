@@ -82,6 +82,18 @@ impl SimcDirective {
         }
     }
 
+    /// The byte range of a file's leading directive, for external tooling that needs
+    /// to strip it (e.g. to feed the source to a directive-unaware parser). Returns
+    /// `Ok(None)` when the file declares no directive, and an error when the
+    /// directive is malformed.
+    pub fn span_of(content: &str) -> Result<Option<Range<usize>>, String> {
+        match Self::scan(content) {
+            DirectiveScan::Found { span, .. } => Ok(Some(span)),
+            DirectiveScan::Malformed { .. } => Err(Error::MalformedSimcDirective.to_string()),
+            DirectiveScan::Absent => Ok(None),
+        }
+    }
+
     /// The CLI advisory for a file with no `simc` directive, or `None` when one is
     /// present (a malformed directive counts as present). The suggestion names the
     /// compiler's base version — ranges cannot contain pre-release tags.
@@ -393,5 +405,17 @@ mod tests {
         assert_eq!(SimcDirective::requirement_of("fn main() {}"), Ok(None));
         assert!(SimcDirective::requirement_of("simc \"*\"\nfn main() {}").is_err());
         assert!(SimcDirective::requirement_of("simc \"not-a-version\";").is_err());
+    }
+
+    /// `span_of` reports the exact directive bytes — including with leading trivia
+    /// that itself contains `simc` — so tooling can strip by span, not by search.
+    #[test]
+    fn span_of_reports_directive_bytes() {
+        let src = "// simc; note\nsimc \">=0.1.0\";\nfn main() {}";
+        let span = SimcDirective::span_of(src).unwrap().unwrap();
+        assert_eq!(&src[span], "simc \">=0.1.0\";");
+
+        assert_eq!(SimcDirective::span_of("fn main() {}"), Ok(None));
+        assert!(SimcDirective::span_of("simc \"*\"\nfn main() {}").is_err());
     }
 }

@@ -219,3 +219,150 @@ impl DebugValue {
         &self.value
     }
 }
+
+#[cfg(feature = "serde")]
+mod serde_impl {
+    //! JSON form of [`DebugSymbols`]: a map from CMR (hex) to `{text, name}`, with
+    //! types carried as their string form (like the ABI), so external tooling can
+    //! re-attach the symbols to a program whose nodes it resolves by CMR.
+
+    use std::collections::{BTreeMap, HashMap};
+    use std::str::FromStr;
+    use std::sync::Arc;
+
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use simplicity::Cmr;
+
+    use super::{DebugSymbols, TrackedCall, TrackedCallName};
+    use crate::parse::ParseFromStr;
+    use crate::types::ResolvedType;
+
+    /// Wire form of [`TrackedCallName`]: unit variants as strings, type-carrying
+    /// variants as single-key objects holding the type's string form.
+    #[derive(Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum NameRepr {
+        Assert,
+        Panic,
+        Jet,
+        UnwrapLeft(String),
+        UnwrapRight(String),
+        Unwrap,
+        Debug(String),
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct CallRepr {
+        text: String,
+        name: NameRepr,
+    }
+
+    impl From<&TrackedCallName> for NameRepr {
+        fn from(name: &TrackedCallName) -> Self {
+            match name {
+                TrackedCallName::Assert => Self::Assert,
+                TrackedCallName::Panic => Self::Panic,
+                TrackedCallName::Jet => Self::Jet,
+                TrackedCallName::UnwrapLeft(ty) => Self::UnwrapLeft(ty.to_string()),
+                TrackedCallName::UnwrapRight(ty) => Self::UnwrapRight(ty.to_string()),
+                TrackedCallName::Unwrap => Self::Unwrap,
+                TrackedCallName::Debug(ty) => Self::Debug(ty.to_string()),
+            }
+        }
+    }
+
+    impl TryFrom<NameRepr> for TrackedCallName {
+        type Error = String;
+
+        fn try_from(name: NameRepr) -> Result<Self, Self::Error> {
+            let ty = |s: String| {
+                ResolvedType::parse_from_str(&s).map_err(|error| format!("type `{s}`: {error}"))
+            };
+            Ok(match name {
+                NameRepr::Assert => Self::Assert,
+                NameRepr::Panic => Self::Panic,
+                NameRepr::Jet => Self::Jet,
+                NameRepr::UnwrapLeft(s) => Self::UnwrapLeft(ty(s)?),
+                NameRepr::UnwrapRight(s) => Self::UnwrapRight(ty(s)?),
+                NameRepr::Unwrap => Self::Unwrap,
+                NameRepr::Debug(s) => Self::Debug(ty(s)?),
+            })
+        }
+    }
+
+    impl Serialize for TrackedCall {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            CallRepr {
+                text: self.text.to_string(),
+                name: NameRepr::from(&self.name),
+            }
+            .serialize(serializer)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for TrackedCall {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let repr = CallRepr::deserialize(deserializer)?;
+            Ok(TrackedCall {
+                text: Arc::from(repr.text.as_str()),
+                name: TrackedCallName::try_from(repr.name).map_err(D::Error::custom)?,
+            })
+        }
+    }
+
+    impl Serialize for DebugSymbols {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            // BTreeMap for deterministic field order in the emitted JSON.
+            let map: BTreeMap<String, &TrackedCall> = self
+                .0
+                .iter()
+                .map(|(cmr, call)| (cmr.to_string(), call))
+                .collect();
+            map.serialize(serializer)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for DebugSymbols {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let map = BTreeMap::<String, TrackedCall>::deserialize(deserializer)?;
+            let inner = map
+                .into_iter()
+                .map(|(cmr, call)| {
+                    Cmr::from_str(&cmr)
+                        .map(|cmr| (cmr, call))
+                        .map_err(|error| D::Error::custom(format!("CMR `{cmr}`: {error}")))
+                })
+                .collect::<Result<HashMap<Cmr, TrackedCall>, D::Error>>()?;
+            Ok(DebugSymbols(inner))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::error::Span;
+
+        #[test]
+        fn debug_symbols_roundtrip() {
+            let file = "assert!(jet::is_zero_32(x)); dbg!(y)";
+            let mut symbols = DebugSymbols::default();
+            symbols.insert(
+                Span::new_in_default_file(0..28),
+                Cmr::from_byte_array([1; 32]),
+                TrackedCallName::Assert,
+                file,
+            );
+            symbols.insert(
+                Span::new_in_default_file(29..36),
+                Cmr::from_byte_array([2; 32]),
+                TrackedCallName::Debug(ResolvedType::from(crate::types::UIntType::U32)),
+                file,
+            );
+
+            let json = serde_json::to_string(&symbols).expect("serialize");
+            let back: DebugSymbols = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(symbols, back);
+        }
+    }
+}
