@@ -460,6 +460,128 @@ impl_eq_hash!(TypeAlias; name, ty);
 
 impl_require_feature!(TypeAlias { recurse: ty; });
 
+/// A single variant in an enum declaration.
+///
+/// A variant's position among the declared variants determines its leaf
+/// in the enum's balanced sum, i.e. its wire encoding.
+/// A variant may carry payload types (`Refresh(Signature, u8)`).
+/// A variant without payload is a unit variant.
+#[derive(Clone, Debug)]
+pub struct EnumVariant {
+    name: Identifier,
+    payload: Arc<[AliasedType]>,
+    span: Span,
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for EnumVariant {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let name = Identifier::arbitrary(u)?;
+        let len = u.int_in_range(0..=3)?;
+        let payload = (0..len)
+            .map(|_| AliasedType::arbitrary(u))
+            .collect::<arbitrary::Result<Arc<[AliasedType]>>>()?;
+        Ok(Self {
+            name,
+            payload,
+            span: Span::DUMMY,
+        })
+    }
+}
+
+impl EnumVariant {
+    pub fn name(&self) -> &Identifier {
+        &self.name
+    }
+
+    /// Access the payload types of the variant. Empty for unit variants.
+    pub fn payload(&self) -> &[AliasedType] {
+        &self.payload
+    }
+}
+
+impl_eq_hash!(EnumVariant; name, payload);
+
+impl AsRef<Span> for EnumVariant {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+/// An enum declaration.
+#[derive(Clone, Debug)]
+pub struct EnumDeclaration {
+    visibility: Visibility,
+    name: AliasName,
+    variants: Arc<[EnumVariant]>,
+    span: Span,
+}
+
+impl EnumDeclaration {
+    pub fn visibility(&self) -> &Visibility {
+        &self.visibility
+    }
+
+    pub fn name(&self) -> &AliasName {
+        &self.name
+    }
+
+    pub fn variants(&self) -> &[EnumVariant] {
+        &self.variants
+    }
+}
+
+impl_require_feature!(EnumVariant { recurse: payload; });
+
+impl_require_feature!(EnumDeclaration {
+    requires: UnstableFeature::Enums, span: span;
+    recurse: variants;
+});
+
+impl_eq_hash!(EnumDeclaration; name, variants);
+
+impl AsRef<Span> for EnumDeclaration {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for EnumDeclaration {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let visibility = Visibility::arbitrary(u)?;
+        let name = AliasName::arbitrary(u)?;
+        let len = u.int_in_range(2..=8)?;
+        let variants = (0..len)
+            .map(|_| EnumVariant::arbitrary(u))
+            .collect::<arbitrary::Result<Arc<[EnumVariant]>>>()?;
+        Ok(Self {
+            visibility,
+            name,
+            variants,
+            span: Span::DUMMY,
+        })
+    }
+}
+
+impl fmt::Display for EnumDeclaration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}enum {} {{", self.visibility(), self.name())?;
+        for variant in self.variants() {
+            write!(f, " {}", variant.name())?;
+            if let Some((first, rest)) = variant.payload().split_first() {
+                write!(f, "({first}")?;
+                for ty in rest {
+                    write!(f, ", {ty}")?;
+                }
+                write!(f, ")")?;
+            }
+            write!(f, ",")?;
+        }
+        write!(f, " }}")
+    }
+}
+
 /// An expression is something that returns a value.
 #[derive(Clone, Debug)]
 pub struct Expression {
@@ -647,6 +769,166 @@ impl Match {
 impl_eq_hash!(Match; scrutinee, left, right);
 
 impl_require_feature!(Match {recurse: scrutinee, left, right; });
+
+/// Match expression over a named enum type.
+#[derive(Clone, Debug)]
+pub struct EnumMatch {
+    scrutinee: Arc<Expression>,
+    arms: Arc<[EnumMatchArm]>,
+    span: Span,
+}
+
+impl EnumMatch {
+    /// Access the expression that is matched.
+    pub fn scrutinee(&self) -> &Expression {
+        &self.scrutinee
+    }
+
+    /// Access the match arms.
+    pub fn arms(&self) -> &[EnumMatchArm] {
+        &self.arms
+    }
+
+    /// Access the span of the match statement.
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl_require_feature!(EnumMatch {
+    requires: UnstableFeature::Enums, span: span;
+    recurse: scrutinee, arms;
+});
+
+impl_eq_hash!(EnumMatch; scrutinee, arms);
+
+impl AsRef<Span> for EnumMatch {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+/// Arm of an enum match expression: `Enum::Variant(bindings..) => expression`.
+///
+/// The arm type carries the classification the parser proved.
+/// Every arm of an [`EnumMatch`] names an enum variant, so no other pattern kind is representable here.
+#[derive(Clone, Debug)]
+pub struct EnumMatchArm {
+    enum_path: Arc<[Identifier]>,
+    variant: Identifier,
+    bindings: Arc<[(Pattern, AliasedType)]>,
+    expression: Arc<Expression>,
+}
+
+impl EnumMatchArm {
+    /// Access the written enum path of the arm, e.g. `["m", "Choice"]`.
+    pub fn enum_path(&self) -> &[Identifier] {
+        &self.enum_path
+    }
+
+    /// The written enum path as one string, e.g. `m::Choice`.
+    pub fn enum_path_string(&self) -> String {
+        self.enum_path
+            .iter()
+            .map(Identifier::as_inner)
+            .collect::<Vec<_>>()
+            .join("::")
+    }
+
+    /// Access the name of the matched variant.
+    pub fn variant(&self) -> &Identifier {
+        &self.variant
+    }
+
+    /// Access the payload bindings of the arm. Empty for unit variants.
+    pub fn bindings(&self) -> &[(Pattern, AliasedType)] {
+        &self.bindings
+    }
+
+    /// Access the expression that is executed in the match arm.
+    pub fn expression(&self) -> &Expression {
+        &self.expression
+    }
+}
+
+impl_eq_hash!(EnumMatchArm; enum_path, variant, bindings, expression);
+
+impl_require_feature!(EnumMatchArm { recurse: expression; });
+
+/// Displays the arm's head (`Enum::Variant(bindings..)`), without the body.
+impl fmt::Display for EnumMatchArm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}::{}", self.enum_path_string(), self.variant)?;
+        if self.bindings.is_empty() {
+            return Ok(());
+        }
+        f.write_str("(")?;
+        for (i, (pattern, ty)) in self.bindings.iter().enumerate() {
+            if 0 < i {
+                f.write_str(", ")?;
+            }
+            write!(f, "{pattern}: {ty}")?;
+        }
+        f.write_str(")")
+    }
+}
+
+/// Construction of an enum variant: `Action::Refresh(sig, 3)`.
+///
+/// The written enum name is either an alias in scope (`MyChoice`) or the
+/// enum's declared name itself (`Action`), which needs no scope.
+/// Unit variants take no argument list.
+#[derive(Clone, Debug)]
+pub struct EnumConstruction {
+    enum_path: Arc<[Identifier]>,
+    variant: Identifier,
+    args: Arc<[Expression]>,
+    span: Span,
+}
+
+impl EnumConstruction {
+    /// Access the written enum path, e.g. `["m", "Action"]`.
+    pub fn enum_path(&self) -> &[Identifier] {
+        &self.enum_path
+    }
+
+    /// Access the name of the constructed variant.
+    pub fn variant(&self) -> &Identifier {
+        &self.variant
+    }
+
+    /// Access the payload arguments. Empty for unit variants.
+    pub fn args(&self) -> &[Expression] {
+        &self.args
+    }
+
+    /// Access the span of the construction expression.
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+
+    /// The written enum path as one string, e.g. `m::Action`.
+    pub fn enum_path_string(&self) -> String {
+        self.enum_path
+            .iter()
+            .map(Identifier::as_inner)
+            .collect::<Vec<_>>()
+            .join("::")
+    }
+}
+
+impl_eq_hash!(EnumConstruction; enum_path, variant, args);
+
+impl_require_feature!(EnumConstruction {
+    requires: UnstableFeature::Enums, span: span;
+    recurse: args;
+});
+
+impl AsRef<Span> for EnumConstruction {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
 
 /// Arm of a match expression.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
