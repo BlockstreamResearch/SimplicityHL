@@ -249,6 +249,30 @@ impl DependencyMap {
             .find(|root| current_file.starts_with(root))
     }
 
+    /// The logical mount path of `file` as seen from the root program at
+    /// `main`: the root-visible dependency name followed by the file's path
+    /// inside its package, e.g. `["lib", "A"]` for `libs/lib/A.simf` mapped
+    /// as `lib`.
+    ///
+    /// Returns `None` when no remapping visible from `main` covers `file`.
+    /// Such transitive-only packages have no stable name from the root
+    /// program's perspective.
+    pub(crate) fn root_mount(&self, main: &CanonPath, file: &CanonPath) -> Option<Vec<Identifier>> {
+        let remapping = self
+            .remappings
+            .iter()
+            .find(|r| main.starts_with(&r.context_prefix) && file.starts_with(&r.target))?;
+        let relative = file.as_path().strip_prefix(remapping.target.as_path()).ok()?;
+
+        let mut segments = vec![Identifier::from_str_unchecked(&remapping.drp_name)];
+        for component in relative.components() {
+            let name = component.as_os_str().to_str()?;
+            let name = name.strip_suffix(".simf").unwrap_or(name);
+            segments.push(Identifier::from_str_unchecked(name));
+        }
+        Some(segments)
+    }
+
     /// Resolve `use dependency_root_path_name::...` into a physical file path by finding the
     /// most specific library context that owns the current file.
     pub fn resolve_path(

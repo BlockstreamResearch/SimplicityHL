@@ -17,12 +17,20 @@ impl DependencyGraph {
     }
 
     /// Constructs the unified array of items for the entire multi-program.
+    ///
+    /// The main file's items are spliced at the root, as in a single-file
+    /// program. Every other file mounts at its logical module path
+    /// (`lib::A` for `libs/lib/A.simf` mapped as `lib`), so names in the
+    /// flattened tree are the names the user wrote. Files of packages that
+    /// the root program has no remapping for keep a synthetic `unit_N`
+    /// mount.
     fn build_program(
         &self,
         order: &[usize],
         handler: &mut ErrorCollector,
     ) -> Option<parse::Program> {
-        let mut items = Vec::with_capacity(order.len());
+        let mut mounts = MountTree::default();
+        let mut root_items = Vec::new();
 
         for &source_id in order {
             let module = &self.modules[source_id];
@@ -44,19 +52,40 @@ impl DependencyGraph {
                         &Error::MainOutOfEntryFile.to_string(),
                     ));
                 }
+
+                root_items.push((source_id, local_items));
+                continue;
             }
 
-            let name = ModuleName::from_str_unchecked(Self::get_module_name(source_id).as_inner());
-            items.push(parse::Item::Module(parse::Module::new(
-                source_id,
-                Visibility::Private,
-                name,
-                &local_items,
-            )));
+            mounts.insert(&self.mount_segments(source_id), source_id, local_items);
+        }
+
+        let mut items = mounts.into_items();
+        for (_, local_items) in root_items {
+            items.extend(local_items);
         }
 
         (!handler.has_errors())
             .then(|| parse::Program::new(&items, *self.modules[MAIN_MODULE].program.as_ref()))
+    }
+
+    /// The logical mount path of `source_id`, if the root program has a
+    /// name for its package.
+    fn root_mount(&self, source_id: usize) -> Option<Vec<Identifier>> {
+        let main = self.modules[MAIN_MODULE].source.name();
+        let file = self.modules[source_id].source.name();
+        self.dependency_map.root_mount(main, file)
+    }
+
+    /// The module path under which `source_id` mounts in the flattened
+    /// tree: empty for the main file, the logical path for root-named
+    /// packages, a synthetic `unit_N` for transitive-only packages.
+    fn mount_segments(&self, source_id: usize) -> Vec<Identifier> {
+        if source_id == MAIN_MODULE {
+            return Vec::new();
+        }
+        self.root_mount(source_id)
+            .unwrap_or_else(|| vec![Self::get_module_name(source_id)])
     }
 
     /// Rewrites a single item for the flattened single-file representation.
@@ -84,14 +113,14 @@ impl DependencyGraph {
 
     /// Rewrites a `use` declaration to its canonical `crate`-rooted form.
     ///
-    /// The resolved path becomes `crate::<module>::<mod_path...>`, where
-    /// `<module>` is `file_N` for dependency files and is omitted when the
-    /// target is [`MAIN_MODULE`] (via [`DependencyGraph::get_module_name`]).
+    /// The resolved path becomes `crate::<mount...>::<mod_path...>`, where
+    /// `<mount>` is the target file's logical mount path — empty for the
+    /// main file, e.g. `lib::A` for a root-named dependency file.
     ///
     /// ## Examples
     ///
-    /// - `use base_math::simple_op::hash` → `use crate::file_2::hash`
-    /// - `use some_dep::item` (target = [`MAIN_MODULE`]) → `use crate::item`
+    /// - `use base_math::simple_op::hash` → `use crate::base_math::simple_op::hash`
+    /// - `use some_dep::item` (target = main file) → `use crate::item`
     fn rewrite_use(&self, use_decl: &parse::UseDecl) -> parse::Item {
         let resolved = &self.use_cache[use_decl.span()];
         let target_id = self
@@ -99,9 +128,10 @@ impl DependencyGraph {
             .id(&resolved.path)
             .expect("resolved path must be registered");
 
-        let mut new_path = Vec::with_capacity(resolved.mod_path.len() + 2);
+        let mount = self.mount_segments(target_id);
+        let mut new_path = Vec::with_capacity(resolved.mod_path.len() + mount.len() + 1);
         new_path.push(Identifier::from_str_unchecked(CRATE_STR));
-        new_path.push(Self::get_module_name(target_id));
+        new_path.extend(mount);
         new_path.extend(resolved.mod_path.iter().cloned());
 
         let mut use_decl = use_decl.clone();
@@ -111,6 +141,59 @@ impl DependencyGraph {
 
     fn get_module_name(source_id: usize) -> Identifier {
         Identifier::from_str_unchecked(format!("unit_{}", source_id).as_str())
+    }
+}
+
+/// Tree of module mounts for non-main source files, preserving insertion
+/// order so the flattened program is deterministic.
+#[derive(Default)]
+struct MountTree {
+    children: Vec<(Identifier, MountTree)>,
+    items: Vec<parse::Item>,
+    /// File id of the first source mounted at or below this node, used for
+    /// the synthetic module's span.
+    file_id: Option<usize>,
+}
+
+impl MountTree {
+    fn insert(&mut self, segments: &[Identifier], file_id: usize, items: Vec<parse::Item>) {
+        self.file_id.get_or_insert(file_id);
+        let Some((first, rest)) = segments.split_first() else {
+            self.items.extend(items);
+            return;
+        };
+        let child = match self.children.iter_mut().find(|(name, _)| name == first) {
+            Some((_, child)) => child,
+            None => {
+                self.children.push((first.clone(), MountTree::default()));
+                &mut self
+                    .children
+                    .last_mut()
+                    .expect("just pushed a child")
+                    .1
+            }
+        };
+        child.insert(rest, file_id, items);
+    }
+
+    fn into_items(self) -> Vec<parse::Item> {
+        let file_id = self.file_id.unwrap_or(MAIN_MODULE);
+        let mut items: Vec<parse::Item> = self
+            .children
+            .into_iter()
+            .map(|(name, child)| {
+                let child_file_id = child.file_id.unwrap_or(file_id);
+                let child_items = child.into_items();
+                parse::Item::Module(parse::Module::new(
+                    child_file_id,
+                    Visibility::Public,
+                    ModuleName::from_str_unchecked(name.as_inner()),
+                    &child_items,
+                ))
+            })
+            .collect();
+        items.extend(self.items);
+        items
     }
 }
 
@@ -138,93 +221,72 @@ mod flattening_tests {
     }
 
     #[test]
-    fn test_dependency_is_wrapped_in_file_module() {
-        // Scenario: A dependency file MUST be wrapped in a `mod file_N` block,
-        // and its visibility must be Private to prevent leaking.
-        let (program, ids) = build_flattened_program(vec![
+    fn test_dependency_mounts_at_logical_path() {
+        // Scenario: A root-named dependency file mounts at its logical
+        // module path (`lib::A` for `libs/lib/A.simf` mapped as `lib`),
+        // and the main file's items are spliced at the root.
+        let (program, _ids) = build_flattened_program(vec![
             ("libs/lib/A.simf", "pub fn dep_func() {}"),
             ("main.simf", "use lib::A::dep_func; fn main() {}"),
         ]);
 
-        let file_a_id = ids["A"];
-        let expected_mod_name = format!("unit_{}", file_a_id);
-
-        let wrapped_module = program
+        let lib = program
             .items()
             .iter()
-            .find_map(|item| {
-                if let parse::Item::Module(m) = item {
-                    if m.name().as_inner() == expected_mod_name.as_str() {
-                        return Some(m);
-                    }
-                }
-                None
+            .find_map(|item| match item {
+                parse::Item::Module(m) if m.name().as_inner() == "lib" => Some(m),
+                _ => None,
             })
-            .expect("Dependency should be wrapped in a file_N module");
+            .expect("dependency package should mount as `mod lib`");
+        let file_a = lib
+            .items()
+            .iter()
+            .find_map(|item| match item {
+                parse::Item::Module(m) if m.name().as_inner() == "A" => Some(m),
+                _ => None,
+            })
+            .expect("dependency file should mount as `mod A` inside `mod lib`");
 
-        assert!(
-            matches!(wrapped_module.visibility(), Visibility::Private),
-            "The file wrapper module must be strictly private"
-        );
-
-        let has_dep_func = wrapped_module.items().iter().any(
+        let has_dep_func = file_a.items().iter().any(
             |item| matches!(item, parse::Item::Function(f) if f.name().as_inner() == "dep_func"),
         );
         assert!(
             has_dep_func,
-            "The file_N module must contain the dependency's items"
+            "the mounted module must contain the dependency's items"
         );
+
+        let main_at_root = program
+            .items()
+            .iter()
+            .any(|item| matches!(item, parse::Item::Function(f) if f.name().as_inner() == "main"));
+        assert!(main_at_root, "the main file's items live at the root");
     }
 
     #[test]
     fn test_use_paths_are_rewritten_to_canonical_files() {
         // Scenario: When main.simf says `use lib::A::foo`, the AST flattener
-        // must rewrite this path to `use crate::file_N::foo`.
-        let (program, ids) = build_flattened_program(vec![
+        // rewrites this path to `use crate::lib::A::foo` — the mount path
+        // matches the names the user wrote.
+        let (program, _ids) = build_flattened_program(vec![
             ("libs/lib/A.simf", "pub fn foo() {}"),
             ("main.simf", "use lib::A::foo; fn main() {}"),
         ]);
 
-        let file_a_id = ids["A"];
-        let expected_file_segment = format!("unit_{}", file_a_id);
-
-        // Flatten the modules and search their inner contents
+        // The main file's items are spliced at the root.
         let use_decl = program
             .items()
             .iter()
-            .filter_map(|item| {
-                if let parse::Item::Module(module) = item {
-                    Some(module.items()) // Get the slice of inner items
-                } else {
-                    None
-                }
+            .find_map(|item| match item {
+                parse::Item::Use(u) => Some(u),
+                _ => None,
             })
-            .flatten() // Unpack all the inner slices into a single stream
-            .find_map(|inner_item| {
-                if let parse::Item::Use(u) = inner_item {
-                    Some(u)
-                } else {
-                    None
-                }
-            })
-            .expect("Main module should contain a use declaration");
+            .expect("the root should contain the main file's use declaration");
 
-        // Get the segments of the rewritten path
-        let path = use_decl.path();
-
-        assert!(
-            path.len() >= 2,
-            "Rewritten path must have at least 2 segments"
-        );
+        let path: Vec<&str> = use_decl.path().iter().map(|s| s.as_inner()).collect();
         assert_eq!(
-            path[0].as_inner(),
-            CRATE_STR,
-            "Path must start with `crate`"
-        );
-        assert_eq!(
-            path[1].as_inner(),
-            expected_file_segment.as_str(),
-            "Path must route through the canonical `unit_N`"
+            path,
+            [CRATE_STR, "lib", "A"],
+            "the rewritten path routes through the logical mount"
         );
     }
 
