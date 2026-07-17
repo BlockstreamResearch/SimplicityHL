@@ -23,6 +23,7 @@ pub enum Token<'src> {
     Mod,
     Const,
     Match,
+    Enum,
     Crate,
     /// Reserved for the compiler version directive, which the version prescan
     /// consumes before lexing; [`lex`] reports any occurrence as an error and drops
@@ -86,6 +87,7 @@ impl<'src> fmt::Display for Token<'src> {
             Token::Mod => write!(f, "mod"),
             Token::Const => write!(f, "const"),
             Token::Match => write!(f, "match"),
+            Token::Enum => write!(f, "enum"),
             Token::Crate => write!(f, "{}", CRATE_STR),
             Token::Simc => write!(f, "{}", SIMC_STR),
 
@@ -202,6 +204,7 @@ pub fn lexer<'src>(
         "mod" => Token::Mod,
         "const" => Token::Const,
         "match" => Token::Match,
+        "enum" => Token::Enum,
         CRATE_STR => Token::Crate,
         SIMC_STR => Token::Simc,
         "true" => Token::Bool(true),
@@ -306,8 +309,8 @@ pub fn lex(
 
 /// A list of all reserved keywords.
 pub const KEYWORDS: &[&str] = &[
-    "pub", "use", "as", "fn", "let", "type", "mod", "const", "match", CRATE_STR, SIMC_STR, "true",
-    "false",
+    "pub", "use", "as", "fn", "let", "type", "mod", "const", "match", "enum", CRATE_STR, SIMC_STR,
+    "true", "false",
 ];
 
 /// Checks whether a given string is a keyword.
@@ -433,6 +436,24 @@ mod tests {
         let (tokens, errors) = lex("simcfoo");
         assert!(errors.is_empty(), "unexpected: {errors:?}");
         assert_eq!(tokens, Some(vec![Token::Ident("simcfoo")]));
+    }
+
+    #[test]
+    fn test_enum_token() {
+        let (tokens, errors) = lex("enum Path { Inherit, ColdSpend }");
+        assert!(errors.is_empty());
+        assert_eq!(
+            tokens,
+            Some(vec![
+                Token::Enum,
+                Token::Ident("Path"),
+                Token::LBrace,
+                Token::Ident("Inherit"),
+                Token::Comma,
+                Token::Ident("ColdSpend"),
+                Token::RBrace,
+            ])
+        );
     }
 
     #[test]
