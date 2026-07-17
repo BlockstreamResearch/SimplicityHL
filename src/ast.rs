@@ -412,6 +412,95 @@ impl Match {
 
 impl_eq_hash!(Match; scrutinee, left, right);
 
+/// Match expression over an enum's variants.
+#[derive(Clone, Debug)]
+pub struct EnumMatch {
+    scrutinee: Arc<Expression>,
+    /// Arms in variant order (declaration order).
+    ///
+    /// The order matches the leaf order of the enum's balanced sum.
+    arms: Arc<[EnumMatchArm]>,
+    span: Span,
+}
+
+impl EnumMatch {
+    /// Access the expression whose output is dispatched on in the match statement.
+    pub fn scrutinee(&self) -> &Expression {
+        &self.scrutinee
+    }
+
+    /// Access the arms in variant order (declaration order).
+    pub fn arms(&self) -> &[EnumMatchArm] {
+        &self.arms
+    }
+
+    /// Access the span of the match statement.
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl_eq_hash!(EnumMatch; scrutinee, arms);
+
+/// Arm of an [`EnumMatch`] expression, ordered by variant.
+#[derive(Clone, Debug)]
+pub struct EnumMatchArm {
+    /// Pattern binding the variant's payload. [`Pattern::Ignore`] for unit
+    /// variants.
+    pattern: Pattern,
+    body: Arc<Expression>,
+}
+
+impl EnumMatchArm {
+    /// Access the pattern that binds the variant's payload.
+    pub fn pattern(&self) -> &Pattern {
+        &self.pattern
+    }
+
+    /// Access the expression that is executed in the match arm.
+    pub fn body(&self) -> &Expression {
+        &self.body
+    }
+}
+
+impl_eq_hash!(EnumMatchArm; pattern, body);
+
+/// Construction of an enum variant: the variant's position and its payload
+/// expressions. The enum's definition lives in the type of the enclosing
+/// [`SingleExpression`].
+#[derive(Clone, Debug)]
+pub struct EnumConstruction {
+    variant_index: usize,
+    payload: Arc<[Arc<Expression>]>,
+    span: Span,
+}
+
+impl EnumConstruction {
+    /// Access the constructed variant's position among the declared variants.
+    pub fn variant_index(&self) -> usize {
+        self.variant_index
+    }
+
+    /// Access the payload expressions. Empty for unit variants.
+    pub fn payload(&self) -> &[Arc<Expression>] {
+        &self.payload
+    }
+}
+
+impl_eq_hash!(EnumConstruction; variant_index, payload);
+
+impl AsRef<Span> for EnumConstruction {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl AsRef<Span> for EnumMatch {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
 /// Arm of a [`Match`] expression.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct MatchArm {
