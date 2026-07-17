@@ -68,6 +68,8 @@ pub enum Item {
     /// An import declaration (e.g., `use math::add`) that brings another
     /// [`Item`] into the current scope.
     Use(UseDecl),
+    /// An enum declaration.
+    EnumDeclaration(EnumDeclaration),
     /// A module containing a collection of nested [`Item`].
     Module(Module),
     /// A placeholder used exclusively for error recovery during parsing.
@@ -82,6 +84,7 @@ impl_require_feature!(Item {
         TypeAlias(alias),
         Function(function),
         Use(use_decl),
+        EnumDeclaration(decl),
         Module(module),
         Ignored,
 });
@@ -1065,6 +1068,7 @@ impl fmt::Display for Item {
             Self::TypeAlias(alias) => write!(f, "{alias}"),
             Self::Function(function) => write!(f, "{function}"),
             Self::Use(use_declaration) => write!(f, "{use_declaration}"),
+            Self::EnumDeclaration(decl) => write!(f, "{decl}"),
             Self::Module(module) => write!(f, "{module}"),
             Self::Ignored => Ok(()),
         }
@@ -1788,7 +1792,12 @@ impl ChumskyParse for Program {
                     .filter(|t| {
                         !matches!(
                             t,
-                            Token::Pub | Token::Use | Token::Fn | Token::Type | Token::Mod
+                            Token::Pub
+                                | Token::Use
+                                | Token::Fn
+                                | Token::Type
+                                | Token::Mod
+                                | Token::Enum
                         )
                     })
                     .repeated(),
@@ -1815,11 +1824,18 @@ impl ChumskyParse for Item {
             let func_parser = Function::parser().map(Item::Function);
             let type_parser = TypeAlias::parser().map(Item::TypeAlias);
             let use_parser = UseDecl::parser().map(Item::Use);
+            let enum_parser = EnumDeclaration::parser().map(Item::EnumDeclaration);
 
             // Lazy item here
             let mod_parser = Module::parser_with_items(item).map(Item::Module);
 
-            choice((func_parser, use_parser, type_parser, mod_parser))
+            choice((
+                func_parser,
+                use_parser,
+                type_parser,
+                enum_parser,
+                mod_parser,
+            ))
         })
     }
 }
@@ -2233,6 +2249,83 @@ impl ChumskyParse for TypeAlias {
     }
 }
 
+/// Identifiers of the built-in binary match patterns.
+/// An enum may not use them as its name, because e.g. `Left::A` in a match arm would parse as the built-in `Left(..)` pattern.
+pub(crate) const RESERVED_PATTERN_NAMES: [&str; 4] = ["Left", "Right", "Some", "None"];
+
+impl ChumskyParse for EnumDeclaration {
+    fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
+    where
+        I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
+    {
+        let visibility = just(Token::Pub)
+            .to(Visibility::Public)
+            .or_not()
+            .map(Option::unwrap_or_default);
+
+        let name = AliasName::parser().try_map(|name, span| {
+            if RESERVED_PATTERN_NAMES.contains(&name.as_inner()) {
+                return Err(Diagnostic::new(
+                    Error::Grammar {
+                        msg: format!(
+                            "enum name '{name}' is reserved for the built-in match pattern `{name}`"
+                        ),
+                    },
+                    span,
+                ));
+            }
+            // Reserved type names are rejected via the shared list, which
+            // also covers the generic constructors (`Either`, `Option`,
+            // `List`): `enum Signature` or `enum Option` would make
+            // constructions name the enum while type annotations resolve
+            // to the builtin, and the ABI would report the bare name
+            // ambiguously.
+            if crate::str::is_reserved_alias_name(name.as_inner()) {
+                return Err(Diagnostic::new(
+                    Error::RedefinedAliasAsBuiltin { name: name.clone() },
+                    span,
+                ));
+            }
+            Ok(name)
+        });
+
+        let payload = AliasedType::parser()
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .at_least(1)
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LParen), just(Token::RParen))
+            .or_not()
+            .map(|payload| Arc::from(payload.unwrap_or_default()));
+
+        let variant = Identifier::parser()
+            .then(payload)
+            .map_with(|(name, payload), e| EnumVariant {
+                name,
+                payload,
+                span: e.span(),
+            });
+
+        let variants = variant
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LBrace), just(Token::RBrace))
+            .map(Arc::from);
+
+        visibility
+            .then_ignore(just(Token::Enum))
+            .then(name)
+            .then(variants)
+            .map_with(|((visibility, name), variants), e| Self {
+                visibility,
+                name,
+                variants,
+                span: e.span(),
+            })
+    }
+}
+
 impl ChumskyParse for Expression {
     fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
     where
@@ -2570,6 +2663,27 @@ impl Module {
                 name: name.0,
                 items,
                 span: e.span(),
+            })
+            .validate(|module, _, emit| {
+                // TODO: Enums may only be declared at the top level of a file (done so to reduce scope of the PR).
+                // The bare name is the enum's identity in the ABI, and a module path would obscure it.
+                // Direct children suffice. Nested modules validate their own items.
+                for item in module.items.iter() {
+                    if let Item::EnumDeclaration(decl) = item {
+                        emit.emit(
+                            Error::Grammar {
+                                msg: format!(
+                                    "enum `{}` is declared inside `mod {}`; enums may \
+                                     only be declared at the top level of a file",
+                                    decl.name(),
+                                    module.name
+                                ),
+                            }
+                            .with_span(decl.into()),
+                        );
+                    }
+                }
+                module
             })
     }
 }
@@ -3023,6 +3137,48 @@ mod test {
     }
 
     #[test]
+    fn recovery_synchronizes_at_enum_declaration() {
+        // Discriminating setup: an invalid prefix followed by a malformed
+        // enum. Without `Token::Enum` in the synchronization set the whole
+        // enum is swallowed into the prefix's recovery span and only one
+        // error is reported; with it, the enum parses as its own item and
+        // its malformation is reported as a second error.
+        let mut diagnostics = DiagnosticManager::new();
+        let program = Program::parse_from_str_with_errors(
+            MAIN_MODULE,
+            "let invalid = 1;\nenum Action { A B }\nfn main() {}",
+            &UnstableFeatures::all(),
+            &mut diagnostics,
+        );
+        assert!(program.is_none(), "the invalid program must be rejected");
+        assert_eq!(
+            2,
+            diagnostics.error_count(),
+            "the invalid prefix and the malformed enum must each report an error"
+        );
+    }
+
+    #[test]
+    fn recovery_after_malformed_enum_reaches_next_item() {
+        let (rejected, _text) = parse_with(
+            "enum Action { A B }\nfn main() {}",
+            &UnstableFeatures::all(),
+        );
+        assert!(rejected, "a malformed enum must fail compilation");
+    }
+
+    #[test]
+    fn malformed_construct_containing_enum_keyword_reports_errors() {
+        // `enum` inside a badly malformed nested construct may be mistaken
+        // for an item boundary; compilation must still fail cleanly.
+        let (rejected, _text) = parse_with(
+            "fn broken() { let x = (enum; }\nfn main() {}",
+            &UnstableFeatures::all(),
+        );
+        assert!(rejected, "a malformed construct must fail compilation");
+    }
+
+    #[test]
     fn test_gated_syntax_is_rejected_without_features() {
         // Real `use`/`mod` syntax: rejected under none() (naming the feature + a
         // -Z hint), accepted under all(). Delete when `imports` stabilizes.
@@ -3111,6 +3267,58 @@ fn main() {
         ] {
             let program = parse::Program::parse_from_str(input).expect("parsing works");
             assert_eq!(program.to_string(), format!("{input}\n"));
+        }
+    }
+
+    fn parse_item(input: &str) -> Item {
+        let program = parse::Program::parse_from_str(input).expect("parsing should succeed");
+        program.items().first().expect("expected one item").clone()
+    }
+
+    #[test]
+    fn test_enum_declaration_basic() {
+        let item = parse_item("enum Path { Inherit, ColdSpend, RefreshSpend, }");
+        let Item::EnumDeclaration(decl) = item else {
+            panic!("expected EnumDeclaration, got {item:?}");
+        };
+        assert_eq!(decl.name().as_inner(), "Path");
+        assert_eq!(decl.variants().len(), 3);
+        assert_eq!(decl.variants()[0].name().as_inner(), "Inherit");
+        assert_eq!(decl.variants()[2].name().as_inner(), "RefreshSpend");
+    }
+
+    #[test]
+    fn test_enum_declaration_pub() {
+        let item = parse_item("pub enum Color { Red, Green, Blue, }");
+        let Item::EnumDeclaration(decl) = item else {
+            panic!("expected EnumDeclaration");
+        };
+        assert_eq!(decl.visibility(), &Visibility::Public);
+        assert_eq!(decl.name().as_inner(), "Color");
+    }
+
+    #[test]
+    fn test_enum_declaration_display_round_trip() {
+        let input = "enum Path { Inherit, ColdSpend, RefreshSpend, }";
+        let item = parse_item(input);
+        let Item::EnumDeclaration(decl) = item else {
+            panic!("expected EnumDeclaration");
+        };
+        assert_eq!(
+            decl.to_string(),
+            "enum Path { Inherit, ColdSpend, RefreshSpend, }"
+        );
+    }
+
+    #[test]
+    fn test_enum_declaration_reserved_name() {
+        for reserved in RESERVED_PATTERN_NAMES {
+            let result = Program::parse_from_str(&format!("enum {reserved} {{ A, B, }}"));
+            let error = result.expect_err(&format!("enum name {reserved} is reserved"));
+            assert!(
+                error.to_string().contains("reserved"),
+                "error should say the name is reserved: {error}"
+            );
         }
     }
 }

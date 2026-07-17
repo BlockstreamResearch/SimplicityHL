@@ -1126,6 +1126,7 @@ impl AbstractSyntaxTree for Item {
                 scope.resolve_use(use_decl).with_span(use_decl)?;
                 Ok(Self::Use)
             }
+            parse::Item::EnumDeclaration(_decl) => todo!(),
             parse::Item::Module(module) => {
                 scope
                     .enter_module(module.name().clone(), module.visibility().clone())
