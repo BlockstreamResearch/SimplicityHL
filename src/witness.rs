@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::error::{Error, RichError, WithContent, WithSpan};
+use crate::error::{Diagnostic, Error, WithSpan};
 use crate::parse::ParseFromStr;
 use crate::str::WitnessName;
 use crate::types::{AliasedType, ResolvedType};
@@ -131,13 +131,12 @@ impl WitnessValues {
 }
 
 impl ParseFromStr for ResolvedType {
-    fn parse_from_str(s: &str) -> Result<Self, RichError> {
+    fn parse_from_str(s: &str) -> Result<Self, Diagnostic> {
         let aliased = AliasedType::parse_from_str(s)?;
         aliased
             .resolve_builtin()
             .map_err(|name| Error::UndefinedAlias { name })
             .with_span(s)
-            .with_content(s)
     }
 }
 

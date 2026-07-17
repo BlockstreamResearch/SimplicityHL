@@ -2,8 +2,7 @@ use std::fmt;
 use std::fmt::Write;
 use std::str::FromStr;
 
-use crate::error::{Error, ErrorCollector, RichError, Span};
-use crate::source::SourceFile;
+use crate::error::{Diagnostic, DiagnosticManager, Error, Span};
 
 #[allow(rustdoc::private_intra_doc_links)]
 /// The set of unstable compiler features, enabled per-feature with
@@ -112,13 +111,12 @@ impl UnstableFeatures {
         self.enabled_features.contains(&feature) // linear scan; n is always tiny
     }
 
-    /// Walk a program and push one [`RichError`] per use of a feature
+    /// Walk a program and push one [`Diagnostic`] per use of a feature
     /// that this set does not enable.
     pub(crate) fn check_program(
         &self,
         program: &impl RequireFeature,
-        source: &SourceFile,
-        handler: &mut ErrorCollector,
+        diagnostics: &mut DiagnosticManager,
     ) {
         let mut uses = Vec::new();
         program.feature_requirements(&mut uses);
@@ -126,8 +124,8 @@ impl UnstableFeatures {
             if self.is_enabled(feature) {
                 continue;
             }
-            let error = Error::UnstableFeature { feature };
-            handler.push(RichError::new(error, span).with_source(source.clone()));
+
+            diagnostics.push(Diagnostic::new(Error::UnstableFeature { feature }, span));
         }
     }
 }
@@ -331,9 +329,6 @@ pub(crate) use impl_require_feature;
 mod tests {
     use super::*;
     use std::collections::HashSet;
-    use std::sync::Arc;
-
-    use crate::source::SourceFile;
 
     // Just dev sanity check
     #[test]
@@ -377,11 +372,10 @@ mod tests {
             return;
         };
 
-        let mut handler = ErrorCollector::new();
-        let source = SourceFile::anonymous(Arc::from("x"));
-        UnstableFeatures::none().check_program(&Requires(feature), &source, &mut handler);
+        let mut diagnostics = DiagnosticManager::new();
+        UnstableFeatures::none().check_program(&Requires(feature), &mut diagnostics);
 
-        let error = handler.to_string();
+        let error = diagnostics.to_string();
         assert!(
             error.contains(&feature.to_string()),
             "error should name the feature `{feature}`: {error}"
@@ -396,14 +390,13 @@ mod tests {
             return;
         };
 
-        let mut handler = ErrorCollector::new();
-        let source = SourceFile::anonymous(Arc::from("x"));
-        UnstableFeatures::new([feature]).check_program(&Requires(feature), &source, &mut handler);
+        let mut diagnostics = DiagnosticManager::new();
+        UnstableFeatures::new([feature]).check_program(&Requires(feature), &mut diagnostics);
 
         assert!(
-            !handler.has_errors(),
+            !diagnostics.has_errors(),
             "enabling `{feature}` should accept a node that requires it: {}",
-            handler
+            diagnostics
         );
     }
 }

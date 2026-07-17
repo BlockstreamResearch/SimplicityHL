@@ -9,7 +9,7 @@ use simplicity::jet::{Core, Elements, Jet};
 
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
 use crate::driver::{CRATE_STR, MAIN_STR};
-use crate::error::{Error, RichError, Span, WithSpan};
+use crate::error::{Diagnostic, Error, Span, WithSpan};
 use crate::jet::{source_type, target_type, JetHL};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::parse::{MatchPattern, UseDecl, Visibility};
@@ -1037,14 +1037,15 @@ trait AbstractSyntaxTree: Sized {
     ///
     /// Check if the analyzed expression is of the expected type.
     /// Statements return no values so their expected type is always unit.
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError>;
+    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope)
+        -> Result<Self, Diagnostic>;
 }
 
 impl Program {
     pub fn analyze(
         from: &parse::Program,
         jet_hinter: Box<dyn JetHinter>,
-    ) -> Result<Self, RichError> {
+    ) -> Result<Self, Diagnostic> {
         let unit = ResolvedType::unit();
         let mut scope = Scope::new(jet_hinter);
 
@@ -1052,7 +1053,7 @@ impl Program {
             .items()
             .iter()
             .map(|s| Item::analyze(s, &unit, &mut scope))
-            .collect::<Result<Vec<Item>, RichError>>()?;
+            .collect::<Result<Vec<Item>, Diagnostic>>()?;
         debug_assert!(scope.is_outside_function());
         debug_assert!(
             scope.module_path.is_empty(),
@@ -1102,7 +1103,11 @@ impl Program {
 impl AbstractSyntaxTree for Item {
     type From = parse::Item;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<Self, Diagnostic> {
         assert!(ty.is_unit(), "Items cannot return anything");
         assert!(
             scope.is_outside_function(),
@@ -1141,7 +1146,11 @@ impl AbstractSyntaxTree for Item {
 impl AbstractSyntaxTree for Function {
     type From = parse::Function;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<Self, Diagnostic> {
         assert!(ty.is_unit(), "Function definitions cannot return anything");
         assert!(
             scope.is_outside_function(),
@@ -1206,7 +1215,11 @@ impl AbstractSyntaxTree for Function {
 impl AbstractSyntaxTree for Statement {
     type From = parse::Statement;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<Self, Diagnostic> {
         assert!(ty.is_unit(), "Statements cannot return anything");
         match from {
             parse::Statement::Assignment(assignment) => {
@@ -1222,7 +1235,11 @@ impl AbstractSyntaxTree for Statement {
 impl AbstractSyntaxTree for Assignment {
     type From = parse::Assignment;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<Self, Diagnostic> {
         assert!(ty.is_unit(), "Assignments cannot return anything");
         // The assignment is a statement that returns nothing.
         //
@@ -1252,7 +1269,7 @@ impl Expression {
     ///
     /// The returned expression might not be evaluable at compile time.
     /// The details depend on the current state of the SimplicityHL compiler.
-    pub fn analyze_const(from: &parse::Expression, ty: &ResolvedType) -> Result<Self, RichError> {
+    pub fn analyze_const(from: &parse::Expression, ty: &ResolvedType) -> Result<Self, Diagnostic> {
         let mut empty_scope = Scope::default();
         Self::analyze(from, ty, &mut empty_scope)
     }
@@ -1261,7 +1278,11 @@ impl Expression {
 impl AbstractSyntaxTree for Expression {
     type From = parse::Expression;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<Self, Diagnostic> {
         match from.inner() {
             parse::ExpressionInner::Single(single) => {
                 let ast_single = SingleExpression::analyze(single, ty, scope)?;
@@ -1276,7 +1297,7 @@ impl AbstractSyntaxTree for Expression {
                 let ast_statements = statements
                     .iter()
                     .map(|s| Statement::analyze(s, &ResolvedType::unit(), scope))
-                    .collect::<Result<Arc<[Statement]>, RichError>>()?;
+                    .collect::<Result<Arc<[Statement]>, Diagnostic>>()?;
                 let ast_expression = match expression {
                     Some(expression) => Expression::analyze(expression, ty, scope)
                         .map(Arc::new)
@@ -1303,7 +1324,11 @@ impl AbstractSyntaxTree for Expression {
 impl AbstractSyntaxTree for SingleExpression {
     type From = parse::SingleExpression;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<Self, Diagnostic> {
         let inner = match from.inner() {
             parse::SingleExpressionInner::Boolean(bit) => {
                 if !ty.is_boolean() {
@@ -1383,7 +1408,7 @@ impl AbstractSyntaxTree for SingleExpression {
                     .iter()
                     .zip(types.iter())
                     .map(|(el_parse, el_ty)| Expression::analyze(el_parse, el_ty, scope))
-                    .collect::<Result<Arc<[Expression]>, RichError>>()
+                    .collect::<Result<Arc<[Expression]>, Diagnostic>>()
                     .map(SingleExpressionInner::Tuple)?
             }
             parse::SingleExpressionInner::Array(array) => {
@@ -1397,7 +1422,7 @@ impl AbstractSyntaxTree for SingleExpression {
                 array
                     .iter()
                     .map(|el_parse| Expression::analyze(el_parse, el_ty, scope))
-                    .collect::<Result<Arc<[Expression]>, RichError>>()
+                    .collect::<Result<Arc<[Expression]>, Diagnostic>>()
                     .map(SingleExpressionInner::Array)?
             }
             parse::SingleExpressionInner::List(list) => {
@@ -1410,7 +1435,7 @@ impl AbstractSyntaxTree for SingleExpression {
                 }
                 list.iter()
                     .map(|e| Expression::analyze(e, el_ty, scope))
-                    .collect::<Result<Arc<[Expression]>, RichError>>()
+                    .collect::<Result<Arc<[Expression]>, Diagnostic>>()
                     .map(SingleExpressionInner::List)?
             }
             parse::SingleExpressionInner::Either(either) => {
@@ -1460,7 +1485,11 @@ impl AbstractSyntaxTree for SingleExpression {
 impl AbstractSyntaxTree for Call {
     type From = parse::Call;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<Self, Diagnostic> {
         fn check_argument_types(
             parse_args: &[parse::Expression],
             expected_tys: &[ResolvedType],
@@ -1493,12 +1522,12 @@ impl AbstractSyntaxTree for Call {
             parse_args: &[parse::Expression],
             args_tys: &[ResolvedType],
             scope: &mut Scope,
-        ) -> Result<Arc<[Expression]>, RichError> {
+        ) -> Result<Arc<[Expression]>, Diagnostic> {
             let args = parse_args
                 .iter()
                 .zip(args_tys.iter())
                 .map(|(arg_parse, arg_ty)| Expression::analyze(arg_parse, arg_ty, scope))
-                .collect::<Result<Arc<[Expression]>, RichError>>()?;
+                .collect::<Result<Arc<[Expression]>, Diagnostic>>()?;
             Ok(args)
         }
 
@@ -1680,7 +1709,7 @@ impl AbstractSyntaxTree for CallName {
         from: &Self::From,
         _ty: &ResolvedType,
         scope: &mut Scope,
-    ) -> Result<Self, RichError> {
+    ) -> Result<Self, Diagnostic> {
         match from.name() {
             parse::CallName::Jet(name) => match scope.jet_hinter.parse_jet(name.as_inner()) {
                 Some(jet) if !jet.is_disabled() => Ok(Self::Jet(jet)),
@@ -1766,7 +1795,11 @@ impl AbstractSyntaxTree for CallName {
 impl AbstractSyntaxTree for Match {
     type From = parse::Match;
 
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, RichError> {
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<Self, Diagnostic> {
         let scrutinee_ty = from.scrutinee_type();
         let scrutinee_ty = scope.resolve(&scrutinee_ty).with_span(from)?;
         let scrutinee =
@@ -1842,14 +1875,12 @@ impl AsRef<Span> for Match {
 mod scope_resolution_tests {
     use super::{ElementsJetHinter, Program};
     use crate::driver::tests::setup_graph;
-    use crate::error::ErrorCollector;
 
     pub(super) fn analyze_multifile(files: Vec<(&str, &str)>) -> Result<(), String> {
-        let (graph, _ids, _dir) = setup_graph(files);
+        let (graph, _ids, _dir, mut diagnostics) = setup_graph(files);
 
-        let mut error_handler = ErrorCollector::new();
-        let Some(driver_program) = graph.linearize_and_build(&mut error_handler) else {
-            panic!("{}", &error_handler.to_string());
+        let Some(driver_program) = graph.linearize_and_assemble(&mut diagnostics) else {
+            panic!("{}", &diagnostics);
         };
 
         Program::analyze(&driver_program, Box::new(ElementsJetHinter))

@@ -4,7 +4,7 @@ use chumsky::prelude::{any, choice, end, just, recursive, skip_then_retry_until}
 use chumsky::{error::Rich, extra, span::SimpleSpan, text, IterParser, Parser};
 
 use crate::driver::CRATE_STR;
-use crate::error::{Error, RichError, Span};
+use crate::error::{Diagnostic, Error, Span};
 use crate::str::{Binary, Decimal, Hexadecimal};
 use crate::version::SIMC_STR;
 
@@ -273,30 +273,14 @@ pub fn lex(
     file_id: usize,
     input: &str,
     start: usize,
-) -> (Option<Tokens<'_>>, Vec<crate::error::RichError>) {
+) -> (Option<Tokens<'_>>, Vec<crate::error::Diagnostic>) {
     let (tokens, lex_errors) = lexer().parse(&input[start..]).into_output_errors();
-    let shift = |span: SimpleSpan| Span::new(file_id, span.start + start..span.end + start);
+    let shift = |span| Span::from_chumsky(file_id, span, start);
 
-    // The reserved-keyword errors come first: a stray directive also produces
-    // follow-up errors for its `"<range>";` remnant, and the sentinel is their cause.
-    let mut errors: Vec<RichError> = Vec::new();
-    let tokens = tokens.map(|vec| {
-        vec.into_iter()
-            .filter_map(|(tok, span)| match tok {
-                Token::Comment | Token::BlockComment => None,
-                // The reserved keyword is a sentinel: the prescan consumed the one
-                // legitimate directive before lexing, so any occurrence is misplaced.
-                Token::Simc => {
-                    errors.push(RichError::new(Error::ReservedSimcKeyword, shift(span)));
-                    None
-                }
-                tok => Some((tok, shift(span))),
-            })
-            .collect()
-    });
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
-    errors.extend(lex_errors.into_iter().map(|err| {
-        RichError::new(
+    diagnostics.extend(lex_errors.into_iter().map(|err| {
+        Diagnostic::new(
             Error::CannotParse {
                 msg: err.reason().to_string(),
             },
@@ -304,7 +288,20 @@ pub fn lex(
         )
     }));
 
-    (tokens, errors)
+    let tokens = tokens.map(|vec| {
+        vec.into_iter()
+            .filter_map(|(tok, span)| match tok {
+                Token::Comment | Token::BlockComment => None,
+                Token::Simc => {
+                    diagnostics.push(Diagnostic::new(Error::ReservedSimcKeyword, shift(span)));
+                    None
+                }
+                tok => Some((tok, shift(span))),
+            })
+            .collect()
+    });
+
+    (tokens, diagnostics)
 }
 
 /// A list of all reserved keywords.

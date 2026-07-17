@@ -13,10 +13,12 @@ fn build(files: &[(&str, &str)]) -> (bool, String) {
         .iter()
         .map(|(p, c)| (*p, c.replace("{v}", v)))
         .collect();
+
     let refs: Vec<(&str, &str)> = owned.iter().map(|(p, c)| (*p, c.as_str())).collect();
-    let (graph_opt, _, _ws, handler) = setup_graph_raw(refs);
-    let ok = graph_opt.is_some() && !handler.has_errors();
-    (ok, handler.to_string())
+    let (graph_opt, _, _ws, diagnostics) = setup_graph_raw(refs);
+
+    let ok = graph_opt.is_some() && !diagnostics.has_errors();
+    (ok, diagnostics.to_string())
 }
 
 fn assert_builds(files: &[(&str, &str)]) {

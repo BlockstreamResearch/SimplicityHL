@@ -1,37 +1,54 @@
+use std::collections::HashMap;
+
 use crate::driver::{DependencyGraph, CRATE_STR, MAIN_MODULE, MAIN_STR};
-use crate::error::{Error, ErrorCollector, RichError};
+use crate::error::{Diagnostic, DiagnosticManager, Error, Span};
 use crate::parse::{self, Visibility};
 use crate::str::{Identifier, ModuleName};
 
 /// This is a core component of the [`DependencyGraph`].
 impl DependencyGraph {
     /// Resolves the dependency graph and constructs the final AST program.
-    pub fn linearize_and_build(&self, handler: &mut ErrorCollector) -> Option<parse::Program> {
+    pub(crate) fn linearize_and_assemble(
+        &self,
+        diagnostics: &mut DiagnosticManager,
+    ) -> Option<parse::Program> {
         match self.linearize() {
-            Ok(order) => self.build_program(&order, handler),
+            Ok(order) => self.assemble_program(&order, diagnostics),
             Err(err) => {
-                handler.push(err);
+                diagnostics.push(err);
                 None
             }
         }
     }
 
     /// Constructs the unified array of items for the entire multi-program.
-    fn build_program(
+    fn assemble_program(
         &self,
         order: &[usize],
-        handler: &mut ErrorCollector,
+        diagnostics: &mut DiagnosticManager,
     ) -> Option<parse::Program> {
         let mut items = Vec::with_capacity(order.len());
 
+        let target_ids: HashMap<Span, usize> = self
+            .use_cache
+            .iter()
+            .map(|(span, resolved)| {
+                let id = self
+                    .sources
+                    .id(&resolved.path)
+                    .expect("resolved path must be registered in source map");
+                (*span, id)
+            })
+            .collect();
+
         for &source_id in order {
-            let module = &self.modules[source_id];
+            let module = &self.modules[&source_id];
 
             let local_items: Vec<parse::Item> = module
                 .program
                 .items()
                 .iter()
-                .filter_map(|item| self.rewrite_item(item))
+                .filter_map(|item| self.rewrite_item(item, &target_ids))
                 .collect();
 
             if source_id == MAIN_MODULE {
@@ -40,9 +57,9 @@ impl DependencyGraph {
                 });
 
                 if !has_main {
-                    handler.push(RichError::parsing_error(
-                        &Error::MainOutOfEntryFile.to_string(),
-                    ));
+                    diagnostics.push(Diagnostic::global(Error::CannotParse {
+                        msg: Error::MainOutOfEntryFile.to_string(),
+                    }));
                 }
             }
 
@@ -55,19 +72,23 @@ impl DependencyGraph {
             )));
         }
 
-        (!handler.has_errors())
-            .then(|| parse::Program::new(&items, *self.modules[MAIN_MODULE].program.as_ref()))
+        (!diagnostics.has_errors())
+            .then(|| parse::Program::new(&items, *self.modules[&MAIN_MODULE].program.as_ref()))
     }
 
     /// Rewrites a single item for the flattened single-file representation.
-    fn rewrite_item(&self, item: &parse::Item) -> Option<parse::Item> {
+    fn rewrite_item(
+        &self,
+        item: &parse::Item,
+        target_ids: &HashMap<Span, usize>,
+    ) -> Option<parse::Item> {
         match item {
-            parse::Item::Use(use_decl) => Some(self.rewrite_use(use_decl)),
+            parse::Item::Use(use_decl) => Some(self.rewrite_use(use_decl, target_ids)),
             parse::Item::Module(module) => {
                 let items: Vec<parse::Item> = module
                     .items()
                     .iter()
-                    .filter_map(|inner_item| self.rewrite_item(inner_item))
+                    .filter_map(|inner_item| self.rewrite_item(inner_item, target_ids))
                     .collect();
 
                 Some(parse::Item::Module(parse::Module::new(
@@ -82,22 +103,22 @@ impl DependencyGraph {
         }
     }
 
-    /// Rewrites a `use` declaration to its canonical `crate`-rooted form.
+    /// Rewrites a `use` declaration into its canonical `crate`-rooted form.
     ///
-    /// The resolved path becomes `crate::<module>::<mod_path...>`, where
-    /// `<module>` is `file_N` for dependency files and is omitted when the
-    /// target is [`MAIN_MODULE`] (via [`DependencyGraph::get_module_name`]).
+    /// The resolved path becomes `crate::unit_<N>::<mod_path...>`, where `N` is
+    /// the source id of the file that owns the imported item.
     ///
-    /// ## Examples
+    /// ## Example
     ///
-    /// - `use base_math::simple_op::hash` → `use crate::file_2::hash`
-    /// - `use some_dep::item` (target = [`MAIN_MODULE`]) → `use crate::item`
-    fn rewrite_use(&self, use_decl: &parse::UseDecl) -> parse::Item {
-        let resolved = &self.use_cache[use_decl.span()];
-        let target_id = self
-            .source_map
-            .id(&resolved.path)
-            .expect("resolved path must be registered");
+    /// - `use base_math::simple_op::hash` → `use crate::unit_2::hash`
+    fn rewrite_use(
+        &self,
+        use_decl: &parse::UseDecl,
+        target_ids: &HashMap<Span, usize>,
+    ) -> parse::Item {
+        let span = *use_decl.span();
+        let resolved = &self.use_cache[&span];
+        let target_id = target_ids[&span];
 
         let mut new_path = Vec::with_capacity(resolved.mod_path.len() + 2);
         new_path.push(Identifier::from_str_unchecked(CRATE_STR));
@@ -118,7 +139,6 @@ impl DependencyGraph {
 mod flattening_tests {
     use crate::driver::tests::setup_graph;
     use crate::driver::CRATE_STR;
-    use crate::error::ErrorCollector;
     use crate::parse::{self, Visibility};
 
     use std::collections::HashMap;
@@ -127,11 +147,10 @@ mod flattening_tests {
     fn build_flattened_program(
         files: Vec<(&str, &str)>,
     ) -> (parse::Program, HashMap<String, usize>) {
-        let (graph, ids, _dir) = setup_graph(files);
-        let mut error_handler = ErrorCollector::new();
+        let (graph, ids, _dir, mut diagnostics) = setup_graph(files);
 
-        let Some(program) = graph.linearize_and_build(&mut error_handler) else {
-            panic!("{}", &error_handler.to_string());
+        let Some(program) = graph.linearize_and_assemble(&mut diagnostics) else {
+            panic!("{}", &diagnostics);
         };
 
         (program, ids)
@@ -230,7 +249,7 @@ mod flattening_tests {
 
     #[test]
     fn dependency_main_does_not_satisfy_missing_root_main() {
-        let (graph, _ids, _dir) = setup_graph(vec![
+        let (graph, _ids, _dir, mut diagnostics) = setup_graph(vec![
             ("main.simf", "use lib::A::helper;"),
             (
                 "libs/lib/A.simf",
@@ -238,8 +257,7 @@ mod flattening_tests {
             ),
         ]);
 
-        let mut error_handler = ErrorCollector::new();
-        let driver_program = graph.linearize_and_build(&mut error_handler);
+        let driver_program = graph.linearize_and_assemble(&mut diagnostics);
 
         assert!(
             driver_program.is_none(),
@@ -248,7 +266,7 @@ mod flattening_tests {
         );
 
         assert!(
-            error_handler.has_errors(),
+            diagnostics.has_errors(),
             "a dependency `fn main` must not satisfy a missing entrypoint `fn main`"
         );
     }
@@ -257,27 +275,27 @@ mod flattening_tests {
 #[cfg(test)]
 mod dependency_map_tests {
     use crate::driver::tests::setup_graph;
-    use crate::error::ErrorCollector;
+    use crate::error::DiagnosticManager;
 
     // Helper to run the driver and return the error collector so we can inspect it.
-    fn run_driver(files: Vec<(&str, &str)>) -> ErrorCollector {
-        let (graph, _ids, _dir) = setup_graph(files);
-        let mut error_handler = ErrorCollector::new();
-        let _ = graph.linearize_and_build(&mut error_handler).unwrap();
-        error_handler
+    fn run_driver(files: Vec<(&str, &str)>) -> DiagnosticManager {
+        let (graph, _ids, _dir, mut diagnostics) = setup_graph(files);
+        let _ = graph.linearize_and_assemble(&mut diagnostics).unwrap();
+        diagnostics
     }
 
     #[test]
     fn test_crate_path_resolves_to_physical_file() {
         // Scenario: `crate::utils::math` should map to the physical `utils/math.simf` file.
-        let errors = run_driver(vec![
+        let diagnostics = run_driver(vec![
             ("utils/math.simf", "pub fn add() {}"),
             ("main.simf", "use crate::utils::math::add; fn main() {}"),
         ]);
 
         assert!(
-            !errors.has_errors(),
-            "Driver should successfully find the physical file 'utils/math.simf'. Errors: {errors}"
+            !diagnostics.has_errors(),
+            "Driver should successfully find the physical file 'utils/math.simf'. Errors: {}",
+            diagnostics
         );
     }
 
@@ -285,7 +303,7 @@ mod dependency_map_tests {
     fn test_crate_path_fallback_to_inline_module() {
         // Scenario: `brother.simf` does NOT exist. `crate::brother` must fallback
         // to `main.simf` and treat `brother` as an inline mod_path.
-        let errors = run_driver(vec![(
+        let diagnostics = run_driver(vec![(
             "main.simf",
             "
                 mod brother { pub fn toy() {} }
@@ -294,13 +312,17 @@ mod dependency_map_tests {
             ",
         )]);
 
-        assert!(!errors.has_errors(), "Driver must fallback to main.simf for inline modules without throwing FileNotFound. Errors: {errors}");
+        assert!(
+            !diagnostics.has_errors(),
+            "Driver must fallback to main.simf for inline modules without throwing FileNotFound. Errors: {}",
+            diagnostics
+        );
     }
 
     #[test]
     fn test_crate_path_deeply_nested_inline_fallback() {
         // Scenario: A physical file exists (`utils.simf`), but the REST of the path is inline modules!
-        let errors = run_driver(vec![
+        let diagnostics = run_driver(vec![
             (
                 "utils.simf",
                 "pub mod deeply { pub mod nested { pub fn func() {} } }",
@@ -312,22 +334,24 @@ mod dependency_map_tests {
         ]);
 
         assert!(
-            !errors.has_errors(),
-            "Driver must split the path at the file boundary correctly. Errors: {errors}"
+            !diagnostics.has_errors(),
+            "Driver must split the path at the file boundary correctly. Errors: {}",
+            diagnostics
         );
     }
 
     #[test]
     fn test_external_dependency_resolution() {
         // Scenario: Resolving `use lib::A::foo` across the remapping boundary.
-        let errors = run_driver(vec![
+        let diagnostics = run_driver(vec![
             ("libs/lib/A.simf", "pub fn foo() {}"),
             ("main.simf", "use lib::A::foo; fn main() {}"),
         ]);
 
         assert!(
-            !errors.has_errors(),
-            "External dependency resolution via drp_name failed. Errors: {errors}"
+            !diagnostics.has_errors(),
+            "External dependency resolution via drp_name failed. Errors: {}",
+            diagnostics
         );
     }
 }

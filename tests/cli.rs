@@ -285,3 +285,38 @@ fn cli_dependency_version_mismatch_rejected() {
         "expected an incompatible-version error pointing at the dependency, got:\n{stderr}"
     );
 }
+
+#[test]
+fn cli_diagnostics_respect_no_color_env() {
+    const ESC: u8 = 0x1b;
+
+    let file = Path::new(env!("CARGO_TARGET_TMPDIR")).join("no_color.simf");
+    std::fs::write(&file, "fn main() { let x: u32 = true; }\n").expect("write source file");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_simc"))
+        .arg(&file)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run simc");
+
+    assert!(
+        !output.status.success(),
+        "compilation of an ill-typed program must fail; got {:?}",
+        output.status,
+    );
+
+    // Guard against the vacuous case: empty stderr also contains no
+    // escape bytes. We want to prove a real diagnostic came out AND
+    // that it's clean.
+    assert!(
+        !output.stderr.is_empty(),
+        "expected a diagnostic on stderr; got nothing.\nstdout: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+
+    assert!(
+        !output.stderr.contains(&ESC),
+        "NO_COLOR=1 was set but stderr contains ANSI escape bytes:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}

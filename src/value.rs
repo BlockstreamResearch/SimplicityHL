@@ -8,7 +8,7 @@ use simplicity::types::Final as SimType;
 use simplicity::{BitCollector, Value as SimValue, ValueRef};
 
 use crate::array::{BTreeSlice, Combiner, Partition, Unfolder};
-use crate::error::{Error, RichError, WithSpan};
+use crate::error::{Diagnostic, Error, WithSpan};
 use crate::num::{NonZeroPow2Usize, Pow2Usize, U256};
 use crate::parse::ParseFromStr;
 use crate::str::{Binary, Decimal, Hexadecimal};
@@ -786,7 +786,7 @@ impl Value {
     }
 
     /// Parse a value of the given type from a string.
-    pub fn parse_from_str(s: &str, ty: &ResolvedType) -> Result<Self, RichError> {
+    pub fn parse_from_str(s: &str, ty: &ResolvedType) -> Result<Self, Diagnostic> {
         let parse_expr = parse::Expression::parse_from_str(s)?;
         let ast_expr = ast::Expression::analyze_const(&parse_expr, ty)?;
         Self::from_const_expr(&ast_expr)

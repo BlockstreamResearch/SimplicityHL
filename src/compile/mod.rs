@@ -15,7 +15,7 @@ use crate::ast::{
     SingleExpressionInner, Statement,
 };
 use crate::debug::CallTracker;
-use crate::error::{Error, RichError, Span, WithSpan};
+use crate::error::{Diagnostic, Error, Span, WithSpan};
 use crate::named::{self, CoreExt, PairBuilder};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::pattern::{BasePattern, Pattern};
@@ -206,7 +206,7 @@ impl<'brand> Scope<'brand> {
         args: PairBuilder<ProgNode<'brand>>,
         body: &ProgNode<'brand>,
         span: &S,
-    ) -> Result<PairBuilder<ProgNode<'brand>>, RichError> {
+    ) -> Result<PairBuilder<ProgNode<'brand>>, Diagnostic> {
         match self.call_tracker.get_cmr(span.as_ref()) {
             Some(cmr) if self.include_debug_symbols => {
                 let false_and_args = ProgNode::bit(self.ctx(), false).pair(args);
@@ -229,7 +229,7 @@ fn compile_blk<'brand>(
     scope: &mut Scope<'brand>,
     index: usize,
     last_expr: Option<&Expression>,
-) -> Result<PairBuilder<ProgNode<'brand>>, RichError> {
+) -> Result<PairBuilder<ProgNode<'brand>>, Diagnostic> {
     if index >= stmts.len() {
         return match last_expr {
             Some(expr) => expr.compile(scope),
@@ -266,7 +266,7 @@ impl Program {
         arguments: Arguments,
         include_debug_symbols: bool,
         jet_hinter: Box<dyn JetHinter>,
-    ) -> Result<Arc<named::CommitNode>, RichError> {
+    ) -> Result<Arc<named::CommitNode>, Diagnostic> {
         types::Context::with_context(|ctx| {
             let mut scope = Scope::new(
                 ctx,
@@ -289,7 +289,7 @@ impl Expression {
     fn compile<'brand>(
         &self,
         scope: &mut Scope<'brand>,
-    ) -> Result<PairBuilder<ProgNode<'brand>>, RichError> {
+    ) -> Result<PairBuilder<ProgNode<'brand>>, Diagnostic> {
         match self.inner() {
             ExpressionInner::Block(stmts, expr) => {
                 scope.push_scope();
@@ -306,7 +306,7 @@ impl SingleExpression {
     fn compile<'brand>(
         &self,
         scope: &mut Scope<'brand>,
-    ) -> Result<PairBuilder<ProgNode<'brand>>, RichError> {
+    ) -> Result<PairBuilder<ProgNode<'brand>>, Diagnostic> {
         let expr = match self.inner() {
             SingleExpressionInner::Constant(value) => {
                 let value = StructuralValue::from(value);
@@ -328,7 +328,7 @@ impl SingleExpression {
                 let compiled = elements
                     .iter()
                     .map(|e| e.compile(scope))
-                    .collect::<Result<Vec<PairBuilder<ProgNode>>, RichError>>()?;
+                    .collect::<Result<Vec<PairBuilder<ProgNode>>, Diagnostic>>()?;
                 let tree = BTreeSlice::from_slice(&compiled);
                 tree.fold(PairBuilder::pair)
                     .unwrap_or_else(|| PairBuilder::unit(scope.ctx()))
@@ -337,7 +337,7 @@ impl SingleExpression {
                 let compiled = elements
                     .iter()
                     .map(|e| e.compile(scope))
-                    .collect::<Result<Vec<PairBuilder<ProgNode>>, RichError>>()?;
+                    .collect::<Result<Vec<PairBuilder<ProgNode>>, Diagnostic>>()?;
                 let bound = self.ty().as_list().unwrap().1;
                 let partition = Partition::from_slice(&compiled, bound);
                 partition.fold(
@@ -379,7 +379,7 @@ impl Call {
     fn compile<'brand>(
         &self,
         scope: &mut Scope<'brand>,
-    ) -> Result<PairBuilder<ProgNode<'brand>>, RichError> {
+    ) -> Result<PairBuilder<ProgNode<'brand>>, Diagnostic> {
         let args_ast = SingleExpression::tuple(self.args().clone(), *self.as_ref());
         let args = args_ast.compile(scope)?;
 
@@ -657,7 +657,7 @@ impl Match {
     fn compile<'brand>(
         &self,
         scope: &mut Scope<'brand>,
-    ) -> Result<PairBuilder<ProgNode<'brand>>, RichError> {
+    ) -> Result<PairBuilder<ProgNode<'brand>>, Diagnostic> {
         scope.push_scope();
         scope.insert(
             self.left()

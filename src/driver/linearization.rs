@@ -8,19 +8,18 @@
 
 use std::collections::HashSet;
 
-use crate::driver::DependencyGraph;
-use crate::error::{Error, RichError, Span};
+use crate::driver::{DependencyGraph, MAIN_MODULE};
+use crate::error::{Diagnostic, Error};
 
 /// This is a core component of the [`DependencyGraph`].
 impl DependencyGraph {
     /// Returns the deterministic, BOTTOM-UP load order of dependencies.
-    pub(super) fn linearize(&self) -> Result<Vec<usize>, RichError> {
+    pub(super) fn linearize(&self) -> Result<Vec<usize>, Diagnostic> {
         let mut visited = HashSet::new();
         let mut visiting = Vec::new();
         let mut order = Vec::new();
 
-        self.dfs_linearize(0, &mut visited, &mut visiting, &mut order)?;
-
+        self.dfs_linearize(MAIN_MODULE, &mut visited, &mut visiting, &mut order)?;
         Ok(order)
     }
 
@@ -35,22 +34,19 @@ impl DependencyGraph {
         visited: &mut HashSet<usize>,
         visiting: &mut Vec<usize>,
         order: &mut Vec<usize>,
-    ) -> Result<(), RichError> {
+    ) -> Result<(), Diagnostic> {
         // If we have already fully processed this module, skip it (Diamond Deduplication)
         if visited.contains(&module) {
             return Ok(());
         }
 
         if let Some(cycle_start) = visiting.iter().position(|&m| m == module) {
-            return Err(RichError::new(
-                Error::LinearizationCycleDetected {
-                    deps: visiting[cycle_start..]
-                        .iter()
-                        .map(|&id| self.modules[id].source.str_name())
-                        .collect(),
-                },
-                Span::DUMMY,
-            ));
+            return Err(Diagnostic::global(Error::LinearizationCycleDetected {
+                deps: visiting[cycle_start..]
+                    .iter()
+                    .map(|&id| self.modules[&id].source.str_name())
+                    .collect(),
+            }));
         }
 
         visiting.push(module);
@@ -85,7 +81,7 @@ mod tests {
 
     #[test]
     fn test_linearize_simple_import() {
-        let (graph, ids, _dir) = setup_graph(vec![
+        let (graph, ids, _dir, _diags) = setup_graph(vec![
             ("main.simf", "use lib::math::some_func;"),
             ("libs/lib/math.simf", ""),
         ]);
@@ -106,7 +102,7 @@ mod tests {
         // B -> imports Common
         // Expected: Common loaded ONLY ONCE.
 
-        let (graph, ids, _dir) = setup_graph(vec![
+        let (graph, ids, _dir, _diags) = setup_graph(vec![
             ("main.simf", "use lib::A::foo; use lib::B::bar;"),
             ("libs/lib/A.simf", "use crate::Common::dummy1;"),
             ("libs/lib/B.simf", "use crate::Common::dummy2;"),
@@ -129,7 +125,7 @@ mod tests {
 
     #[test]
     fn test_linearize_detects_cycle() {
-        let (graph, _, _dir) = setup_graph(vec![
+        let (graph, _, _dir, _diags) = setup_graph(vec![
             ("main.simf", "use lib::A::entry;"),
             ("libs/lib/A.simf", "use crate::B::func;"),
             ("libs/lib/B.simf", "use crate::A::func;"),
@@ -147,7 +143,7 @@ mod tests {
     fn test_linearize_allows_conflicting_nested_import_order() {
         // A imports X then Y, while B imports Y then X.
         // This DAG is still valid because neither X nor Y depends on the other.
-        let (graph, ids, _dir) = setup_graph(vec![
+        let (graph, ids, _dir, _diags) = setup_graph(vec![
             ("main.simf", "use lib::A::foo; use lib::B::bar;"),
             ("libs/lib/A.simf", "use crate::X::foo; use crate::Y::bar;"),
             ("libs/lib/B.simf", "use crate::Y::baz; use crate::X::qux;"),

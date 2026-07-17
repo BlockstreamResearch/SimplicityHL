@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::driver::CRATE_STR;
-use crate::error::{Error, RichError, WithSpan as _};
+use crate::error::{Diagnostic, Error, WithSpan as _};
 use crate::parse::UseDecl;
 use crate::source::CanonPath;
 use crate::str::Identifier;
@@ -255,7 +255,7 @@ impl DependencyMap {
         &self,
         current_file: &CanonPath,
         use_decl: &UseDecl,
-    ) -> Result<CanonPath, RichError> {
+    ) -> Result<CanonPath, Diagnostic> {
         Ok(self.resolve_path_internal(current_file, use_decl)?.path)
     }
 
@@ -263,7 +263,7 @@ impl DependencyMap {
         &self,
         current_file: &CanonPath,
         use_decl: &UseDecl,
-    ) -> Result<ResolvedUse, RichError> {
+    ) -> Result<ResolvedUse, Diagnostic> {
         let drp_name = use_decl.drp_name()?;
         let span = *use_decl.span();
 
@@ -277,7 +277,7 @@ impl DependencyMap {
             .iter()
             .find(|r| current_file.starts_with(&r.context_prefix) && r.drp_name == drp_name)
             .ok_or_else(|| {
-                RichError::new(
+                Diagnostic::new(
                     Error::UnknownLibrary {
                         name: drp_name.to_string(),
                     },
@@ -292,13 +292,13 @@ impl DependencyMap {
         remapping: &Remapping,
         current_file: &CanonPath,
         use_decl: &UseDecl,
-    ) -> Result<ResolvedUse, RichError> {
+    ) -> Result<ResolvedUse, Diagnostic> {
         let drp_name = use_decl.drp_name()?;
         let parts_without_drp_name = &use_decl.path()[1..];
 
         let resolved = Self::build_and_verify_path(&remapping.target, parts_without_drp_name)
             .map_err(|failed_path| {
-                RichError::new(
+                Diagnostic::new(
                     Error::ExternalFileNotFound {
                         lib: drp_name.to_string(),
                         filename: failed_path,
@@ -319,13 +319,13 @@ impl DependencyMap {
         &self,
         current_file: &CanonPath,
         use_decl: &UseDecl,
-    ) -> Result<ResolvedUse, RichError> {
+    ) -> Result<ResolvedUse, Diagnostic> {
         let root = self
             .get_package_root(current_file)
             .ok_or_else(|| Error::Internal {
                 msg: "The 'crate' root path was not configured by the compiler.".to_string(),
             })
-            .map_err(|e| RichError::new(e, *use_decl.span()))?;
+            .map_err(|e| Diagnostic::new(e, *use_decl.span()))?;
 
         let parts_without_drp_name = &use_decl.path()[1..];
         let failed_path = match Self::build_and_verify_path(root, parts_without_drp_name) {
@@ -342,7 +342,7 @@ impl DependencyMap {
             });
         }
 
-        Err(RichError::new(
+        Err(Diagnostic::new(
             Error::FileNotFound {
                 filename: failed_path,
             },
@@ -356,7 +356,7 @@ impl DependencyMap {
         current_file: &CanonPath,
         resolved: &CanonPath,
         use_decl_span: &crate::error::Span,
-    ) -> Result<(), RichError> {
+    ) -> Result<(), Diagnostic> {
         if let (Some(curr), Some(res)) = (
             self.get_package_root(current_file),
             self.get_package_root(resolved),
@@ -377,7 +377,7 @@ impl DependencyMap {
     /// # Errors
     ///
     /// Returns the failed candidate path as a raw `PathBuf`, without any additional context.
-    /// The caller is responsible for enriching this into a [`RichError`] with the appropriate
+    /// The caller is responsible for wrapping this into a [`Diagnostic`] with the appropriate
     /// span, library name, and any other diagnostic information.
     fn build_and_verify_path(
         base_target: &CanonPath,
