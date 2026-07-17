@@ -161,9 +161,10 @@ impl UnresolvedValues {
 
     /// Resolve each value against the type that the program declares for its name.
     ///
+    /// Bare value strings whose name the program does not declare are skipped.
+    ///
     /// ## Errors
     ///
-    /// - A bare value string is given for a name that the program does not declare.
     /// - A bare value string does not parse at the declared type.
     ///
     /// Self-typed entries are passed through unchanged.
@@ -179,9 +180,10 @@ impl UnresolvedValues {
             let value = match unresolved {
                 UnresolvedValue::Typed(value) => value,
                 UnresolvedValue::Untyped(s) => {
-                    let ty = declared_types.get(&name).ok_or_else(|| {
-                        format!("`{name}` is not declared by the program, so its value `{s}` cannot be assigned a type")
-                    })?;
+                    let Some(ty) = declared_types.get(&name) else {
+                        continue;
+                    };
+
                     Value::parse_from_str(&s, ty)
                         .map_err(|error| format!("`{name}` is declared as `{ty}`: {error}"))?
                 }
@@ -373,14 +375,17 @@ fn main() {
             Some(&Value::u16(7))
         );
 
-        let unknown = UnresolvedValues::from_map(HashMap::from([(
-            WitnessName::from_str_unchecked("TYPO"),
+        // Entries the program does not declare are skipped (consistent with `WitnessValues::is_consistent`)
+        let extra = UnresolvedValues::from_map(HashMap::from([(
+            WitnessName::from_str_unchecked("UNUSED"),
             UnresolvedValue::Untyped("1".to_string()),
         )]));
-        let err = unknown
-            .resolve::<WitnessValues, _>(&witness_types)
-            .unwrap_err();
-        assert!(err.contains("TYPO"), "error should name the entry: {err}");
+        let resolved: WitnessValues = extra.resolve(&witness_types).unwrap();
+        assert_eq!(
+            resolved.get(&WitnessName::from_str_unchecked("UNUSED")),
+            None,
+            "undeclared bare entries are ignored"
+        );
 
         let bad = UnresolvedValues::from_map(HashMap::from([(
             WitnessName::from_str_unchecked("A"),
