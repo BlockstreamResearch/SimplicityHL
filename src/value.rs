@@ -696,7 +696,8 @@ impl Value {
                 | ExprTree::Statement(..)
                 | ExprTree::Assignment(..)
                 | ExprTree::Call(..)
-                | ExprTree::Match(..) => return None, // not const
+                | ExprTree::Match(..)
+                | ExprTree::EnumMatch(..) => return None, // not const
             };
             let size = data.node.n_children();
             match single.inner() {
@@ -705,7 +706,8 @@ impl Value {
                 | S::Parameter(..)
                 | S::Variable(..)
                 | S::Call(..)
-                | S::Match(..) => return None, // not const
+                | S::Match(..)
+                | S::EnumMatch(..) => return None, // not const
                 S::Expression(..) => continue, // skip
                 S::Tuple(..) => {
                     let elements = output.split_off(output.len() - size);
@@ -741,6 +743,14 @@ impl Value {
                 S::Option(Some(..)) => {
                     let inner = output.pop().unwrap();
                     output.push(Self::some(inner));
+                }
+                S::EnumConstruction(construction) => {
+                    let payload = output.split_off(output.len() - size);
+                    debug_assert_eq!(payload.len(), construction.payload().len());
+
+                    let info = single.ty().as_enum().expect("value is type-checked");
+                    let name = info.variants()[construction.variant_index()].name().clone();
+                    output.push(Self::enum_variant(single.ty(), &name, payload)?);
                 }
             }
         }

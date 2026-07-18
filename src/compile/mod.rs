@@ -360,7 +360,9 @@ impl SingleExpression {
                 inner.compile(scope).map(PairBuilder::injr)?
             }
             SingleExpressionInner::Call(call) => call.compile(scope)?,
+            SingleExpressionInner::EnumConstruction(_construction) => todo!(),
             SingleExpressionInner::Match(match_) => match_.compile(scope)?,
+            SingleExpressionInner::EnumMatch(_enum_match) => todo!(),
         };
 
         scope

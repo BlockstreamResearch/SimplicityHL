@@ -1,5 +1,5 @@
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -16,7 +16,8 @@ use crate::parse::{MatchPattern, UseDecl, Visibility};
 use crate::pattern::Pattern;
 use crate::str::{AliasName, FunctionName, Identifier, ModuleName, SymbolName, WitnessName};
 use crate::types::{
-    AliasedType, ResolvedType, StructuralType, TypeConstructible, TypeDeconstructible, UIntType,
+    AliasedType, EnumInfo, EnumVariantInfo, ResolvedType, StructuralType, TypeConstructible,
+    TypeDeconstructible, TypeInner, UIntType,
 };
 use crate::value::{UIntValue, Value};
 use crate::witness::{Parameters, WitnessTypes};
@@ -72,6 +73,11 @@ pub enum Item {
     ///
     /// A stub because the alias was resolved during the creation of the AST.
     TypeAlias,
+    /// An enum declaration.
+    ///
+    /// A stub because the declaration was resolved into scope during the
+    /// creation of the AST.
+    EnumDeclaration,
     /// A function.
     Function(Function),
     Use,
@@ -242,6 +248,12 @@ pub enum SingleExpressionInner {
     Call(Call),
     /// Match expression.
     Match(Match),
+    /// Match expression over an enum's variants.
+    EnumMatch(EnumMatch),
+    /// Construction of an enum variant.
+    ///
+    /// The enum's definition lives in the type of the expression.
+    EnumConstruction(EnumConstruction),
 }
 
 /// Call of a user-defined or of a builtin function.
@@ -529,6 +541,7 @@ pub enum ExprTree<'a> {
     Single(&'a SingleExpression),
     Call(&'a Call),
     Match(&'a Match),
+    EnumMatch(&'a EnumMatch),
 }
 
 impl TreeLike for ExprTree<'_> {
@@ -569,6 +582,14 @@ impl TreeLike for ExprTree<'_> {
                 }
                 S::Call(call) => Tree::Unary(Self::Call(call)),
                 S::Match(match_) => Tree::Unary(Self::Match(match_)),
+                S::EnumMatch(enum_match) => Tree::Unary(Self::EnumMatch(enum_match)),
+                S::EnumConstruction(construction) => Tree::Nary(
+                    construction
+                        .payload()
+                        .iter()
+                        .map(|arg| Self::Expression(arg))
+                        .collect(),
+                ),
             },
             Self::Call(call) => Tree::Nary(call.args().iter().map(Self::Expression).collect()),
             Self::Match(match_) => Tree::Nary(Arc::new([
@@ -576,6 +597,16 @@ impl TreeLike for ExprTree<'_> {
                 Self::Expression(match_.left().expression()),
                 Self::Expression(match_.right().expression()),
             ])),
+            Self::EnumMatch(enum_match) => Tree::Nary(
+                std::iter::once(Self::Expression(enum_match.scrutinee()))
+                    .chain(
+                        enum_match
+                            .arms()
+                            .iter()
+                            .map(|arm| Self::Expression(arm.body())),
+                    )
+                    .collect(),
+            ),
         }
     }
 }
@@ -666,6 +697,10 @@ struct Scope {
     variables: Vec<HashMap<Identifier, ResolvedType>>,
     parameters: HashMap<WitnessName, ResolvedType>,
     witnesses: HashMap<WitnessName, ResolvedType>,
+    /// Allow enum constructions to name an enum by its declared name even
+    /// when that name is not an alias in scope. Enabled only for value
+    /// parsing (witness and argument files), which runs without a scope.
+    unscoped_enum_names: bool,
     is_main: bool,
     call_tracker: CallTracker,
     jet_hinter: Box<dyn JetHinter>,
@@ -688,9 +723,19 @@ impl Scope {
             variables: Vec::new(),
             parameters: HashMap::new(),
             witnesses: HashMap::new(),
+            unscoped_enum_names: false,
             is_main: false,
             call_tracker: CallTracker::default(),
             jet_hinter,
+        }
+    }
+
+    /// Scope for parsing values from witness and argument files: empty,
+    /// except that enum constructions may name an enum by its declared name.
+    fn for_value_parsing() -> Self {
+        Self {
+            unscoped_enum_names: true,
+            ..Self::default()
         }
     }
 
@@ -1006,21 +1051,59 @@ impl Scope {
         ty.resolve(|name| self.get_alias(name))
     }
 
+    /// Error if `name` is already defined as an alias in the current module.
+    fn check_alias_free(&self, name: &AliasName) -> Result<(), Error> {
+        if self.current_module().aliases.contains_key(name) {
+            return Err(Error::RedefinedAlias { name: name.clone() });
+        }
+
+        Ok(())
+    }
+
     /// Insert a type alias into the current module scope.
     ///
     /// ## Errors
     ///
     /// * [`Error::RedefinedAlias`]: The alias name is already defined in the current scope.
     pub fn insert_alias(&mut self, alias: parse::TypeAlias) -> Result<(), Error> {
-        let name = alias.name().clone();
-        if self.current_module().aliases.contains_key(&name) {
-            return Err(Error::RedefinedAlias { name });
-        }
+        self.check_alias_free(alias.name())?;
 
         let resolved = self.resolve(alias.ty())?;
+
         self.current_module_mut()
             .aliases
-            .insert(name, (resolved, alias.visibility().clone()));
+            .insert(alias.name().clone(), (resolved, alias.visibility().clone()));
+
+        Ok(())
+    }
+
+    /// Insert an enum declaration into the current module.
+    ///
+    /// An enum is a type alias for a nominal enum type, so its name resolves as a type
+    /// and its identity travels wherever the alias is imported.
+    ///
+    /// Enums may only be declared at the top level of the program's own files
+    /// (the parser rejects declarations inside `mod` blocks, the driver rejects them in dependency files),
+    /// so the bare name is unique program-wide and identifies the enum in the ABI.
+    ///
+    /// ## Errors
+    ///
+    /// * [`Error::RedefinedAlias`]: The name is already defined in the current module.
+    pub fn insert_enum(
+        &mut self,
+        name: AliasName,
+        visibility: Visibility,
+        variants: Arc<[EnumVariantInfo]>,
+    ) -> Result<(), Error> {
+        self.check_alias_free(&name)?;
+
+        let info = EnumInfo::new(Arc::from(name.as_inner()), variants);
+        let resolved = ResolvedType::enumeration(info);
+
+        self.current_module_mut()
+            .aliases
+            .insert(name, (resolved, visibility));
+
         Ok(())
     }
 
@@ -1215,7 +1298,49 @@ impl AbstractSyntaxTree for Item {
                 scope.resolve_use(use_decl).with_span(use_decl)?;
                 Ok(Self::Use)
             }
-            parse::Item::EnumDeclaration(_decl) => todo!(),
+            parse::Item::EnumDeclaration(decl) => {
+                if decl.variants().is_empty() {
+                    // A sum of zero types would be uninhabited, which
+                    // Simplicity's type algebra cannot express.
+                    return Err(Error::Grammar {
+                        msg: format!("enum '{}' must have at least one variant", decl.name()),
+                    })
+                    .with_span(decl);
+                }
+
+                let mut seen_names = HashSet::new();
+                for v in decl.variants() {
+                    if !seen_names.insert(v.name()) {
+                        return Err(Error::Grammar {
+                            msg: format!(
+                                "enum '{}' has duplicate variant name '{}'",
+                                decl.name(),
+                                v.name()
+                            ),
+                        })
+                        .with_span(decl);
+                    }
+                }
+
+                let variants = decl
+                    .variants()
+                    .iter()
+                    .map(|v| {
+                        let payload = v
+                            .payload()
+                            .iter()
+                            .map(|ty| scope.resolve(ty))
+                            .collect::<Result<Arc<[ResolvedType]>, Error>>()
+                            .with_span(v)?;
+                        Ok(EnumVariantInfo::new(v.name().clone(), payload))
+                    })
+                    .collect::<Result<Arc<[EnumVariantInfo]>, Diagnostic>>()?;
+                scope
+                    .insert_enum(decl.name().clone(), decl.visibility().clone(), variants)
+                    .with_span(decl)?;
+
+                Ok(Self::EnumDeclaration)
+            }
             parse::Item::Module(module) => {
                 scope
                     .enter_module(module.name().clone(), module.visibility().clone())
@@ -1360,8 +1485,148 @@ impl Expression {
     /// The returned expression might not be evaluable at compile time.
     /// The details depend on the current state of the SimplicityHL compiler.
     pub fn analyze_const(from: &parse::Expression, ty: &ResolvedType) -> Result<Self, Diagnostic> {
-        let mut empty_scope = Scope::default();
+        // Value files carry no scope, so enum constructions may name the
+        // enum by its declared name here — and only here.
+        let mut empty_scope = Scope::for_value_parsing();
         Self::analyze(from, ty, &mut empty_scope)
+    }
+}
+
+/// Analyze the construction of an enum variant, e.g. `Action::Refresh(sig, 3)`.
+///
+/// Analysis is type-directed. The expected type must be an enum, and the written enum name must name it.
+/// In program source that means an alias in lexical scope, the same rule
+/// matches follow. In witness and argument files, which are parsed without
+/// a scope ([`Scope::unscoped_enum_names`]), the enum's declared name
+/// itself also matches.
+fn analyze_enum_construction(
+    construction: &parse::EnumConstruction,
+    ty: &ResolvedType,
+    scope: &mut Scope,
+) -> Result<EnumConstruction, Diagnostic> {
+    let span = *construction.span();
+    let Some(info) = ty.as_enum() else {
+        return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }).with_span(span);
+    };
+
+    // The written name must be the expected enum's.
+    // Enums are declared at the top level, so only a single identifier can name one.
+    // An alias in scope must resolve to the expected type.
+    // Without a scope (witness and argument files) the declared name itself matches.
+    let written = construction.enum_path_string();
+    let names_expected_enum = match construction.enum_path() {
+        [single] => {
+            let alias = AliasName::from_str_unchecked(single.as_inner());
+            match scope.get_alias(&alias) {
+                Ok(resolved) if &resolved == ty => true,
+                Ok(resolved) => {
+                    return Err(Error::ExpressionTypeMismatch {
+                        expected: ty.clone(),
+                        found: resolved,
+                    })
+                    .with_span(span);
+                }
+                Err(_) => scope.unscoped_enum_names && written == info.name(),
+            }
+        }
+        _ => false,
+    };
+    if !names_expected_enum {
+        return Err(Error::Grammar {
+            msg: format!("`{written}` does not name enum `{}`", info.name()),
+        })
+        .with_span(span);
+    }
+
+    let (variant_index, variant) = info
+        .variant(construction.variant())
+        .ok_or_else(|| enum_variant_error(construction.variant().as_inner(), info))
+        .with_span(span)?;
+    if construction.args().len() != variant.payload().len() {
+        return Err(Error::Grammar {
+            msg: format!(
+                "variant `{}` of enum `{}` carries {} payload value(s), found {}",
+                construction.variant(),
+                info.name(),
+                variant.payload().len(),
+                construction.args().len()
+            ),
+        })
+        .with_span(span);
+    }
+
+    let payload = construction
+        .args()
+        .iter()
+        .zip(variant.payload())
+        .map(|(arg, payload_ty)| Expression::analyze(arg, payload_ty, scope).map(Arc::new))
+        .collect::<Result<Arc<[Arc<Expression>]>, Diagnostic>>()?;
+
+    Ok(EnumConstruction {
+        variant_index,
+        payload,
+        span,
+    })
+}
+
+/// Do `a` and `b` carry the same enum at every corresponding position?
+///
+/// Casts prove structural equality, but enums are nominal: a cast may
+/// freely reshape enum-free structure (`(u16, u16)` into `u32`), while
+/// every enum must map to itself at its position — otherwise variants
+/// would convert by ordinal position, silently bypassing declared
+/// identity.
+///
+/// Conservative on shape changes: an enum aligned across a reshaped
+/// subtree (such as an array-to-tuple conversion) is rejected even when
+/// the enum itself is unchanged.
+///
+/// TODO(enums): this walk aligns high-level constructors, so casts that
+/// reshape only the container around an enum are rejected even when the
+/// enum keeps its structural position, e.g. `Option<E>` to
+/// `Either<(), E>`. A provenance-aware comparison — structural skeletons
+/// with nominal enum leaves — would accept those; keep `List` types
+/// conservative either way, since their partition layout complicates
+/// position alignment.
+fn cast_preserves_enum_identity(source: &ResolvedType, target: &ResolvedType) -> bool {
+    match (source.as_inner(), target.as_inner()) {
+        (TypeInner::Enum(src), TypeInner::Enum(dst)) => src == dst,
+        (TypeInner::Enum(_), _) | (_, TypeInner::Enum(_)) => false,
+        (TypeInner::Option(src), TypeInner::Option(dst)) => cast_preserves_enum_identity(src, dst),
+        (TypeInner::Either(src_l, src_r), TypeInner::Either(dst_l, dst_r)) => {
+            cast_preserves_enum_identity(src_l, dst_l) && cast_preserves_enum_identity(src_r, dst_r)
+        }
+        (TypeInner::Tuple(src), TypeInner::Tuple(dst)) if src.len() == dst.len() => src
+            .iter()
+            .zip(dst.iter())
+            .all(|(src_el, dst_el)| cast_preserves_enum_identity(src_el, dst_el)),
+        (TypeInner::Array(src, src_len), TypeInner::Array(dst, dst_len)) if src_len == dst_len => {
+            cast_preserves_enum_identity(src, dst)
+        }
+        (TypeInner::List(src, src_bound), TypeInner::List(dst, dst_bound))
+            if src_bound == dst_bound =>
+        {
+            cast_preserves_enum_identity(src, dst)
+        }
+        // Differently shaped subtrees may convert freely as long as no
+        // enum is involved on either side.
+        _ => !source.contains_enum() && !target.contains_enum(),
+    }
+}
+
+/// The given string does not name a variant of the enum.
+fn enum_variant_error(found: &str, info: &EnumInfo) -> Error {
+    let variants = info
+        .variants()
+        .iter()
+        .map(|variant| variant.name().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Error::Grammar {
+        msg: format!(
+            "`{found}` is not a variant of enum `{}`; expected one of: {variants}",
+            info.name()
+        ),
     }
 }
 
@@ -1562,8 +1827,13 @@ impl AbstractSyntaxTree for SingleExpression {
             parse::SingleExpressionInner::Match(match_) => {
                 Match::analyze(match_, ty, scope).map(SingleExpressionInner::Match)?
             }
-            parse::SingleExpressionInner::EnumConstruction(_construction) => todo!(),
-            parse::SingleExpressionInner::EnumMatch(_enum_match) => todo!(),
+            parse::SingleExpressionInner::EnumConstruction(construction) => {
+                analyze_enum_construction(construction, ty, scope)
+                    .map(SingleExpressionInner::EnumConstruction)?
+            }
+            parse::SingleExpressionInner::EnumMatch(enum_match) => {
+                EnumMatch::analyze(enum_match, ty, scope).map(SingleExpressionInner::EnumMatch)?
+            }
         };
 
         Ok(Self {
@@ -1572,6 +1842,178 @@ impl AbstractSyntaxTree for SingleExpression {
             span: *from.as_ref(),
         })
     }
+}
+
+impl AbstractSyntaxTree for EnumMatch {
+    type From = parse::EnumMatch;
+
+    fn analyze(
+        from: &Self::From,
+        ty: &ResolvedType,
+        scope: &mut Scope,
+    ) -> Result<Self, Diagnostic> {
+        let arms = from.arms();
+        let span = *from.span();
+        debug_assert!(!arms.is_empty(), "the parser rejects empty enum matches");
+
+        let enum_name = arms[0].enum_path_string();
+        let [single] = arms[0].enum_path() else {
+            return Err(Error::Grammar {
+                msg: format!(
+                    "`{enum_name}` does not name an enum; enums are declared at the \
+                     top level, so match arms name them by a single identifier"
+                ),
+            })
+            .with_span(span);
+        };
+        let alias = AliasName::from_str_unchecked(single.as_inner());
+        let enum_ty = scope.get_alias(&alias).with_span(span)?;
+        let info = match enum_ty.as_enum() {
+            Some(info) => info.clone(),
+            None => {
+                return Err(Error::Grammar {
+                    msg: format!(
+                        "`{enum_name}` is not an enum, so match arms of the form \
+                         `{enum_name}::Variant` cannot apply to it"
+                    ),
+                })
+                .with_span(span)
+            }
+        };
+
+        // One slot per variant, in declaration order.
+        // the order of the leaves of the enum's balanced sum.
+        let mut arms_by_index: Vec<Option<&parse::EnumMatchArm>> =
+            vec![None; info.variants().len()];
+        for arm in arms {
+            if arm.enum_path() != arms[0].enum_path() {
+                return Err(Error::Grammar {
+                    msg: format!(
+                        "all match arms must use the same enum; expected '{}', found '{}'",
+                        enum_name,
+                        arm.enum_path_string()
+                    ),
+                })
+                .with_span(span);
+            }
+            let (index, _) = info
+                .variant(arm.variant())
+                .ok_or_else(|| Error::Grammar {
+                    msg: format!(
+                        "variant '{}' is not defined in enum '{}'",
+                        arm.variant(),
+                        enum_name
+                    ),
+                })
+                .with_span(span)?;
+            let slot = &mut arms_by_index[index];
+            if slot.is_some() {
+                return Err(Error::Grammar {
+                    msg: format!("duplicate arm for variant '{}'", arm.variant()),
+                })
+                .with_span(span);
+            }
+            *slot = Some(arm);
+        }
+
+        // One collect: Some(arms) iff every variant is covered.
+        let covered: Option<Vec<&parse::EnumMatchArm>> = arms_by_index.iter().copied().collect();
+        let Some(covered) = covered else {
+            let missing: Vec<String> = arms_by_index
+                .iter()
+                .zip(info.variants())
+                .filter(|(slot, _)| slot.is_none())
+                .map(|(_, variant)| format!("'{}'", variant.name()))
+                .collect();
+            return Err(Error::Grammar {
+                msg: format!(
+                    "enum match on '{}' must cover all {} variants; missing: {}",
+                    enum_name,
+                    info.variants().len(),
+                    missing.join(", ")
+                ),
+            })
+            .with_span(span);
+        };
+
+        // Analyze the scrutinee against the nominal enum type, so that
+        // matching a value of a different enum (or any other type) against
+        // this enum's variants is a type error.
+        let scrutinee = Expression::analyze(from.scrutinee(), &enum_ty, scope).map(Arc::new)?;
+
+        let arm_asts = covered
+            .into_iter()
+            .zip(info.variants())
+            .map(|(arm, variant)| {
+                let pattern = analyze_enum_arm_bindings(arm, variant, scope, span)?;
+                scope.enter_block();
+                let payload_ty = variant.payload_type();
+                let typed_variables = pattern.is_of_type(payload_ty).with_span(span)?;
+                for (identifier, variable_ty) in typed_variables {
+                    scope.insert_variable(identifier, variable_ty);
+                }
+                let body = Expression::analyze(arm.expression(), ty, scope).map(Arc::new);
+                scope.exit_block();
+                Ok(EnumMatchArm {
+                    pattern,
+                    body: body?,
+                })
+            })
+            .collect::<Result<Arc<[EnumMatchArm]>, Diagnostic>>()?;
+
+        Ok(Self {
+            scrutinee,
+            arms: arm_asts,
+            span,
+        })
+    }
+}
+
+/// Check an enum match arm's payload bindings against the variant's declared
+/// payload types and combine them into one pattern for the variant's leaf.
+///
+/// Unit variants bind nothing ([`Pattern::Ignore`]); a single binding stands
+/// alone; multiple bindings form a tuple pattern, matching the tuple that a
+/// multi-payload variant carries at its leaf.
+fn analyze_enum_arm_bindings(
+    arm: &parse::EnumMatchArm,
+    variant: &EnumVariantInfo,
+    scope: &Scope,
+    span: Span,
+) -> Result<Pattern, Diagnostic> {
+    if arm.bindings().len() != variant.payload().len() {
+        return Err(Error::Grammar {
+            msg: format!(
+                "variant '{}' of enum '{}' carries {} payload value(s), \
+                 but the arm binds {}",
+                arm.variant(),
+                arm.enum_path_string(),
+                variant.payload().len(),
+                arm.bindings().len()
+            ),
+        })
+        .with_span(span);
+    }
+
+    let mut patterns = Vec::with_capacity(arm.bindings().len());
+    for ((pattern, declared), payload_ty) in arm.bindings().iter().zip(variant.payload()) {
+        let declared = scope.resolve(declared).with_span(span)?;
+        if &declared != payload_ty {
+            return Err(Error::ExpressionTypeMismatch {
+                expected: payload_ty.clone(),
+                found: declared,
+            })
+            .with_span(span);
+        }
+        patterns.push(pattern.clone());
+    }
+
+    let pattern = match patterns.len() {
+        0 => Pattern::Ignore,
+        1 => patterns[0].clone(),
+        _ => Pattern::tuple(patterns),
+    };
+    Ok(pattern)
 }
 
 impl AbstractSyntaxTree for Call {
@@ -1694,7 +2136,13 @@ impl AbstractSyntaxTree for Call {
                 args
             }
             CallName::TypeCast(source) => {
-                if StructuralType::from(&source) != StructuralType::from(ty) {
+                // Casts prove structural equality, but enums are nominal:
+                // every enum must map to itself at its structural position
+                // (see `cast_preserves_enum_identity`), else same-shaped
+                // enums would convert variants by ordinal position.
+                if !cast_preserves_enum_identity(&source, ty)
+                    || StructuralType::from(&source) != StructuralType::from(ty)
+                {
                     return Err(Error::InvalidCast {
                         source,
                         target: ty.clone(),
@@ -1972,7 +2420,7 @@ mod scope_resolution_tests {
         let (graph, _ids, _dir, mut diagnostics) = setup_graph(files);
 
         let Some(driver_program) = graph.linearize_and_assemble(&mut diagnostics) else {
-            panic!("{}", &diagnostics);
+            return Err(diagnostics.render_to_string());
         };
 
         Program::analyze(&driver_program, Box::new(ElementsJetHinter))
@@ -2468,5 +2916,533 @@ mod module_tests {
             result.is_ok(),
             "Inline imports must support aliasing: {result:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod enum_tests {
+    use crate::ast::ElementsJetHinter;
+    use crate::{TemplateProgram, UnstableFeatures};
+
+    fn analyze(src: &str) -> Result<(), String> {
+        TemplateProgram::new_with_unstable(
+            src,
+            &UnstableFeatures::all(),
+            Box::new(ElementsJetHinter::new()),
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn enum_declaration_registers_type_alias() {
+        let result = analyze(
+            "enum Color { Red, Green }
+             fn main() { let _x: Color = witness::C; }",
+        );
+        assert!(
+            result.is_ok(),
+            "enum name should resolve as a type: {result:?}"
+        );
+    }
+
+    #[test]
+    fn enum_duplicate_variant_name_is_error() {
+        let result = analyze("enum Color { Red, Red }\nfn main() {}");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("duplicate variant name"));
+    }
+
+    #[test]
+    fn enum_variant_named_after_builtin_pattern_is_ok() {
+        // The written `Enum::Variant` form keeps `Action::None` distinct
+        // from the built-in option literal, so variant names are
+        // unrestricted.
+        let result = analyze(
+            "enum Action { None, Some, Other, }
+             fn main() {
+                 match witness::W {
+                     Action::None => {},
+                     Action::Some => {},
+                     Action::Other => {},
+                 }
+             }",
+        );
+        assert!(
+            result.is_ok(),
+            "builtin-named variants should work: {result:?}"
+        );
+    }
+
+    #[test]
+    fn enum_empty_is_error() {
+        let result = analyze("enum Color { }\nfn main() {}");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("at least one variant"));
+    }
+
+    #[test]
+    fn enum_duplicate_name_is_error() {
+        let result = analyze(
+            "enum Color { Red, Green }
+             enum Color { Blue, Cyan }
+             fn main() {}",
+        );
+        assert!(result.is_err(), "redefined enum name should error");
+    }
+
+    #[test]
+    fn enum_declaration_inside_module_errors() {
+        // FIXME: Enums may only be declared at the top level of a file.
+        let result = analyze(
+            "mod m {
+                 pub enum Choice { X, Y, }
+             }
+             fn main() {}",
+        );
+        let err = result.expect_err("enum inside `mod` must be rejected");
+        assert!(
+            err.contains("top level"),
+            "error should say enums are top-level only: {err}"
+        );
+    }
+
+    #[test]
+    fn enum_declaration_in_dependency_errors() {
+        use crate::ast::scope_resolution_tests::analyze_multifile;
+
+        // FIXME: An enum's declared name is its identity in the ABI, so enums may only be declared in the program's own files.
+        let result = analyze_multifile(vec![
+            (
+                "main.simf",
+                "use lib::A::helper;
+                 fn main() { helper(); }",
+            ),
+            (
+                "libs/lib/A.simf",
+                "pub enum Status { On, Off, } pub fn helper() {}",
+            ),
+        ]);
+        let err = result.expect_err("enums in dependency files must be rejected");
+        assert!(
+            err.contains("dependency"),
+            "error should say enums cannot live in dependency files: {err}"
+        );
+    }
+
+    #[test]
+    fn enum_payload_match_binds_payload() {
+        let result = analyze(
+            "enum Action { Refresh(u32, bool), Cold, }
+             fn main() {
+                 match witness::W {
+                     Action::Refresh(n: u32, b: bool) => {
+                         assert!(jet::is_zero_32(n));
+                         assert!(b);
+                     },
+                     Action::Cold => {},
+                 }
+             }",
+        );
+        assert!(
+            result.is_ok(),
+            "payload bindings should analyze: {result:?}"
+        );
+    }
+
+    #[test]
+    fn enum_payload_binding_type_mismatch_is_error() {
+        let result = analyze(
+            "enum Action { Refresh(u32), Cold, }
+             fn main() {
+                 match witness::W {
+                     Action::Refresh(n: u16) => { assert!(jet::is_zero_16(n)); },
+                     Action::Cold => {},
+                 }
+             }",
+        );
+        assert!(
+            result.is_err(),
+            "binding type must equal the declared payload type"
+        );
+    }
+
+    #[test]
+    fn enum_payload_binding_arity_mismatch_is_error() {
+        let result = analyze(
+            "enum Action { Refresh(u32, bool), Cold, }
+             fn main() {
+                 match witness::W {
+                     Action::Refresh(n: u32) => { assert!(jet::is_zero_32(n)); },
+                     Action::Cold => {},
+                 }
+             }",
+        );
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("payload value"),
+            "error should describe the arity mismatch"
+        );
+    }
+
+    #[test]
+    fn enum_single_variant_matches() {
+        // A single-variant enum is a named unit type; its match has one arm.
+        let result = analyze(
+            "enum Marker { Only }
+             fn main() {
+                 match witness::M {
+                     Marker::Only => {},
+                 }
+             }",
+        );
+        assert!(
+            result.is_ok(),
+            "single-variant enum should work: {result:?}"
+        );
+    }
+
+    #[test]
+    fn enum_match_undefined_enum_is_error() {
+        let result = analyze(
+            "fn main() {
+                 match witness::P {
+                     Unknown::A => {},
+                     Unknown::B => {},
+                 }
+             }",
+        );
+        assert!(result.is_err(), "undefined enum should error");
+    }
+
+    #[test]
+    fn enum_match_mixed_enum_names_is_error() {
+        let result = analyze(
+            "enum A { X, Y }
+             enum B { P, Q }
+             fn main() {
+                 match witness::W {
+                     A::X => {},
+                     B::Q => {},
+                 }
+             }",
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("same enum"));
+    }
+
+    #[test]
+    fn enum_match_unknown_variant_is_error() {
+        let result = analyze(
+            "enum A { X, Y }
+             fn main() {
+                 match witness::W {
+                     A::X => {},
+                     A::Z => {},
+                 }
+             }",
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not defined"));
+    }
+
+    #[test]
+    fn enum_match_duplicate_arm_is_error() {
+        let result = analyze(
+            "enum A { X, Y }
+             fn main() {
+                 match witness::W {
+                     A::X => {},
+                     A::X => {},
+                     A::Y => {},
+                 }
+             }",
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("duplicate arm"));
+    }
+
+    #[test]
+    fn enum_match_missing_arm_is_error() {
+        let result = analyze(
+            "enum A { X, Y, Z }
+             fn main() {
+                 match witness::W {
+                     A::X => {},
+                     A::Y => {},
+                 }
+             }",
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must cover all 3 variants"));
+    }
+
+    #[test]
+    fn enum_match_rejects_scrutinee_of_different_enum() {
+        let result = analyze(
+            "enum A { X, Y, }
+             enum B { P, Q, }
+             fn main() {
+                 let v: A = witness::V;
+                 match v {
+                     B::P => {},
+                     B::Q => {},
+                 }
+             }",
+        );
+        assert!(
+            result.is_err(),
+            "matching a value of enum A against B's variants must be a type error"
+        );
+    }
+
+    #[test]
+    fn enum_match_rejects_plain_u8_scrutinee() {
+        let result = analyze(
+            "enum Action { A, B, }
+             fn main() {
+                 let v: u8 = witness::V;
+                 match v {
+                     Action::A => {},
+                     Action::B => {},
+                 }
+             }",
+        );
+        assert!(
+            result.is_err(),
+            "matching a u8 against enum variants must be a type error"
+        );
+    }
+
+    #[test]
+    fn enum_match_rejects_same_shaped_enum() {
+        // Identity is the declaration site: two enums with the same variants
+        // are distinct types, so their values are not interchangeable.
+        let result = analyze(
+            "enum AChoice { X, Y, }
+             enum BChoice { X, Y, }
+             fn main() {
+                 let v: AChoice = witness::V;
+                 match v {
+                     BChoice::X => {},
+                     BChoice::Y => {},
+                 }
+             }",
+        );
+        assert!(
+            result.is_err(),
+            "structurally identical enums must not be interchangeable"
+        );
+    }
+
+    #[test]
+    fn enum_match_on_non_enum_alias_is_error() {
+        let result = analyze(
+            "type Foo = u32;
+             fn main() {
+                 match witness::W {
+                     Foo::A => {},
+                     Foo::B => {},
+                 }
+             }",
+        );
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("not an enum"),
+            "a defined non-enum alias should not report an undefined alias"
+        );
+    }
+
+    #[test]
+    fn enum_cast_to_same_shaped_enum_is_rejected() {
+        // Casts prove structural equality, but enums are nominal: a cast
+        // between same-shaped enums would map variants by ordinal position
+        // (Source::Allow -> Target::Deny), silently reversing semantics.
+        let result = analyze(
+            "enum Source { Allow, Deny, }
+             enum Target { Deny, Allow, }
+             fn main() {
+                 let s: Source = Source::Allow;
+                 let _t: Target = <Source>::into(s);
+             }",
+        );
+        assert!(
+            result.is_err(),
+            "same-shaped enums must not cast into each other"
+        );
+    }
+
+    #[test]
+    fn enum_cast_to_structural_sum_is_rejected() {
+        let result = analyze(
+            "enum Source { Allow, Deny, }
+             fn main() {
+                 let s: Source = Source::Allow;
+                 let _e: Either<(), ()> = <Source>::into(s);
+             }",
+        );
+        assert!(
+            result.is_err(),
+            "an enum must not cast to its structural sum"
+        );
+
+        let result = analyze(
+            "enum Source { Allow, Deny, }
+             fn main() {
+                 let e: Either<(), ()> = Left(());
+                 let _s: Source = <Either<(), ()>>::into(e);
+             }",
+        );
+        assert!(result.is_err(), "a structural sum must not cast to an enum");
+    }
+
+    #[test]
+    fn enum_cast_reshaping_enum_free_siblings_is_ok() {
+        // Enum-free structure may reshape around an enum that stays put
+        // at its position.
+        let result = analyze(
+            "enum E { A, B, }
+             fn main() {
+                 let x: (E, (u16, u16)) = (E::A, (1, 2));
+                 let _y: (E, u32) = <(E, (u16, u16))>::into(x);
+             }",
+        );
+        assert!(
+            result.is_ok(),
+            "reshaping enum-free siblings must stay castable: {result:?}"
+        );
+    }
+
+    #[test]
+    fn enum_cast_to_itself_is_ok() {
+        let result = analyze(
+            "enum Source { Allow, Deny, }
+             fn main() {
+                 let s: Source = Source::Allow;
+                 let _t: Source = <Source>::into(s);
+             }",
+        );
+        assert!(
+            result.is_ok(),
+            "nominally identical cast should stay allowed: {result:?}"
+        );
+    }
+
+    #[test]
+    fn enum_named_after_builtin_type_is_rejected() {
+        // `enum Signature` would shadow the built-in alias: constructions
+        // would name the enum while type annotations resolve to the
+        // builtin, and the ABI would report the bare name ambiguously.
+        for name in crate::str::ALIAS_RESERVED {
+            let result = analyze(&format!("enum {name} {{ A, B, }}\nfn main() {{}}"));
+            assert!(result.is_err(), "enum named `{name}` must be rejected");
+        }
+    }
+
+    #[test]
+    fn enum_alias_named_after_pattern_is_matchable() {
+        // `type Left = Action` shadows a built-in pattern name; the arm
+        // parser distinguishes `Left::A` (enum path) from `Left(x)`
+        // (built-in pattern) by the `::` that follows.
+        let result = analyze(
+            "enum Action { A, B, }
+             type Left = Action;
+             fn main() {
+                 let v: Left = Action::A;
+                 match v {
+                     Left::A => {},
+                     Left::B => {},
+                 }
+             }",
+        );
+        assert!(
+            result.is_ok(),
+            "an enum alias shadowing a pattern name must be matchable: {result:?}"
+        );
+    }
+
+    #[test]
+    fn enum_alias_named_none_is_constructable() {
+        // The nullary built-in `None` parses without parentheses, so the
+        // expression parser must yield to enum construction when `::`
+        // follows, like the arm parser does.
+        let result = analyze(
+            "enum Action { A, B, }
+             type None = Action;
+             fn main() {
+                 let _x: None = None::A;
+             }",
+        );
+        assert!(
+            result.is_ok(),
+            "`None::A` must parse as enum construction: {result:?}"
+        );
+    }
+
+    #[test]
+    fn alias_named_after_pattern_stays_valid_without_enums() {
+        // Stable programs may alias pattern names; the enums feature must
+        // not retroactively reject them.
+        let result = TemplateProgram::new_with_unstable(
+            "type Left = u32;\nfn main() { let _x: Left = 1; }",
+            &UnstableFeatures::none(),
+            Box::new(ElementsJetHinter::new()),
+        );
+        assert!(
+            result.is_ok(),
+            "stable alias names must stay valid without -Z enums"
+        );
+    }
+
+    #[test]
+    fn enum_construction_follows_lexical_scope_in_source() {
+        // Inside a module the root's `E` is not in scope: only the local
+        // import name may construct, exactly as matches require. The
+        // declared-name fallback applies only to witness/argument files.
+        let result = analyze(
+            "pub enum E { A, B, }
+             mod m {
+                 use crate::E as Choice;
+                 pub fn make() -> Choice {
+                     E::A
+                 }
+             }
+             use crate::m::make;
+             fn main() {
+                 let _x: E = make();
+             }",
+        );
+        assert!(
+            result.is_err(),
+            "an out-of-scope declared name must not construct"
+        );
+
+        let result = analyze(
+            "pub enum E { A, B, }
+             mod m {
+                 use crate::E as Choice;
+                 pub fn make() -> Choice {
+                     Choice::A
+                 }
+             }
+             use crate::m::make;
+             fn main() {
+                 let _x: E = make();
+             }",
+        );
+        assert!(
+            result.is_ok(),
+            "the imported alias must construct: {result:?}"
+        );
+    }
+
+    #[test]
+    fn enum_requires_unstable_feature() {
+        let result = TemplateProgram::new_with_unstable(
+            "enum Color { Red, Green }\nfn main() {}",
+            &UnstableFeatures::none(),
+            Box::new(ElementsJetHinter::new()),
+        );
+        assert!(result.is_err(), "enum syntax is gated behind -Z enums");
     }
 }

@@ -48,8 +48,6 @@ pub struct EnumVariantInfo {
 }
 
 impl EnumVariantInfo {
-    // TODO(enum-stack): drop the allow once the ast commit uses the constructor.
-    #[allow(dead_code)]
     pub(crate) fn new(name: Identifier, payload: Arc<[ResolvedType]>) -> Self {
         let payload_ty = match payload.len() {
             0 => ResolvedType::unit(),
@@ -110,8 +108,6 @@ impl EnumInfo {
     /// `variants` must not be empty: a sum of zero types would be
     /// uninhabited, which Simplicity's type algebra cannot express.
     /// A single-variant enum is a named wrapper of its payload.
-    // TODO(enum-stack): drop the allow once the ast commit uses the constructor.
-    #[allow(dead_code)]
     pub(crate) fn new(name: Arc<str>, variants: Arc<[EnumVariantInfo]>) -> Self {
         debug_assert!(!variants.is_empty());
         Self { name, variants }
