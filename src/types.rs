@@ -7,7 +7,7 @@ use simplicity::types::{CompleteBound, Final};
 
 use crate::array::{BTreeSlice, Partition};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
-use crate::str::AliasName;
+use crate::str::{AliasName, Identifier};
 use crate::unstable::impl_require_feature;
 
 /// Primitives of the SimplicityHL type system, excluding type aliases.
@@ -28,6 +28,121 @@ pub enum TypeInner<A> {
     Array(A, usize),
     /// List of the same type
     List(A, NonZeroPow2Usize),
+}
+
+/// One variant of a nominal enum type: its name and payload types.
+///
+/// A variant with no payload types is a unit variant; a variant with
+/// payloads carries a tuple of values of those types.
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub struct EnumVariantInfo {
+    name: Identifier,
+    payload: Arc<[ResolvedType]>,
+    /// The SimplicityHL type of the variant's contents: unit for unit
+    /// variants, the payload type itself for single payloads, a tuple
+    /// otherwise. Precomputed so it can be borrowed during destructuring.
+    payload_ty: ResolvedType,
+}
+
+impl EnumVariantInfo {
+    // TODO(enum-stack): drop the allow once the ast commit uses the constructor.
+    #[allow(dead_code)]
+    pub(crate) fn new(name: Identifier, payload: Arc<[ResolvedType]>) -> Self {
+        let payload_ty = match payload.len() {
+            0 => ResolvedType::unit(),
+            1 => payload[0].clone(),
+            _ => ResolvedType::tuple(payload.iter().cloned()),
+        };
+        Self {
+            name,
+            payload,
+            payload_ty,
+        }
+    }
+
+    /// Access the name of the variant.
+    pub const fn name(&self) -> &Identifier {
+        &self.name
+    }
+
+    /// Access the payload types of the variant, in declaration order.
+    /// Empty for unit variants.
+    pub fn payload(&self) -> &[ResolvedType] {
+        &self.payload
+    }
+
+    /// The SimplicityHL type of the variant's contents, as one type.
+    pub fn payload_type(&self) -> &ResolvedType {
+        &self.payload_ty
+    }
+
+    /// The structural type of the variant's contents: the leaf this
+    /// variant occupies in the enum's balanced sum.
+    pub(crate) fn structural_payload(&self) -> StructuralType {
+        StructuralType::from(&self.payload_ty)
+    }
+}
+
+/// Definition of a nominal enum type: its name and variants in
+/// declaration order.
+///
+/// An enum with `n` variants is represented as a balanced sum of its `n`
+/// variant payload types (see [`BTreeSlice`] for the tree shape), so a value
+/// of the type is exactly one of the `n` variants: an undeclared variant is
+/// unrepresentable. A variant's position among the declared variants
+/// determines its leaf in the sum; there is no separate discriminant.
+///
+/// Identity is the declared name: enums may only be declared at the top
+/// level of the program's own files, so the name is unique program-wide and
+/// serialized forms (such as the ABI) can identify an enum by it.
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub struct EnumInfo {
+    name: Arc<str>,
+    variants: Arc<[EnumVariantInfo]>,
+}
+
+impl EnumInfo {
+    /// Create an enum definition with the given `name` and `variants`.
+    ///
+    /// `variants` must not be empty: a sum of zero types would be
+    /// uninhabited, which Simplicity's type algebra cannot express.
+    /// A single-variant enum is a named wrapper of its payload.
+    // TODO(enum-stack): drop the allow once the ast commit uses the constructor.
+    #[allow(dead_code)]
+    pub(crate) fn new(name: Arc<str>, variants: Arc<[EnumVariantInfo]>) -> Self {
+        debug_assert!(!variants.is_empty());
+        Self { name, variants }
+    }
+
+    /// Access the declared name of the enum.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Access the variants of the enum in declaration order.
+    pub fn variants(&self) -> &[EnumVariantInfo] {
+        &self.variants
+    }
+
+    /// Get the variant with the given `name` and its position among the
+    /// declared variants.
+    ///
+    /// The position determines the variant's leaf in the balanced sum.
+    pub fn variant(&self, name: &Identifier) -> Option<(usize, &EnumVariantInfo)> {
+        self.variants
+            .iter()
+            .enumerate()
+            .find(|(_, v)| v.name() == name)
+    }
+
+    /// The structural payload types of all variants, in declaration order:
+    /// the leaves of the enum's balanced sum.
+    pub(crate) fn structural_variants(&self) -> Vec<StructuralType> {
+        self.variants
+            .iter()
+            .map(EnumVariantInfo::structural_payload)
+            .collect()
+    }
 }
 
 impl<A> TypeInner<A> {
@@ -343,6 +458,34 @@ impl ResolvedType {
     /// Access the inner type primitive.
     pub fn as_inner(&self) -> &TypeInner<Arc<Self>> {
         &self.0
+    }
+}
+
+/// Nominal enum types.
+///
+/// These methods are inherent rather than part of [`TypeConstructible`] and [`TypeDeconstructible`].
+/// Those traits model the structural type algebra that every type universe (aliased, resolved, structural)
+/// shares, while a nominal enum exists only at the resolved level.
+///
+/// At the structural level its identity is erased into a balanced sum, and at the source level enums
+/// enter types by name only.
+/// Keeping the constructor off the shared traits also means that only [`crate::ast`]'s scope
+/// (which owns the uniqueness of declaration ids) can mint enum types.
+impl ResolvedType {
+    /// Create a nominal enum type from the given definition.
+    pub const fn enumeration(_info: EnumInfo) -> Self {
+        todo!()
+    }
+
+    /// Access the enum definition if this is an enum type.
+    pub const fn as_enum(&self) -> Option<&EnumInfo> {
+        todo!()
+    }
+
+    /// Check whether the type mentions an enum, at any nesting depth.
+    pub fn contains_enum(&self) -> bool {
+        self.post_order_iter()
+            .any(|data| data.node.as_enum().is_some())
     }
 }
 
@@ -1119,6 +1262,7 @@ impl StructuralType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::str::Identifier;
 
     #[test]
     fn display_type() {
@@ -1139,5 +1283,35 @@ mod tests {
         assert_eq!("List<(), 2>", &list.to_string());
         let either = ResolvedType::either(ResolvedType::unit(), ResolvedType::u32());
         assert_eq!("Either<(), u32>", &either.to_string());
+    }
+
+    #[test]
+    fn enum_variant_info_payload_types() {
+        let unit = EnumVariantInfo::new(Identifier::from_str_unchecked("Unit"), Arc::from([]));
+        assert_eq!(&ResolvedType::unit(), unit.payload_type());
+
+        let single = EnumVariantInfo::new(
+            Identifier::from_str_unchecked("Single"),
+            Arc::from([ResolvedType::boolean()]),
+        );
+        assert_eq!(&ResolvedType::boolean(), single.payload_type());
+
+        let pair = EnumVariantInfo::new(
+            Identifier::from_str_unchecked("Pair"),
+            Arc::from([ResolvedType::boolean(), ResolvedType::boolean()]),
+        );
+        assert_eq!(
+            &ResolvedType::tuple([ResolvedType::boolean(), ResolvedType::boolean()]),
+            pair.payload_type()
+        );
+
+        let info = EnumInfo::new(Arc::from("Test"), Arc::from([unit, single, pair]));
+        assert_eq!("Test", info.name());
+        assert_eq!(3, info.structural_variants().len());
+        let (index, variant) = info
+            .variant(&Identifier::from_str_unchecked("Pair"))
+            .expect("Pair is a declared variant");
+        assert_eq!(2, index);
+        assert_eq!("Pair", variant.name().as_inner());
     }
 }
