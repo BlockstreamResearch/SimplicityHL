@@ -11,7 +11,7 @@ use crate::array::{BTreeSlice, Combiner, Partition, Unfolder};
 use crate::error::{Diagnostic, Error, WithSpan};
 use crate::num::{NonZeroPow2Usize, Pow2Usize, U256};
 use crate::parse::ParseFromStr;
-use crate::str::{Binary, Decimal, Hexadecimal};
+use crate::str::{Binary, Decimal, Hexadecimal, Identifier};
 use crate::types::{
     ResolvedType, StructuralType, TypeConstructible, TypeDeconstructible, TypeInner, UIntType,
 };
@@ -748,6 +748,33 @@ impl Value {
         output.pop()
     }
 
+    /// Create the value of the enum type's variant with the given `name`,
+    /// carrying the given `payload` values.
+    ///
+    /// Returns `None` if `ty` is not an enum type, has no variant `name`,
+    /// or `payload` does not match the variant's payload types in arity or type.
+    pub fn enum_variant(ty: &ResolvedType, name: &Identifier, payload: Vec<Self>) -> Option<Self> {
+        let info = ty.as_enum()?;
+        let (index, variant) = info.variant(name)?;
+
+        if payload.len() != variant.payload().len() {
+            return None;
+        }
+
+        if payload
+            .iter()
+            .zip(variant.payload())
+            .any(|(value, declared)| value.ty() != declared)
+        {
+            return None;
+        }
+
+        Some(Self {
+            inner: ValueInner::Enum(index, Arc::from(payload)),
+            ty: ty.clone(),
+        })
+    }
+
     /// Reconstruct the given structural value according to the given type.
     ///
     /// Return `None` if reconstructing fails.
@@ -1355,7 +1382,167 @@ mod destruct {
 mod tests {
     use super::*;
     use crate::parse;
-    use crate::types::{StructuralType, TypeConstructible};
+    use crate::types::{EnumInfo, EnumVariantInfo, StructuralType, TypeConstructible};
+
+    /// An enum type with `n` unit variants named `V0`, `V1`, ...
+    fn test_enum(n: usize) -> ResolvedType {
+        let variants: Arc<[EnumVariantInfo]> = (0..n)
+            .map(|i| {
+                EnumVariantInfo::new(
+                    Identifier::from_str_unchecked(&format!("V{i}")),
+                    Arc::from([]),
+                )
+            })
+            .collect();
+
+        ResolvedType::enumeration(EnumInfo::new(Arc::from("Test"), variants))
+    }
+
+    /// An enum with one unit variant, one single-payload variant and one
+    /// two-payload variant.
+    fn test_payload_enum() -> ResolvedType {
+        let variants: Arc<[EnumVariantInfo]> = Arc::from([
+            EnumVariantInfo::new(Identifier::from_str_unchecked("Unit"), Arc::from([])),
+            EnumVariantInfo::new(
+                Identifier::from_str_unchecked("Single"),
+                Arc::from([ResolvedType::u8()]),
+            ),
+            EnumVariantInfo::new(
+                Identifier::from_str_unchecked("Pair"),
+                Arc::from([ResolvedType::u8(), ResolvedType::boolean()]),
+            ),
+        ]);
+
+        ResolvedType::enumeration(EnumInfo::new(Arc::from("Test"), variants))
+    }
+
+    #[test]
+    fn enum_value_structural_round_trip() {
+        for n in [1, 2, 3, 4, 5, 7, 8, 256] {
+            let ty = test_enum(n);
+            let structural_ty = StructuralType::from(&ty);
+
+            for index in 0..n {
+                let name = Identifier::from_str_unchecked(&format!("V{index}"));
+                let value = Value::enum_variant(&ty, &name, vec![]).expect("declared variant");
+
+                let structural = StructuralValue::from(&value);
+                assert!(
+                    structural.is_of_type(&structural_ty),
+                    "variant {index} of {n} inhabits the structural type"
+                );
+
+                let back = Value::reconstruct(&structural, &ty)
+                    .expect("injection reconstructs at the enum type");
+                assert_eq!(value, back, "variant {index} of {n} round-trips");
+            }
+        }
+    }
+
+    #[test]
+    fn enum_payload_value_structural_round_trip() {
+        let ty = test_payload_enum();
+        let structural_ty = StructuralType::from(&ty);
+
+        let values = [
+            Value::enum_variant(&ty, &Identifier::from_str_unchecked("Unit"), vec![]),
+            Value::enum_variant(
+                &ty,
+                &Identifier::from_str_unchecked("Single"),
+                vec![Value::u8(42)],
+            ),
+            Value::enum_variant(
+                &ty,
+                &Identifier::from_str_unchecked("Pair"),
+                vec![Value::u8(7), Value::from(true)],
+            ),
+        ];
+
+        for value in values {
+            let value = value.expect("declared variant with matching payload");
+
+            let structural = StructuralValue::from(&value);
+            assert!(
+                structural.is_of_type(&structural_ty),
+                "payload variant inhabits the structural type: {value}"
+            );
+
+            let back = Value::reconstruct(&structural, &ty)
+                .expect("injection reconstructs at the enum type");
+            assert_eq!(value, back, "payload variant round-trips");
+        }
+    }
+
+    #[test]
+    fn enum_value_display_and_constructor() {
+        let ty = test_enum(3);
+        let value = Value::enum_variant(&ty, &Identifier::from_str_unchecked("V1"), vec![])
+            .expect("V1 is a variant");
+
+        assert_eq!("Test::V1", &value.to_string());
+        assert!(value.is_of_type(&ty));
+        assert!(
+            Value::enum_variant(&ty, &Identifier::from_str_unchecked("V9"), vec![]).is_none(),
+            "unknown variant name yields no value"
+        );
+
+        let ty = test_payload_enum();
+        let single = Value::enum_variant(
+            &ty,
+            &Identifier::from_str_unchecked("Single"),
+            vec![Value::u8(42)],
+        )
+        .expect("payload matches");
+        assert_eq!("Test::Single(42)", &single.to_string());
+
+        let pair = Value::enum_variant(
+            &ty,
+            &Identifier::from_str_unchecked("Pair"),
+            vec![Value::u8(7), Value::from(true)],
+        )
+        .expect("payload matches");
+        assert_eq!("Test::Pair(7, true)", &pair.to_string());
+        assert!(
+            Value::enum_variant(&ty, &Identifier::from_str_unchecked("Single"), vec![]).is_none(),
+            "wrong payload arity yields no value"
+        );
+        assert!(
+            Value::enum_variant(
+                &ty,
+                &Identifier::from_str_unchecked("Single"),
+                vec![Value::from(true)]
+            )
+            .is_none(),
+            "wrong payload type yields no value"
+        );
+    }
+
+    #[test]
+    fn enum_structural_type_is_balanced_sum() {
+        // Three unit variants: right-associative balanced tree (1, (1, 1)).
+        let ty = test_enum(3);
+        let structural = StructuralType::from(&ty);
+        let expected = StructuralType::either(
+            StructuralType::unit(),
+            StructuralType::either(StructuralType::unit(), StructuralType::unit()),
+        );
+        assert_eq!(expected, structural);
+
+        // Payload variants put their payload type at the leaf.
+        let ty = test_payload_enum();
+        let structural = StructuralType::from(&ty);
+        let expected = StructuralType::either(
+            StructuralType::unit(),
+            StructuralType::either(
+                StructuralType::from(&ResolvedType::u8()),
+                StructuralType::tuple([
+                    StructuralType::from(&ResolvedType::u8()),
+                    StructuralType::boolean(),
+                ]),
+            ),
+        );
+        assert_eq!(expected, structural);
+    }
 
     #[test]
     fn display_value() {
