@@ -728,8 +728,8 @@ pub enum Error {
         found: Option<String>,
     },
     IncompatibleMatchArms {
-        first: MatchPattern,
-        second: MatchPattern,
+        first: Box<MatchPattern>,
+        second: Box<MatchPattern>,
     },
     // TODO: Remove CompileError once SimplicityHL has a type system
     // The SimplicityHL compiler should never produce ill-typed Simplicity code

@@ -15,6 +15,7 @@ use chumsky::prelude::{
 use chumsky::{extra, select, IterParser, Parser};
 
 use either::Either;
+use itertools::Itertools;
 use miniscript::iter::{Tree, TreeLike};
 
 use crate::driver::{CRATE_STR, MAIN_MODULE};
@@ -697,6 +698,10 @@ pub enum SingleExpressionInner {
     Expression(Arc<Expression>),
     /// Match expression over a sum type
     Match(Match),
+    /// Match expression over an enum's variants
+    EnumMatch(EnumMatch),
+    /// Construction of an enum variant
+    EnumConstruction(EnumConstruction),
     /// Tuple wrapper expression
     Tuple(Arc<[Expression]>),
     /// Array wrapper expression
@@ -721,6 +726,8 @@ impl_require_feature!(SingleExpressionInner {
         Call(call),
         Expression(expr),
         Match(match_),
+        EnumMatch(enum_match),
+        EnumConstruction(construction),
         Tuple(exprs),
         Array(exprs),
         List(exprs),
@@ -1193,6 +1200,8 @@ pub enum ExprTree<'a> {
     Single(&'a SingleExpression),
     Call(&'a Call),
     Match(&'a Match),
+    EnumMatch(&'a EnumMatch),
+    EnumConstruction(&'a EnumConstruction),
 }
 
 impl TreeLike for ExprTree<'_> {
@@ -1233,16 +1242,33 @@ impl TreeLike for ExprTree<'_> {
                 | S::Expression(l) => Tree::Unary(Self::Expression(l)),
                 S::Call(call) => Tree::Unary(Self::Call(call)),
                 S::Match(match_) => Tree::Unary(Self::Match(match_)),
+                S::EnumMatch(enum_match) => Tree::Unary(Self::EnumMatch(enum_match)),
+                S::EnumConstruction(construction) => {
+                    Tree::Unary(Self::EnumConstruction(construction))
+                }
                 S::Tuple(elements) | S::Array(elements) | S::List(elements) => {
                     Tree::Nary(elements.iter().map(Self::Expression).collect())
                 }
             },
             Self::Call(call) => Tree::Nary(call.args().iter().map(Self::Expression).collect()),
+            Self::EnumConstruction(construction) => {
+                Tree::Nary(construction.args().iter().map(Self::Expression).collect())
+            }
             Self::Match(match_) => Tree::Nary(Arc::new([
                 Self::Expression(match_.scrutinee()),
                 Self::Expression(match_.left().expression()),
                 Self::Expression(match_.right().expression()),
             ])),
+            Self::EnumMatch(enum_match) => Tree::Nary(
+                std::iter::once(Self::Expression(enum_match.scrutinee()))
+                    .chain(
+                        enum_match
+                            .arms()
+                            .iter()
+                            .map(|arm| Self::Expression(arm.expression())),
+                    )
+                    .collect(),
+            ),
         }
     }
 }
@@ -1308,7 +1334,7 @@ impl fmt::Display for ExprTree<'_> {
                             write!(f, ")")?;
                         }
                     },
-                    S::Call(..) | S::Match(..) => {}
+                    S::Call(..) | S::Match(..) | S::EnumMatch(..) | S::EnumConstruction(..) => {}
                     S::Tuple(tuple) => {
                         if data.n_children_yielded == 0 {
                             write!(f, "(")?;
@@ -1350,6 +1376,26 @@ impl fmt::Display for ExprTree<'_> {
                         write!(f, ")")?;
                     }
                 }
+                Self::EnumConstruction(construction) => {
+                    match data.n_children_yielded {
+                        0 => {
+                            write!(
+                                f,
+                                "{}::{}",
+                                construction.enum_path_string(),
+                                construction.variant()
+                            )?;
+                            if !construction.args().is_empty() {
+                                write!(f, "(")?;
+                            }
+                        }
+                        _ if !data.is_complete => write!(f, ", ")?,
+                        _ => {}
+                    }
+                    if data.is_complete && !construction.args().is_empty() {
+                        write!(f, ")")?;
+                    }
+                }
                 Self::Match(match_) => match data.n_children_yielded {
                     0 => write!(f, "match ")?,
                     1 => write!(f, "{{\n{} => ", match_.left().pattern())?,
@@ -1358,6 +1404,14 @@ impl fmt::Display for ExprTree<'_> {
                         debug_assert_eq!(n, 3);
                         write!(f, ",\n}}")?;
                     }
+                },
+                Self::EnumMatch(enum_match) => match data.n_children_yielded {
+                    0 => write!(f, "match ")?,
+                    1 => write!(f, "{{\n{} => ", enum_match.arms()[0])?,
+                    n if n <= enum_match.arms().len() => {
+                        write!(f, ",\n{} => ", enum_match.arms()[n - 1])?;
+                    }
+                    _ => write!(f, ",\n}}")?,
                 },
             }
         }
@@ -1419,6 +1473,12 @@ impl fmt::Display for CallName {
 impl fmt::Display for Match {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", ExprTree::Match(self))
+    }
+}
+
+impl fmt::Display for EnumMatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", ExprTree::EnumMatch(self))
     }
 }
 
@@ -2402,7 +2462,11 @@ impl SingleExpression {
 
         let some = wrapper("Some").map(|e| SingleExpressionInner::Option(Some(Arc::new(e))));
 
-        let none = select! { Token::Ident("None") => SingleExpressionInner::Option(None) };
+        // Bare `None` is the option literal only when no `::` follows:
+        // `None::A` is a construction of an enum aliased as `None`, and
+        // must fall through to the enum-construction alternative.
+        let none = select! { Token::Ident("None") => SingleExpressionInner::Option(None) }
+            .then_ignore(just(Token::DoubleColon).not().rewind());
 
         let boolean = select! { Token::Bool(b) => SingleExpressionInner::Boolean(b) };
 
@@ -2445,9 +2509,34 @@ impl SingleExpression {
             Token::Param(s) => SingleExpressionInner::Parameter(WitnessName::from_str_unchecked(s)),
         };
 
+        // Enum variant construction: `Path::To::Enum::Variant(args..)`.
+        // At least one `::` distinguishes the path from variables and calls.
+        // The built-in wrappers (Left, Some, ...) require `(` directly after
+        // their name, so they never reach this alternative.
+        let enum_construction = Identifier::parser()
+            .separated_by(just(Token::DoubleColon))
+            .at_least(2)
+            .collect::<Vec<Identifier>>()
+            .then(
+                comma_separated
+                    .clone()
+                    .delimited_by(just(Token::LParen), just(Token::RParen))
+                    .or_not(),
+            )
+            .map_with(|(mut segments, args), e| {
+                let variant = segments.pop().expect("the parser requires two segments");
+                EnumConstruction {
+                    enum_path: Arc::from(segments),
+                    variant,
+                    args: Arc::from(args.unwrap_or_default()),
+                    span: e.span(),
+                }
+            })
+            .map(SingleExpressionInner::EnumConstruction);
+
         let call = Call::parser(expr.clone()).map(SingleExpressionInner::Call);
 
-        let match_expr = Match::parser(expr.clone()).map(SingleExpressionInner::Match);
+        let match_expr = match_expr_parser(expr.clone());
 
         let variable = Identifier::parser().map(SingleExpressionInner::Variable);
 
@@ -2458,8 +2547,20 @@ impl SingleExpression {
             .map(|es| SingleExpressionInner::Expression(Arc::from(es)));
 
         choice((
-            left, right, some, none, boolean, match_expr, expression, list, array, tuple, call,
-            literal, variable,
+            left,
+            right,
+            some,
+            none,
+            boolean,
+            match_expr,
+            expression,
+            list,
+            array,
+            tuple,
+            enum_construction,
+            call,
+            literal,
+            variable,
         ))
         .map_with(|inner, e| Self {
             inner,
@@ -2502,129 +2603,271 @@ impl ChumskyParse for MatchPattern {
     }
 }
 
-impl MatchArm {
-    fn parser<'tokens, 'src: 'tokens, I, E>(
-        expr: E,
-    ) -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
-    where
-        I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
-        E: Parser<'tokens, I, Expression, ParseError<'src>> + Clone + 'tokens,
-    {
-        MatchPattern::parser()
-            .then_ignore(just(Token::FatArrow))
-            .then(expr.map(Arc::new))
-            .then(just(Token::Comma).or_not())
-            .validate(|((pattern, expression), comma), e, emitter| {
-                let is_block = matches!(expression.as_ref().inner, ExpressionInner::Block(_, _));
+/// Head of an enum match arm, before the arm body is attached: `EnumName::Variant` with optional payload bindings.
+#[derive(Clone)]
+struct EnumArmHead {
+    enum_path: Arc<[Identifier]>,
+    variant: Identifier,
+    bindings: Arc<[(Pattern, AliasedType)]>,
+}
 
-                if !is_block && comma.is_none() {
-                    emitter.emit(
-                        Error::Grammar {
-                            msg: "Missing ',' after a match arm that isn't block expression"
-                                .to_string(),
-                        }
-                        .with_span(e.span()),
-                    );
-                }
-
-                Self {
-                    pattern,
-                    expression,
-                }
-            })
+impl EnumArmHead {
+    fn into_arm(self, expression: Arc<Expression>) -> EnumMatchArm {
+        EnumMatchArm {
+            enum_path: self.enum_path,
+            variant: self.variant,
+            bindings: self.bindings,
+            expression,
+        }
     }
 }
 
-impl Match {
-    fn parser<'tokens, 'src: 'tokens, I, E>(
-        expr: E,
-    ) -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
-    where
-        I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
-        E: Parser<'tokens, I, Expression, ParseError<'src>> + Clone + 'tokens,
-    {
-        let scrutinee = expr.clone().map(Arc::new);
+/// One parsed match arm. An enum variant head or a built-in pattern,
+/// plus the arm body. The head classification decides below whether the
+/// whole match becomes an [`EnumMatch`] or a binary [`Match`].
+type ParsedMatchArm = (Either<EnumArmHead, MatchPattern>, Arc<Expression>);
 
-        let arm_recovery = any()
-            .filter(|t| !matches!(t, Token::Comma | Token::RBrace))
-            .ignored()
-            .or(nested_delimiters(
-                Token::LBrace,
-                Token::RBrace,
-                [
-                    (Token::LParen, Token::RParen),
-                    (Token::LBracket, Token::RBracket),
-                ],
-                |_| (),
-            )
-            .ignored())
-            .repeated()
-            .map_with(|(), _| None);
+/// Parser for the head of an enum match arm: `EnumName::Variant` with
+/// optional payload bindings `(pattern: Type, ...)`.
+///
+/// A non-reserved head identifier commits without backtracking: the
+/// `select!` guard fails without consuming the token. A reserved pattern
+/// name (`Left`, `Some`, ...) heads an enum path only when `::` follows,
+/// so an alias of an enum that shadows a pattern name stays matchable
+/// while `Left(x)` remains the built-in pattern.
+fn enum_arm_head_parser<'tokens, 'src: 'tokens, I>(
+) -> impl Parser<'tokens, I, EnumArmHead, ParseError<'src>> + Clone
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
+{
+    let bindings = Pattern::parser()
+        .then_ignore(just(Token::Colon))
+        .then(AliasedType::parser())
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LParen), just(Token::RParen))
+        .or_not()
+        .map(|bindings| Arc::from(bindings.unwrap_or_default()));
 
-        let arm_parser = MatchArm::parser(expr.clone())
-            .map(Some)
-            .recover_with(via_parser(arm_recovery.clone()));
+    let head_ident = choice((
+        select! { Token::Ident(name) if !RESERVED_PATTERN_NAMES.contains(&name) => Identifier::from_str_unchecked(name) },
+        // The rewind leaves the `::` for the shared `then_ignore` below.
+        select! { Token::Ident(name) => Identifier::from_str_unchecked(name) }
+            .then_ignore(just(Token::DoubleColon).rewind()),
+    ));
 
-        let arms = delimited_with_recovery(
-            arm_parser.clone().then(arm_parser.clone()),
-            Token::LBrace,
-            Token::RBrace,
-            |_| (None, None),
-        );
+    head_ident
+        .then_ignore(just(Token::DoubleColon))
+        .then(
+            Identifier::parser()
+                .separated_by(just(Token::DoubleColon))
+                .at_least(1)
+                .collect::<Vec<Identifier>>(),
+        )
+        .then(bindings)
+        .map(|((first, mut rest), bindings)| {
+            let variant = rest.pop().expect("the parser requires one segment");
+            let mut enum_path = vec![first];
+            enum_path.extend(rest);
+            EnumArmHead {
+                enum_path: Arc::from(enum_path),
+                variant,
+                bindings,
+            }
+        })
+}
 
-        just(Token::Match)
-            .ignore_then(scrutinee)
-            .then(arms)
-            .validate(|(scrutinee, arms), e, emit| match arms {
-                (Some(first), Some(second)) => {
-                    let (left, right) = match (&first.pattern, &second.pattern) {
-                        (MatchPattern::Left(..), MatchPattern::Right(..)) => (first, second),
-                        (MatchPattern::Right(..), MatchPattern::Left(..)) => (second, first),
+/// Parser for one match arm. An arm head, `=>`, the arm body, and the
+/// comma that is required unless the body is a block expression.
+fn match_arm_parser<'tokens, 'src: 'tokens, I, E>(
+    expr: E,
+) -> impl Parser<'tokens, I, ParsedMatchArm, ParseError<'src>> + Clone
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
+    E: Parser<'tokens, I, Expression, ParseError<'src>> + Clone + 'tokens,
+{
+    let arm_head = choice((
+        enum_arm_head_parser().map(Either::Left),
+        MatchPattern::parser().map(Either::Right),
+    ));
 
-                        (MatchPattern::None, MatchPattern::Some(..)) => (first, second),
-                        (MatchPattern::Some(..), MatchPattern::None) => (second, first),
-
-                        (MatchPattern::False, MatchPattern::True) => (first, second),
-                        (MatchPattern::True, MatchPattern::False) => (second, first),
-
-                        (p1, p2) => {
-                            emit.emit(
-                                Error::IncompatibleMatchArms {
-                                    first: p1.clone(),
-                                    second: p2.clone(),
-                                }
-                                .with_span(e.span()),
-                            );
-                            (first, second)
-                        }
-                    };
-
-                    Self {
-                        scrutinee,
-                        left,
-                        right,
-                        span: e.span(),
+    arm_head
+        .then_ignore(just(Token::FatArrow))
+        .then(expr.map(Arc::new))
+        .then(just(Token::Comma).or_not())
+        .validate(|((head, expression), comma), e, emitter| {
+            let is_block = matches!(expression.as_ref().inner, ExpressionInner::Block(_, _));
+            if !is_block && comma.is_none() {
+                emitter.emit(
+                    Error::Grammar {
+                        msg: "Missing ',' after a match arm that isn't block expression"
+                            .to_string(),
                     }
-                }
-                _ => {
-                    let match_arm_fallback = MatchArm {
-                        expression: Arc::new(Expression::empty(Span::DUMMY)),
-                        pattern: MatchPattern::False,
-                    };
+                    .with_span(e.span()),
+                );
+            }
+            (head, expression)
+        })
+}
 
-                    let (left, right) = (
-                        arms.0.unwrap_or(match_arm_fallback.clone()),
-                        arms.1.unwrap_or(match_arm_fallback.clone()),
-                    );
-                    Self {
-                        scrutinee,
-                        left,
-                        right,
-                        span: e.span(),
-                    }
-                }
-            })
+/// A binary match with dummy arms, standing in for a malformed match so
+/// parsing can continue after its error was reported.
+fn placeholder_match(scrutinee: Arc<Expression>, span: Span) -> SingleExpressionInner {
+    let fallback_arm = MatchArm {
+        expression: Arc::new(Expression::empty(Span::DUMMY)),
+        pattern: MatchPattern::False,
+    };
+    SingleExpressionInner::Match(Match {
+        scrutinee,
+        left: fallback_arm.clone(),
+        right: fallback_arm,
+        span,
+    })
+}
+
+/// Do the two patterns complement each other in canonical order
+/// (`Left`/`Right`, `None`/`Some`, `false`/`true`)?
+fn patterns_in_canonical_order(left: &MatchPattern, right: &MatchPattern) -> bool {
+    matches!(
+        (left, right),
+        (MatchPattern::Left(..), MatchPattern::Right(..))
+            | (MatchPattern::None, MatchPattern::Some(..))
+            | (MatchPattern::False, MatchPattern::True)
+    )
+}
+
+/// Assemble parsed arms into an [`EnumMatch`] or a binary [`Match`] node.
+///
+/// Malformed arms return the error to report together with a fallback
+/// node, so the caller emits exactly one error per malformed match.
+/// Running bad arms through the pattern pairing would emit a second,
+/// bogus "incompatible match arms" error for the same span.
+fn assemble_match_arms(
+    scrutinee: Arc<Expression>,
+    arms: Vec<ParsedMatchArm>,
+    span: Span,
+) -> Result<SingleExpressionInner, Box<(Diagnostic, SingleExpressionInner)>> {
+    if arms.is_empty() {
+        return Err(Box::new((
+            Error::Grammar {
+                msg: "match expression has no arms".to_string(),
+            }
+            .with_span(span),
+            placeholder_match(scrutinee, span),
+        )));
     }
+
+    // Split arms by the classification the arm heads carry. Any number of
+    // enum arms (including one) routes to the enum match, whose analysis
+    // reports missing variants. The binary arm-count error below would be misleading there.
+    let (enum_arms, builtin_arms): (Vec<EnumMatchArm>, Vec<MatchArm>) = arms
+        .into_iter()
+        .partition_map(|(head, expression)| match head {
+            Either::Left(head) => Either::Left(head.into_arm(expression)),
+            Either::Right(pattern) => Either::Right(MatchArm {
+                pattern,
+                expression,
+            }),
+        });
+
+    if builtin_arms.is_empty() {
+        return Ok(SingleExpressionInner::EnumMatch(EnumMatch {
+            scrutinee,
+            arms: Arc::from(enum_arms),
+            span,
+        }));
+    }
+
+    if let Some(enum_arm) = enum_arms.first() {
+        // Mixed arms: name the clash instead of an arm-count error.
+        return Err(Box::new((
+            Error::Grammar {
+                msg: format!(
+                    "match arms mix the enum variant pattern `{}` \
+                     with the built-in pattern `{}`",
+                    enum_arm, builtin_arms[0].pattern
+                ),
+            }
+            .with_span(span),
+            placeholder_match(scrutinee, span),
+        )));
+    }
+
+    // Binary match: exactly 2 built-in arms, in either order.
+    let Ok([first, second]) = <[MatchArm; 2]>::try_from(builtin_arms) else {
+        return Err(Box::new((
+            Error::Grammar {
+                msg: "binary match requires exactly 2 arms".to_string(),
+            }
+            .with_span(span),
+            placeholder_match(scrutinee, span),
+        )));
+    };
+
+    let (left, right) = if patterns_in_canonical_order(&first.pattern, &second.pattern) {
+        (first, second)
+    } else if patterns_in_canonical_order(&second.pattern, &first.pattern) {
+        (second, first)
+    } else {
+        let error = Error::IncompatibleMatchArms {
+            first: Box::new(first.pattern.clone()),
+            second: Box::new(second.pattern.clone()),
+        }
+        .with_span(span);
+        // The arms still form a match; keep them so analysis can continue.
+        let node = SingleExpressionInner::Match(Match {
+            scrutinee,
+            left: first,
+            right: second,
+            span,
+        });
+        return Err(Box::new((error, node)));
+    };
+
+    Ok(SingleExpressionInner::Match(Match {
+        scrutinee,
+        left,
+        right,
+        span,
+    }))
+}
+
+/// Parser for `match` expressions.
+///
+/// Handles both binary matches (exactly 2 arms: Left/Right, None/Some,
+/// false/true) and enum matches (arms of the form `EnumName::Variant`).
+/// Dispatches to [`Match`] or [`EnumMatch`] based on the patterns found.
+fn match_expr_parser<'tokens, 'src: 'tokens, I, E>(
+    expr: E,
+) -> impl Parser<'tokens, I, SingleExpressionInner, ParseError<'src>> + Clone
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
+    E: Parser<'tokens, I, Expression, ParseError<'src>> + Clone + 'tokens,
+{
+    let arms = delimited_with_recovery(
+        match_arm_parser(expr.clone())
+            .repeated()
+            .collect::<Vec<_>>(),
+        Token::LBrace,
+        Token::RBrace,
+        |_| vec![],
+    );
+
+    just(Token::Match)
+        .ignore_then(expr.map(Arc::new))
+        .then(arms)
+        .validate(|(scrutinee, arms), e, emit| {
+            match assemble_match_arms(scrutinee, arms, e.span()) {
+                Ok(node) => node,
+                Err(boxed) => {
+                    let (error, fallback) = *boxed;
+                    emit.emit(error);
+                    fallback
+                }
+            }
+        })
 }
 
 impl Module {
@@ -3121,7 +3364,12 @@ mod test {
         );
 
         assert!(parsed_program.is_none());
-        assert!(&diagnostics.to_string().contains("Expected ';', found '::'"));
+        assert!(
+            diagnostics
+                .to_string()
+                .contains("Expected identifier, found ::"),
+            "the second :: should be reported as the error site"
+        );
     }
 
     /// Parse `input` and return whether it was rejected and the collected error text.

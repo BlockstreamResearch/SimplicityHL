@@ -1562,6 +1562,8 @@ impl AbstractSyntaxTree for SingleExpression {
             parse::SingleExpressionInner::Match(match_) => {
                 Match::analyze(match_, ty, scope).map(SingleExpressionInner::Match)?
             }
+            parse::SingleExpressionInner::EnumConstruction(_construction) => todo!(),
+            parse::SingleExpressionInner::EnumMatch(_enum_match) => todo!(),
         };
 
         Ok(Self {
