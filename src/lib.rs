@@ -374,6 +374,19 @@ impl CompiledProgram {
     }
 }
 
+/// ABI metadata of a program: the types of its witnesses and parameters.
+///
+/// The in-memory form is complete: enum-typed entries carry their full
+/// [`types::EnumInfo`] definition, including variants, payload types, and
+/// declaration order (which determines the wire encoding).
+///
+/// The serialized JSON form is **not self-contained for enums**: an enum
+/// type serializes as its declared name only. A consumer holding just the
+/// JSON ABI cannot enumerate an enum's variants, validate or encode enum
+/// witness values, or detect a variant reordering (which changes the wire
+/// encoding and the CMR while leaving the ABI text identical). Such
+/// consumers need the program source or another artifact carrying the enum
+/// schema.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AbiMeta {
     pub witness_types: WitnessTypes,
