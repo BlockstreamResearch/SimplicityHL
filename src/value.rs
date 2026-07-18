@@ -748,6 +748,7 @@ impl Value {
                     let integer = destruct::as_integer(value, *ty)?;
                     output.push(Self::from(integer));
                 }
+                TypeInner::Enum(_info) => todo!(),
                 TypeInner::Tuple(..) => {
                     let elements = output.split_off(output.len() - size);
                     debug_assert_eq!(elements.len(), size);
@@ -808,6 +809,7 @@ impl crate::ArbitraryOfType for Value {
         match ty.as_inner() {
             TypeInner::Boolean => bool::arbitrary(u).map(Self::from),
             TypeInner::UInt(ty_int) => UIntValue::arbitrary_of_type(u, ty_int).map(Self::from),
+            TypeInner::Enum(_info) => todo!(),
             TypeInner::Either(ty_l, ty_r) => match u.int_in_range(0..=1)? {
                 0 => Self::arbitrary_of_type(u, ty_l)
                     .map(|val_l| Self::left(val_l, ty_r.as_ref().clone())),
@@ -1123,6 +1125,7 @@ impl TreeLike for Destructor<'_> {
         };
         match ty.as_inner() {
             TypeInner::Boolean | TypeInner::UInt(..) => Tree::Nullary,
+            TypeInner::Enum(_info) => todo!(),
             TypeInner::Either(ty_l, ty_r) => match destruct::as_either(value) {
                 Some(Either::Left(val_l)) => Tree::Unary(Self::new(val_l, ty_l)),
                 Some(Either::Right(val_r)) => Tree::Unary(Self::new(val_r, ty_r)),

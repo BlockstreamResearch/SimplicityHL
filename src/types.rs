@@ -28,6 +28,9 @@ pub enum TypeInner<A> {
     Array(A, usize),
     /// List of the same type
     List(A, NonZeroPow2Usize),
+    /// Nominal enum type, represented as a balanced sum of its variants'
+    /// payload types
+    Enum(EnumInfo),
 }
 
 /// One variant of a nominal enum type: its name and payload types.
@@ -201,6 +204,7 @@ impl<A> TypeInner<A> {
                     write!(f, ", {bound}>")
                 }
             },
+            TypeInner::Enum(info) => write!(f, "{}", info.name()),
         }
     }
 }
@@ -473,13 +477,16 @@ impl ResolvedType {
 /// (which owns the uniqueness of declaration ids) can mint enum types.
 impl ResolvedType {
     /// Create a nominal enum type from the given definition.
-    pub const fn enumeration(_info: EnumInfo) -> Self {
-        todo!()
+    pub const fn enumeration(info: EnumInfo) -> Self {
+        Self(TypeInner::Enum(info))
     }
 
     /// Access the enum definition if this is an enum type.
     pub const fn as_enum(&self) -> Option<&EnumInfo> {
-        todo!()
+        match &self.0 {
+            TypeInner::Enum(info) => Some(info),
+            _ => None,
+        }
     }
 
     /// Check whether the type mentions an enum, at any nesting depth.
@@ -568,7 +575,7 @@ impl TypeDeconstructible for ResolvedType {
 impl TreeLike for &ResolvedType {
     fn as_node(&self) -> Tree<Self> {
         match &self.0 {
-            TypeInner::Boolean | TypeInner::UInt(..) => Tree::Nullary,
+            TypeInner::Boolean | TypeInner::UInt(..) | TypeInner::Enum(..) => Tree::Nullary,
             TypeInner::Option(l) | TypeInner::Array(l, _) | TypeInner::List(l, _) => Tree::Unary(l),
             TypeInner::Either(l, r) => Tree::Binary(l, r),
             TypeInner::Tuple(elements) => Tree::Nary(elements.iter().map(Arc::as_ref).collect()),
@@ -764,6 +771,10 @@ impl AliasedType {
                         let element = output.pop().unwrap();
                         output.push(ResolvedType::list(element, *bound));
                     }
+                    // There is no syntax for writing an enum type inline (enums enter aliased types only by name)
+                    TypeInner::Enum(info) => {
+                        output.push(ResolvedType::enumeration(info.clone()));
+                    }
                 },
             }
         }
@@ -797,6 +808,7 @@ impl_require_feature!(TypeInner<Arc<AliasedType>> {
         Tuple(elements),
         Array(element, _),
         List(element, _),
+        Enum(_),
 });
 
 impl TypeConstructible for AliasedType {
@@ -889,7 +901,7 @@ impl TreeLike for &AliasedType {
         match &self.0 {
             AliasedInner::Alias(_) | AliasedInner::Builtin(_) => Tree::Nullary,
             AliasedInner::Inner(inner) => match inner {
-                TypeInner::Boolean | TypeInner::UInt(..) => Tree::Nullary,
+                TypeInner::Boolean | TypeInner::UInt(..) | TypeInner::Enum(..) => Tree::Nullary,
                 TypeInner::Option(l) | TypeInner::Array(l, _) | TypeInner::List(l, _) => {
                     Tree::Unary(l)
                 }
@@ -1190,6 +1202,9 @@ impl From<&ResolvedType> for StructuralType {
                     let element = output.pop().unwrap();
                     output.push(StructuralType::list(element, *bound));
                 }
+                TypeInner::Enum(info) => {
+                    output.push(StructuralType::balanced_sum(info.structural_variants()));
+                }
             }
         }
         debug_assert_eq!(output.len(), 1);
@@ -1250,6 +1265,22 @@ impl TypeConstructible for StructuralType {
 }
 
 impl StructuralType {
+    /// The balanced sum of the given leaf types.
+    /// The structural type of an enum whose variants have these payload types.
+    /// The tree shape is the one of [`BTreeSlice`], values ([`StructuralValue::enum_injection`])
+    /// and the match lowering navigate the same shape.
+    ///
+    /// ## Panics
+    ///
+    /// `leaves` is empty: a sum of zero types would be uninhabited.
+    ///
+    /// [`StructuralValue::enum_injection`]: crate::value::StructuralValue
+    pub(crate) fn balanced_sum(leaves: Vec<Self>) -> Self {
+        BTreeSlice::from_slice(&leaves)
+            .fold(Self::either)
+            .expect("at least one leaf")
+    }
+
     /// Convert into an unfinalized type that can be used in Simplicity's unification algorithm.
     pub fn to_unfinalized<'brand>(
         &self,
