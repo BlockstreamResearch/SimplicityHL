@@ -739,6 +739,17 @@ pub(crate) mod tests {
                 .with_arguments(Arguments::default())
         }
 
+        pub fn program_text_with_unstable(
+            program_text: Cow<str>,
+            unstable_features: UnstableFeatures,
+        ) -> Self {
+            TestCase::<TemplateProgram>::template_text_with_unstable(
+                program_text,
+                unstable_features,
+            )
+            .with_arguments(Arguments::default())
+        }
+
         pub fn program_file_with_deps_and_unstable(
             prog_path: impl AsRef<Path>,
             dependency_map: &DependencyMap,
@@ -1161,7 +1172,7 @@ pub(crate) mod tests {
     #[test]
     #[cfg(feature = "serde")]
     fn last_will_inherit() {
-        TestCase::program_file("./examples/last_will.simf")
+        TestCase::program_file_with_unstable("./examples/last_will.simf", UnstableFeatures::all())
             .with_sequence(25920)
             .print_sighash_all()
             .with_witness_file("./examples/last_will.inherit.wit")
@@ -1391,6 +1402,10 @@ fn main() {
         }
 
         fn regression_test(name: &str) {
+            regression_test_with_features(name, crate::UnstableFeatures::none());
+        }
+
+        fn regression_test_with_features(name: &str, features: crate::UnstableFeatures) {
             let program = serde_json::from_str::<Program>(
                 std::fs::read_to_string(format!("./test-data/{}.json", name))
                     .unwrap()
@@ -1398,7 +1413,8 @@ fn main() {
             )
             .unwrap();
 
-            let test_case = TestCase::program_file(format!("./examples/{}.simf", name));
+            let test_case =
+                TestCase::program_file_with_unstable(format!("./examples/{}.simf", name), features);
             match program.witness {
                 Some(wit) => {
                     let (new_program, new_witness) = test_case
@@ -1466,7 +1482,7 @@ fn main() {
 
         #[test]
         fn last_will_regression() {
-            regression_test("last_will");
+            regression_test_with_features("last_will", crate::UnstableFeatures::all());
         }
 
         #[test]
@@ -1572,6 +1588,189 @@ fn main() {
             "Expected 'Incompatible compiler version', got: {}",
             err
         );
+    }
+
+    #[test]
+    fn enum_construction_compiles_and_runs() {
+        let src = "enum Action { Refresh(u32, bool), Cold, }
+             fn pick() -> Action {
+                 Action::Refresh(7, true)
+             }
+             fn main() {
+                 let a: Action = pick();
+                 match a {
+                     Action::Refresh(n: u32, b: bool) => {
+                         assert!(jet::eq_32(n, 7));
+                         assert!(b);
+                     },
+                     Action::Cold => assert!(false),
+                 }
+             }";
+
+        TestCase::program_text_with_unstable(Cow::Borrowed(src), UnstableFeatures::all())
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    fn enum_unit_construction_compiles_and_runs() {
+        let src = "enum Action { Hot, Cold, }
+             fn main() {
+                 let a: Action = Action::Cold;
+                 match a {
+                     Action::Hot => assert!(false),
+                     Action::Cold => {},
+                 }
+             }";
+
+        TestCase::program_text_with_unstable(Cow::Borrowed(src), UnstableFeatures::all())
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn enum_match_witness_file_variant_name() {
+        use crate::str::WitnessName;
+
+        // The witness file names the variant; resolution constructs the
+        // enum value at the declared type.
+        let src = "enum Action { Hot, Cold, }
+             fn main() {
+                 let x: u32 = match witness::ACT {
+                     Action::Hot => 1,
+                     Action::Cold => 2,
+                 };
+                 assert!(jet::eq_32(x, 2));
+             }";
+        let compiled = CompiledProgram::new_with_unstable(
+            src,
+            &UnstableFeatures::all(),
+            Arguments::default(),
+            false,
+            Box::new(ElementsJetHinter::new()),
+        )
+        .unwrap();
+        let unresolved: UnresolvedValues =
+            serde_json::from_str(r#"{ "ACT": "Action::Cold" }"#).unwrap();
+        let witness: WitnessValues = unresolved.resolve(compiled.witness_types()).unwrap();
+        assert!(witness
+            .get(&WitnessName::from_str_unchecked("ACT"))
+            .is_some());
+        TestCase::program_text_with_unstable(Cow::Borrowed(src), UnstableFeatures::all())
+            .with_witness_values(witness)
+            .assert_run_success();
+    }
+
+    #[test]
+    fn strict_satisfy_rejects_missing_witness() {
+        use crate::str::{Identifier, WitnessName};
+        use crate::value::ValueConstructible;
+        use std::collections::HashMap;
+
+        let src = r#"
+enum Branch { A, B }
+fn main() {
+    match witness::SELECTOR {
+        Branch::A => assert!(jet::is_zero_32(witness::A)),
+        Branch::B => assert!(jet::is_zero_32(witness::B)),
+    }
+}
+"#;
+        let compiled = CompiledProgram::new_with_unstable(
+            src,
+            &UnstableFeatures::all(),
+            Arguments::default(),
+            false,
+            Box::new(ElementsJetHinter::new()),
+        )
+        .unwrap();
+        let selector_ty = compiled
+            .witness_types()
+            .get(&WitnessName::from_str_unchecked("SELECTOR"))
+            .unwrap()
+            .clone();
+
+        // Only SELECTOR and A are provided; B is omitted. The strict entry
+        // points must reject the omitted witness rather than zero-filling it.
+        let mut map: HashMap<WitnessName, Value> = HashMap::new();
+        map.insert(
+            WitnessName::from_str_unchecked("SELECTOR"),
+            Value::enum_variant(&selector_ty, &Identifier::from_str_unchecked("A"), vec![])
+                .unwrap(),
+        );
+        map.insert(WitnessName::from_str_unchecked("A"), Value::u32(0));
+
+        let err = compiled
+            .satisfy(WitnessValues::from(map.clone()))
+            .expect_err("satisfy must reject a missing witness");
+        assert!(
+            err.contains('B'),
+            "error should mention the missing witness B, got: {err}"
+        );
+    }
+
+    #[test]
+    fn enum_match_dispatches_every_variant() {
+        use crate::str::{Identifier, WitnessName};
+        use std::collections::HashMap;
+
+        // Three and five variants cover leaves at unequal depths
+        // of the balanced sum.
+        for (variants, arms) in [
+            ("A,", vec!["A"]),
+            ("A, B, C,", vec!["A", "B", "C"]),
+            ("A, B, C, D, E,", vec!["A", "B", "C", "D", "E"]),
+        ] {
+            let arm_lines: String = arms
+                .iter()
+                .enumerate()
+                .map(|(i, name)| format!("Action::{} => {},\n", name, (i + 1) * 10))
+                .collect();
+            let src = format!(
+                "enum Action {{ {variants} }}
+                 fn main() {{
+                     let selected: u32 = match witness::ACT {{
+                         {arm_lines}
+                     }};
+                     assert!(jet::eq_32(selected, witness::EXPECTED));
+                 }}"
+            );
+
+            let compiled = CompiledProgram::new_with_unstable(
+                src.as_str(),
+                &UnstableFeatures::all(),
+                Arguments::default(),
+                false,
+                Box::new(ElementsJetHinter::new()),
+            )
+            .unwrap();
+            let action_ty = compiled
+                .witness_types()
+                .get(&WitnessName::from_str_unchecked("ACT"))
+                .expect("ACT is declared")
+                .clone();
+
+            for (i, name) in arms.iter().enumerate() {
+                let action =
+                    Value::enum_variant(&action_ty, &Identifier::from_str_unchecked(name), vec![])
+                        .expect("declared variant");
+                let expected = u32::try_from((i + 1) * 10).unwrap();
+                let map = HashMap::from([
+                    (WitnessName::from_str_unchecked("ACT"), action),
+                    (
+                        WitnessName::from_str_unchecked("EXPECTED"),
+                        crate::value::ValueConstructible::u32(expected),
+                    ),
+                ]);
+                TestCase::program_text_with_unstable(
+                    Cow::Owned(src.clone()),
+                    UnstableFeatures::all(),
+                )
+                .with_witness_values(WitnessValues::from(map))
+                .assert_run_success();
+            }
+        }
     }
 }
 
