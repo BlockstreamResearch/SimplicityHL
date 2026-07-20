@@ -6,7 +6,7 @@ use simplicityhl::ast::ElementsJetHinter;
 use simplicityhl::version::SimcDirective;
 use simplicityhl::{
     resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
-    CompiledProgram,
+    TemplateProgram,
 };
 use simplicityhl::{UnstableFeature, UnstableFeatures};
 use std::path::Path;
@@ -132,24 +132,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             UnstableFeatures::new(features.copied())
         });
 
+    // Argument values are resolved against the program's parameter types,
+    // so the file is parsed here and resolved once the template is built.
     #[cfg(feature = "serde")]
-    let args_opt: simplicityhl::Arguments = match matches.get_one::<String>("args_file") {
-        None => simplicityhl::Arguments::default(),
-        Some(args_file) => {
-            let args_path = Path::new(&args_file);
-            let args_text = std::fs::read_to_string(args_path).map_err(|e| e.to_string())?;
-            serde_json::from_str::<simplicityhl::Arguments>(&args_text)?
-        }
-    };
+    let unresolved_args: Option<simplicityhl::UnresolvedValues> =
+        match matches.get_one::<String>("args_file") {
+            None => None,
+            Some(args_file) => {
+                let args_path = Path::new(&args_file);
+                let args_text = std::fs::read_to_string(args_path).map_err(|e| e.to_string())?;
+                Some(serde_json::from_str(&args_text)?)
+            }
+        };
     #[cfg(not(feature = "serde"))]
-    let args_opt: simplicityhl::Arguments = if matches.contains_id("args_file") {
+    if matches.contains_id("args_file") {
         return Err(
             "Program was compiled without the 'serde' feature and cannot process .args files."
                 .into(),
         );
-    } else {
-        simplicityhl::Arguments::default()
-    };
+    }
 
     let dep_args = matches
         .get_many::<String>("dependencies")
@@ -195,14 +196,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let source = CanonSourceFile::new(main_path.clone(), std::sync::Arc::from(main_text));
-    let compiled = match CompiledProgram::new_with_dep(
+    let template = match TemplateProgram::new_with_dep(
         source,
         &dependencies,
         &unstable_features,
-        args_opt,
-        include_debug_symbols,
         Box::new(ElementsJetHinter::new()),
     ) {
+        Ok(program) => program,
+        Err(e) => {
+            // `Display` is message-only; render for source snippets with
+            // file and line pointers, as the single-file path does.
+            eprintln!("{}", e.render_to_string());
+            std::process::exit(1);
+        }
+    };
+
+    #[cfg(feature = "serde")]
+    let args_opt: simplicityhl::Arguments = match unresolved_args {
+        None => simplicityhl::Arguments::default(),
+        Some(unresolved) => unresolved.resolve(template.parameters())?,
+    };
+    #[cfg(not(feature = "serde"))]
+    let args_opt = simplicityhl::Arguments::default();
+
+    let compiled = match template.instantiate(args_opt, include_debug_symbols) {
         Ok(program) => program,
         Err(e) => {
             eprintln!("{}", e);
@@ -216,8 +233,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|wit_file| -> Result<simplicityhl::WitnessValues, String> {
             let wit_path = Path::new(wit_file);
             let wit_text = std::fs::read_to_string(wit_path).map_err(|e| e.to_string())?;
-            let witness = serde_json::from_str::<simplicityhl::WitnessValues>(&wit_text).unwrap();
-            Ok(witness)
+            let unresolved = serde_json::from_str::<simplicityhl::UnresolvedValues>(&wit_text)
+                .map_err(|e| e.to_string())?;
+            unresolved.resolve(compiled.witness_types())
         })
         .transpose()?;
     #[cfg(not(feature = "serde"))]

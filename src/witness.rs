@@ -130,6 +130,68 @@ impl WitnessValues {
     }
 }
 
+/// A value from a witness or argument file whose type may come from the program.
+#[cfg(feature = "serde")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum UnresolvedValue {
+    /// A bare value string (`"NAME": "42"`), parsed against the type
+    /// that the program declares for `NAME`.
+    Untyped(String),
+    /// A self-typed entry (`"NAME": { "value": "42", "type": "u32" }`),
+    /// parsed against the type written in the file.
+    Typed(Value),
+}
+
+/// Witness or argument values parsed from a file, before their types are resolved
+/// against the program.
+///
+/// See docs Untyped and Typed variants of `UnresolvedValue` enum to understand how entries are resolved.
+///
+/// Call [`UnresolvedValues::resolve`] with the program's declared types to obtain
+/// [`WitnessValues`] or [`Arguments`].
+#[cfg(feature = "serde")]
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
+pub struct UnresolvedValues(HashMap<WitnessName, UnresolvedValue>);
+
+#[cfg(feature = "serde")]
+impl UnresolvedValues {
+    pub(crate) fn from_map(map: HashMap<WitnessName, UnresolvedValue>) -> Self {
+        Self(map)
+    }
+
+    /// Resolve each value against the type that the program declares for its name.
+    ///
+    /// ## Errors
+    ///
+    /// - A bare value string is given for a name that the program does not declare.
+    /// - A bare value string does not parse at the declared type.
+    ///
+    /// Self-typed entries are passed through unchanged.
+    /// They are type-checked against the program later, when the program is instantiated/satisfied.
+    pub fn resolve<T, M>(self, declared_types: &M) -> Result<T, String>
+    where
+        T: From<HashMap<WitnessName, Value>>,
+        M: AsRef<HashMap<WitnessName, ResolvedType>>,
+    {
+        let declared_types = declared_types.as_ref();
+        let mut map = HashMap::with_capacity(self.0.len());
+        for (name, unresolved) in self.0 {
+            let value = match unresolved {
+                UnresolvedValue::Typed(value) => value,
+                UnresolvedValue::Untyped(s) => {
+                    let ty = declared_types.get(&name).ok_or_else(|| {
+                        format!("`{name}` is not declared by the program, so its value `{s}` cannot be assigned a type")
+                    })?;
+                    Value::parse_from_str(&s, ty)
+                        .map_err(|error| format!("`{name}` is declared as `{ty}`: {error}"))?
+                }
+            };
+            map.insert(name, value);
+        }
+        Ok(T::from(map))
+    }
+}
+
 impl ParseFromStr for ResolvedType {
     fn parse_from_str(s: &str) -> Result<Self, Diagnostic> {
         let aliased = AliasedType::parse_from_str(s)?;
@@ -279,6 +341,85 @@ fn main() {
                     .contains("Witness expressions are not allowed outside the `main` function"))
             }
         }
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn unresolved_values_resolve_against_declared_types() {
+        let u32_ty = ResolvedType::parse_from_str("u32").unwrap();
+        let sig_ty = ResolvedType::parse_from_str("Signature").unwrap();
+        let witness_types = WitnessTypes::from(HashMap::from([
+            (WitnessName::from_str_unchecked("A"), u32_ty.clone()),
+            (WitnessName::from_str_unchecked("SIG"), sig_ty),
+        ]));
+
+        let unresolved = UnresolvedValues::from_map(HashMap::from([
+            (
+                WitnessName::from_str_unchecked("A"),
+                UnresolvedValue::Untyped("42".to_string()),
+            ),
+            (
+                WitnessName::from_str_unchecked("B"),
+                UnresolvedValue::Typed(Value::u16(7)),
+            ),
+        ]));
+        let resolved: WitnessValues = unresolved.resolve(&witness_types).unwrap();
+        assert_eq!(
+            resolved.get(&WitnessName::from_str_unchecked("A")),
+            Some(&Value::u32(42))
+        );
+        assert_eq!(
+            resolved.get(&WitnessName::from_str_unchecked("B")),
+            Some(&Value::u16(7))
+        );
+
+        let unknown = UnresolvedValues::from_map(HashMap::from([(
+            WitnessName::from_str_unchecked("TYPO"),
+            UnresolvedValue::Untyped("1".to_string()),
+        )]));
+        let err = unknown
+            .resolve::<WitnessValues, _>(&witness_types)
+            .unwrap_err();
+        assert!(err.contains("TYPO"), "error should name the entry: {err}");
+
+        let bad = UnresolvedValues::from_map(HashMap::from([(
+            WitnessName::from_str_unchecked("A"),
+            UnresolvedValue::Untyped("not-a-number".to_string()),
+        )]));
+        let err = bad.resolve::<WitnessValues, _>(&witness_types).unwrap_err();
+        assert!(
+            err.contains('A') && err.contains("u32"),
+            "error should name the witness and its declared type: {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn unresolved_values_parse_from_json() {
+        // Bare strings and legacy value/type maps may be mixed in one file.
+        let s = r#"{
+  "A": "42",
+  "B": { "value": "7", "type": "u16" }
+}"#;
+        let unresolved: UnresolvedValues = serde_json::from_str(s).unwrap();
+        let u32_ty = ResolvedType::parse_from_str("u32").unwrap();
+        let witness_types = WitnessTypes::from(HashMap::from([(
+            WitnessName::from_str_unchecked("A"),
+            u32_ty,
+        )]));
+        let resolved: WitnessValues = unresolved.resolve(&witness_types).unwrap();
+        assert_eq!(
+            resolved.get(&WitnessName::from_str_unchecked("A")),
+            Some(&Value::u32(42))
+        );
+        assert_eq!(
+            resolved.get(&WitnessName::from_str_unchecked("B")),
+            Some(&Value::u16(7))
+        );
+
+        // Duplicate names are rejected at parse time, as for WitnessValues.
+        let dup = r#"{ "A": "1", "A": "2" }"#;
+        assert!(serde_json::from_str::<UnresolvedValues>(dup).is_err());
     }
 
     #[test]

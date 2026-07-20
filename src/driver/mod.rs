@@ -20,7 +20,7 @@
 //!
 //! SimplicityHL programs begin execution at a single entry point file,
 //! which the driver registers internally as the root [`MAIN_MODULE`].
-//! This is typically the file passed as the root to the [`DependencyGraph::new`] function.
+//! This is typically the file passed as the root to the [`DependencyGraph::build_program`] function.
 //!
 //! External libraries are explicitly linked using the `--dep` flag. The driver
 //! resolves and parses these external files relative to the entry point during
@@ -319,7 +319,7 @@ impl DependencyGraph {
     ///
     /// Results are cached in `use_cache` to avoid redundant filesystem lookups during
     /// later construction phases.
-    /// Note: This is a specialized helper designed exclusively for [`DependencyGraph::new`].
+    /// Note: This is a specialized helper designed exclusively for `DependencyGraph::build_graph`.
     fn resolve_imports(
         current_program: &parse::Program,
         current_module: &CurrentModule,
@@ -342,7 +342,7 @@ impl DependencyGraph {
     }
 
     /// PHASE 2 OF GRAPH CONSTRUCTION: Loads, parses, and registers new dependencies.
-    /// Note: This is a specialized helper designed exclusively for [`DependencyGraph::new`].
+    /// Note: This is a specialized helper designed exclusively for `DependencyGraph::build_graph`.
     fn load_and_parse_dependencies(
         &mut self,
         current: &CurrentModule,
@@ -497,7 +497,7 @@ impl<'a> ImportContext<'a> {
 }
 
 /// Shared mutable state threaded through dependency loading.
-/// Lives only for the duration of [`DependencyGraph::new`].
+/// Lives only for the duration of `DependencyGraph::discover_dependencies`.
 struct LoadContext<'a> {
     invalid_imports: &'a mut HashSet<CanonPath>,
     diagnostics: &'a mut DiagnosticManager,

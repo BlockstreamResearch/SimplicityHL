@@ -48,6 +48,8 @@ use crate::source::CanonSourceFile;
 pub use crate::types::ResolvedType;
 pub use crate::unstable::{UnstableFeature, UnstableFeatures};
 pub use crate::value::Value;
+#[cfg(feature = "serde")]
+pub use crate::witness::UnresolvedValues;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 
 /// The template of a SimplicityHL program.
@@ -321,6 +323,11 @@ impl CompiledProgram {
     /// See [`TemplateProgram::compiler_version`].
     pub fn compiler_version(&self) -> &'static str {
         version::SimcDirective::current_version()
+    }
+
+    /// Access the witness types declared by the program.
+    pub fn witness_types(&self) -> &WitnessTypes {
+        &self.witness_types
     }
 
     /// Satisfy the SimplicityHL program with the given `witness_values`.
@@ -672,7 +679,11 @@ pub(crate) mod tests {
             arguments_file_path: P,
         ) -> TestCase<CompiledProgram> {
             let arguments_text = std::fs::read_to_string(arguments_file_path).unwrap();
-            let arguments = match serde_json::from_str::<Arguments>(&arguments_text) {
+            let unresolved = match serde_json::from_str::<UnresolvedValues>(&arguments_text) {
+                Ok(x) => x,
+                Err(error) => panic!("{error}"),
+            };
+            let arguments = match unresolved.resolve(self.program.parameters()) {
                 Ok(x) => x,
                 Err(error) => panic!("{error}"),
             };
@@ -734,7 +745,11 @@ pub(crate) mod tests {
             witness_file_path: P,
         ) -> TestCase<SatisfiedProgram> {
             let witness_text = std::fs::read_to_string(witness_file_path).unwrap();
-            let witness_values = match serde_json::from_str::<WitnessValues>(&witness_text) {
+            let unresolved = match serde_json::from_str::<UnresolvedValues>(&witness_text) {
+                Ok(x) => x,
+                Err(error) => panic!("{error}"),
+            };
+            let witness_values = match unresolved.resolve(self.program.witness_types()) {
                 Ok(x) => x,
                 Err(error) => panic!("{error}"),
             };
