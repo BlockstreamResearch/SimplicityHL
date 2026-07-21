@@ -602,6 +602,10 @@ impl From<UIntType> for ResolvedType {
 
 #[cfg(feature = "arbitrary")]
 impl crate::ArbitraryRec for ResolvedType {
+    // Deliberately never generates `TypeInner::Enum`.
+    // Enum values serialize as bare strings that only resolve against a program's declarations
+    // (`UnresolvedValues::resolve`), so the self-contained witness JSON round-trip target (`parse_witness_json_rtt`)
+    // would fail by design.
     fn arbitrary_rec(u: &mut arbitrary::Unstructured, budget: usize) -> arbitrary::Result<Self> {
         use arbitrary::Arbitrary;
 

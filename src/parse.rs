@@ -554,6 +554,7 @@ impl AsRef<Span> for EnumDeclaration {
 impl<'a> arbitrary::Arbitrary<'a> for EnumDeclaration {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         let visibility = Visibility::arbitrary(u)?;
+        // `AliasName::arbitrary` already dodges every reserved alias name, so a generated declaration always re-parses
         let name = AliasName::arbitrary(u)?;
         let len = u.int_in_range(2..=8)?;
         let variants = (0..len)
@@ -3015,6 +3016,23 @@ pub(crate) fn generate_arbitrary_items<'a>(
 impl<'a> arbitrary::Arbitrary<'a> for Program {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         let mut items_vec = generate_arbitrary_items(u)?;
+
+        // Enum declarations are valid only at the top level of a file, so
+        // they are generated here and not in `generate_arbitrary_items`,
+        // which `Module::arbitrary` reuses for nested items: a nested enum
+        // would display to source that no longer parses.
+        //
+        // TODO(enums): declarations alone leave construction, matching,
+        // payload binding, and compilation unreached — the expression
+        // generator does not produce `EnumConstruction`/`EnumMatch`
+        // correlated with the declared enums. Generate a coherent
+        // declaration plus an expression using one of its variants, and
+        // consider a two-stage serde target (serialize -> deserialize as
+        // `UnresolvedValues` -> resolve against the declared types) to
+        // cover enum witness serialization.
+        for _ in 0..u.int_in_range(0..=2u8)? {
+            items_vec.push(Item::EnumDeclaration(EnumDeclaration::arbitrary(u)?));
+        }
 
         // Three equally-likely modes for how `fn main()` is injected:
         //   0 — no explicit main (arbitrary items only)
