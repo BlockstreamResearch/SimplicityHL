@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::error::{Diagnostic, Error, WithSpan};
+use crate::error::{Diagnostic, DiagnosticManager, Error, WithSpan};
 use crate::parse::ParseFromStr;
 use crate::str::WitnessName;
 use crate::types::{AliasedType, ResolvedType};
@@ -110,23 +110,25 @@ impl WitnessValues {
     /// There may be witnesses that are referenced in the program that are not assigned a value
     /// in the witness map. These witnesses may lie on pruned branches that will not be part of the
     /// finalized Simplicity program. However, before the finalization, we cannot know which
-    /// witnesses will be pruned and which won't be pruned. This check skips unassigned witnesses.
-    pub fn is_consistent(&self, witness_types: &WitnessTypes) -> Result<(), Error> {
-        for name in self.0.keys() {
-            let Some(declared_ty) = witness_types.get(name) else {
+    /// witnesses will be pruned and which won't be pruned.
+    pub fn is_consistent(&self, witness_types: &WitnessTypes, diagnostics: &mut DiagnosticManager) {
+        for (name, declared_ty) in witness_types.iter() {
+            let Some(value) = self.get(name) else {
+                diagnostics.push(Diagnostic::global(Error::WitnessMissing {
+                    name: name.shallow_clone(),
+                }));
                 continue;
             };
-            let assigned_ty = self.0[name].ty();
+
+            let assigned_ty = value.ty();
             if assigned_ty != declared_ty {
-                return Err(Error::WitnessTypeMismatch {
+                diagnostics.push(Diagnostic::global(Error::WitnessTypeMismatch {
                     name: name.clone(),
                     declared: declared_ty.clone(),
                     assigned: assigned_ty.clone(),
-                });
+                }));
             }
         }
-
-        Ok(())
     }
 }
 
@@ -234,21 +236,23 @@ impl Arguments {
     /// 2. The type of each parameter must match the type of its argument.
     ///
     /// Arguments without a corresponding parameter are ignored.
-    pub fn is_consistent(&self, parameters: &Parameters) -> Result<(), Error> {
+    pub fn is_consistent(&self, parameters: &Parameters, diagnostics: &mut DiagnosticManager) {
         for (name, parameter_ty) in parameters.iter() {
-            let argument = self.get(name).ok_or_else(|| Error::ArgumentMissing {
-                name: name.shallow_clone(),
-            })?;
+            let Some(argument) = self.get(name) else {
+                diagnostics.push(Diagnostic::global(Error::ArgumentMissing {
+                    name: name.shallow_clone(),
+                }));
+                continue;
+            };
+
             if !argument.is_of_type(parameter_ty) {
-                return Err(Error::ArgumentTypeMismatch {
+                diagnostics.push(Diagnostic::global(Error::ArgumentTypeMismatch {
                     name: name.clone(),
                     declared: parameter_ty.clone(),
                     assigned: argument.ty().clone(),
-                });
+                }));
             }
         }
-
-        Ok(())
     }
 }
 
@@ -313,7 +317,7 @@ mod tests {
         ) {
             Ok(_) => panic!("Ill-typed witness assignment was falsely accepted"),
             Err(error) => assert_eq!(
-                "Witness `A` was declared with type `u32` but its assigned value is of type `u16`",
+                "Witness `A` was declared with type `u32` but its assigned value is of type `u16`\n",
                 error
             ),
         }

@@ -202,9 +202,14 @@ impl TemplateProgram {
         arguments: Arguments,
         include_debug_symbols: bool,
     ) -> Result<CompiledProgram, String> {
-        arguments
-            .is_consistent(self.simfony.parameters())
-            .map_err(|error| error.to_string())?;
+        // This function returns Result<_, String> and its neighbors do not carry a
+        // DiagnosticManager, so we mint a local one to collect all witness mismatches,
+        // then render it to a message on failure.
+        let mut diagnostics = DiagnosticManager::new();
+        arguments.is_consistent(self.simfony.parameters(), &mut diagnostics);
+        if diagnostics.has_errors() {
+            return Err(diagnostics.to_string());
+        }
 
         let commit = self.simfony.compile(
             arguments,
@@ -352,9 +357,14 @@ impl CompiledProgram {
         witness_values: WitnessValues,
         env: Option<&ElementsEnv<Arc<elements::Transaction>>>,
     ) -> Result<SatisfiedProgram, String> {
-        witness_values
-            .is_consistent(&self.witness_types)
-            .map_err(|e| e.to_string())?;
+        // This function returns Result<_, String> and its neighbors do not carry a
+        // DiagnosticManager, so we mint a local one to collect all witness mismatches,
+        // then render it to a message on failure.
+        let mut diagnostics = DiagnosticManager::new();
+        witness_values.is_consistent(&self.witness_types, &mut diagnostics);
+        if diagnostics.has_errors() {
+            return Err(diagnostics.to_string());
+        }
 
         let mut simplicity_redeem = named::populate_witnesses(&self.simplicity, witness_values)?;
         if let Some(env) = env {

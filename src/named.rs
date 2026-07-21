@@ -210,7 +210,12 @@ pub fn populate_witnesses(
         ) -> Result<simplicity::Value, Self::Error> {
             match self.values.get(witness) {
                 Some(val) => Ok(simplicity::Value::from(StructuralValue::from(val))),
-                None => Err(format!("missing witness for {witness}")),
+                // Presence is validated by `WitnessValues::is_consistent` before this
+                // runs; reaching this arm means the caller skipped validation.
+                None => Err(format!(
+                    "internal error: witness `{witness}` missing; \
+                     call WitnessValues::is_consistent before populate_witnesses"
+                )),
             }
         }
 
