@@ -3,6 +3,7 @@ use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
 use simplicityhl::ast::ElementsJetHinter;
+use simplicityhl::error::should_color;
 use simplicityhl::version::SimcDirective;
 use simplicityhl::{
     resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
@@ -10,7 +11,7 @@ use simplicityhl::{
 };
 use simplicityhl::{UnstableFeature, UnstableFeatures};
 use std::path::Path;
-use std::{env, fmt};
+use std::{env, fmt, io};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 /// The compilation output.
@@ -203,10 +204,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Box::new(ElementsJetHinter::new()),
     ) {
         Ok(program) => program,
-        Err(e) => {
-            // `Display` is message-only; render for source snippets with
-            // file and line pointers, as the single-file path does.
-            eprintln!("{}", e.render_to_string());
+        Err(diags) => {
+            let stderr = io::stderr();
+            let with_color = should_color(&stderr);
+            let mut lock = stderr.lock();
+
+            diags
+                .render(with_color, &mut lock)
+                .expect("writing to stderr");
             std::process::exit(1);
         }
     };
@@ -222,7 +227,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compiled = match template.instantiate(args_opt, include_debug_symbols) {
         Ok(program) => program,
         Err(e) => {
-            eprintln!("{}", e);
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };
@@ -250,7 +255,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (program_bytes, witness_bytes) = match witness_opt {
         Some(witness) => {
-            let satisfied = compiled.satisfy(witness)?;
+            let satisfied = match compiled.satisfy(witness) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
             let (program_bytes, witness_bytes) = satisfied.redeem().to_vec_with_witness();
             (program_bytes, Some(witness_bytes))
         }

@@ -1,7 +1,8 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fmt;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -380,6 +381,8 @@ where
     }
 }
 
+/// Collects diagnostics emitted during a single compilation and renders
+/// them against the source files they refer to.
 #[derive(Debug, Clone, Default)]
 pub struct DiagnosticManager {
     diags: Vec<Diagnostic>,
@@ -518,6 +521,36 @@ impl<'a> Cache<usize> for RenderCache<'a> {
             Box::new(path.as_path().display().to_string()) as Box<dyn fmt::Display + 'b>
         })
     }
+}
+
+/// Pure color-decision logic.
+fn decide_color(clicolor_force: Option<&OsStr>, no_color: Option<&OsStr>, is_tty: bool) -> bool {
+    let zero = OsStr::new("0");
+
+    if let Some(v) = clicolor_force {
+        if !v.is_empty() && v != zero {
+            return true;
+        }
+    }
+    if let Some(v) = no_color {
+        if !v.is_empty() {
+            return false;
+        }
+    }
+    is_tty
+}
+
+/// Whether the given stream should be rendered with ANSI color.
+///
+/// Precedence: `CLICOLOR_FORCE` (non-empty, non-`"0"`) then force on;
+/// `NO_COLOR` (non-empty, per <https://no-color.org>) then force off;
+/// otherwise follow the stream's TTY status.
+pub fn should_color<S: IsTerminal>(stream: &S) -> bool {
+    decide_color(
+        std::env::var_os("CLICOLOR_FORCE").as_deref(),
+        std::env::var_os("NO_COLOR").as_deref(),
+        stream.is_terminal(),
+    )
 }
 
 fn render_one(
@@ -824,6 +857,9 @@ pub enum Error {
     WitnessReused {
         name: WitnessName,
     },
+    WitnessMissing {
+        name: WitnessName,
+    },
     WitnessTypeMismatch {
         name: WitnessName,
         declared: ResolvedType,
@@ -1075,6 +1111,10 @@ impl fmt::Display for Error {
                 f,
                 "Witness `{name}` has been used before somewhere in the program"
             ),
+            Error::WitnessMissing { name } => write!(
+                f,
+                "Missing witness for `{name}`"
+            ),
             Error::WitnessTypeMismatch { name, declared, assigned } => write!(
                 f,
                 "Witness `{name}` was declared with type `{declared}` but its assigned value is of type `{assigned}`"
@@ -1189,6 +1229,7 @@ mod render_tests {
     use crate::source::CanonSourceFile;
     use crate::test_utils::TempWorkspace;
 
+    use std::ffi::OsStr;
     use std::sync::Arc;
 
     const CONTENT: &str = "let a1: List<u32, 5> = None;\nlet x: u32 = Left(\n    Right(0)\n);";
@@ -1245,6 +1286,16 @@ mod render_tests {
 
     fn span(range: std::ops::Range<usize>) -> Span {
         Span::new(MAIN_MODULE, range)
+    }
+
+    #[test]
+    fn clicolor_force_zero_does_not_force() {
+        // Regression case: CLICOLOR_FORCE=0 with non-TTY stderr must not emit escapes.
+        assert!(!decide_color(Some(OsStr::new("0")), None, false));
+        assert!(decide_color(Some(OsStr::new("1")), None, false));
+        assert!(!decide_color(None, Some(OsStr::new("1")), true));
+        assert!(decide_color(None, None, true));
+        assert!(!decide_color(None, None, false));
     }
 
     #[test]
