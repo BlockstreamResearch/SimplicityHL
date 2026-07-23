@@ -102,6 +102,15 @@ impl chumsky::span::Span for Span {
     type Offset = usize;
 
     fn new(file_id: Self::Context, range: Range<Self::Offset>) -> Self {
+        // chumsky builds an empty `span_since` over mapped token input as
+        // `next_token.start .. previous_token.end`, which is inverted
+        // whenever skipped trivia separates the two tokens.
+        //
+        // Collapse such ranges to a zero-width span at the unconsumed token's start.
+        if range.start > range.end {
+            return Self::new(file_id, range.start..range.start);
+        }
+
         Self::new(file_id, range)
     }
 
@@ -761,8 +770,8 @@ pub enum Error {
         found: Option<String>,
     },
     IncompatibleMatchArms {
-        first: MatchPattern,
-        second: MatchPattern,
+        first: Box<MatchPattern>,
+        second: Box<MatchPattern>,
     },
     // TODO: Remove CompileError once SimplicityHL has a type system
     // The SimplicityHL compiler should never produce ill-typed Simplicity code

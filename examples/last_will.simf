@@ -4,6 +4,8 @@
  * The inheritor can spend the coins if the owner doesn't move the them for 180
  * days. The owner has to repeat the covenant when he moves the coins with his
  * hot key. The owner can break out of the covenant with his cold key.
+ *
+ * Requires -Z enums to run this example.
  */
 fn checksig(pk: Pubkey, sig: Signature) {
     let msg: u256 = jet::sig_all_hash();
@@ -40,12 +42,16 @@ fn refresh_spend(hot_sig: Signature) {
     recursive_covenant();
 }
 
+enum Action {
+    Inherit(Signature),
+    ColdSpend(Signature),
+    HotSpend(Signature),
+}
+
 fn main() {
-    match witness::INHERIT_OR_NOT {
-        Left(inheritor_sig: Signature) => inherit_spend(inheritor_sig),
-        Right(cold_or_hot: Either<Signature, Signature>) => match cold_or_hot {
-            Left(cold_sig: Signature) => cold_spend(cold_sig),
-            Right(hot_sig: Signature) => refresh_spend(hot_sig),
-        },
+    match witness::ACTION {
+        Action::Inherit(sig: Signature) => inherit_spend(sig),
+        Action::ColdSpend(sig: Signature) => cold_spend(sig),
+        Action::HotSpend(sig: Signature) => refresh_spend(sig),
     }
 }

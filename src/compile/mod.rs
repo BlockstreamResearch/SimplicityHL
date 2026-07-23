@@ -11,8 +11,8 @@ use simplicity::{types, Cmr, FailEntropy};
 use self::builtins::array_fold;
 use crate::array::{BTreeSlice, Partition};
 use crate::ast::{
-    Call, CallName, Expression, ExpressionInner, JetHinter, Match, Program, SingleExpression,
-    SingleExpressionInner, Statement,
+    Call, CallName, EnumMatch, Expression, ExpressionInner, JetHinter, Match, Program,
+    SingleExpression, SingleExpressionInner, Statement,
 };
 use crate::debug::CallTracker;
 use crate::error::{Diagnostic, Error, Span, WithSpan};
@@ -360,7 +360,26 @@ impl SingleExpression {
                 inner.compile(scope).map(PairBuilder::injr)?
             }
             SingleExpressionInner::Call(call) => call.compile(scope)?,
+            SingleExpressionInner::EnumConstruction(construction) => {
+                let info = self
+                    .ty()
+                    .as_enum()
+                    .expect("construction is type-checked at enum type");
+                // Payload product:
+                // unit for unit variants, the expression itself for single payloads,
+                // a balanced pair tree for tuples (the same shape as the variant's structural payload type)
+                let compiled = construction
+                    .payload()
+                    .iter()
+                    .map(|arg| arg.compile(scope))
+                    .collect::<Result<Vec<PairBuilder<ProgNode>>, Diagnostic>>()?;
+                let payload = BTreeSlice::from_slice(&compiled)
+                    .fold(PairBuilder::pair)
+                    .unwrap_or_else(|| PairBuilder::unit(scope.ctx()));
+                inject_variant(construction.variant_index(), info.variants().len(), payload)
+            }
             SingleExpressionInner::Match(match_) => match_.compile(scope)?,
+            SingleExpressionInner::EnumMatch(enum_match) => enum_match.compile(scope)?,
         };
 
         scope
@@ -684,5 +703,59 @@ impl Match {
         let input = scrutinee.pair(PairBuilder::iden(scope.ctx()));
         let output = ProgNode::case(left.as_ref(), right.as_ref()).with_span(self)?;
         input.comp(&output).with_span(self)
+    }
+}
+
+/// Wrap a compiled payload in the injections that place it at leaf `index` of a balanced sum of `n` variants.
+///
+/// The sibling types are pinned by type inference where the value is consumed.
+fn inject_variant(index: usize, n: usize, payload: PairBuilder<ProgNode>) -> PairBuilder<ProgNode> {
+    debug_assert!(index < n);
+    if n == 1 {
+        return payload;
+    }
+    let half = crate::array::btree_split_index(n);
+    if index < half {
+        return inject_variant(index, half, payload).injl();
+    }
+    inject_variant(index - half, n - half, payload).injr()
+}
+
+/// Fold compiled match arms into a tree of `case` nodes that dispatches on a balanced sum.
+///
+/// The tree shape is the one of [`BTreeSlice`], matching the structural type of the enum being matched.
+/// Each `case` peels one level of the sum, so every leaf arm sees its (unit) variant payload on top of the environment.
+fn case_tree<'brand>(
+    arms: &[PairBuilder<ProgNode<'brand>>],
+) -> Result<ProgNode<'brand>, types::Error> {
+    let leaves: Vec<Result<ProgNode, types::Error>> =
+        arms.iter().map(|arm| Ok(arm.as_ref().clone())).collect();
+    BTreeSlice::from_slice(&leaves)
+        .fold(|left, right| ProgNode::case(&left?, &right?))
+        .expect("enum matches have at least one arm")
+}
+
+impl EnumMatch {
+    fn compile<'brand>(
+        &self,
+        scope: &mut Scope<'brand>,
+    ) -> Result<PairBuilder<ProgNode<'brand>>, Diagnostic> {
+        // Compile each arm with its payload pattern on top of the environment.
+        // `case` replaces the matched sum with the arm's payload, so every leaf sees (payload, environment)
+        // regardless of its depth.
+        // Unit variants bind nothing (`Pattern::Ignore`).
+        let mut arm_nodes = Vec::with_capacity(self.arms().len());
+        for arm in self.arms() {
+            scope.push_scope();
+            scope.insert(arm.pattern().clone());
+            let body = arm.body().compile(scope)?;
+            scope.pop_scope();
+            arm_nodes.push(body);
+        }
+
+        let dispatch = case_tree(&arm_nodes).with_span(self)?;
+        let scrutinee = self.scrutinee().compile(scope)?;
+        let input = scrutinee.pair(PairBuilder::iden(scope.ctx()));
+        input.comp(&dispatch).with_span(self)
     }
 }

@@ -94,6 +94,16 @@ impl AsRef<HashMap<WitnessName, ResolvedType>> for WitnessTypes {
 }
 
 /// Map of witness values.
+///
+/// # Serialization of enum values is one-way
+///
+/// Values whose type mentions an enum serialize as bare value strings
+/// (`"Action::Cold"`): the self-contained `{ value, type }` form cannot
+/// express them, because its type string is parsed without the program's
+/// declarations. Consequently `Deserialize` for this type rejects such
+/// output. The supported round-trip goes through [`UnresolvedValues`]:
+/// deserialize the file into `UnresolvedValues` and resolve it against the
+/// program's declared witness types.
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct WitnessValues(Arc<HashMap<WitnessName, Value>>);
@@ -166,13 +176,14 @@ impl UnresolvedValues {
 
     /// Resolve each value against the type that the program declares for its name.
     ///
+    /// Bare value strings are parsed at the declared type.
+    /// Names the program does not declare are skipped.
+    /// Self-typed entries pass through unchanged and are type-checked later,
+    /// when the program is instantiated/satisfied.
+    ///
     /// ## Errors
     ///
-    /// - A bare value string is given for a name that the program does not declare.
-    /// - A bare value string does not parse at the declared type.
-    ///
-    /// Self-typed entries are passed through unchanged.
-    /// They are type-checked against the program later, when the program is instantiated/satisfied.
+    /// A bare value string does not parse at the declared type.
     pub fn resolve<T, M>(self, declared_types: &M) -> Result<T, String>
     where
         T: From<HashMap<WitnessName, Value>>,
@@ -184,9 +195,10 @@ impl UnresolvedValues {
             let value = match unresolved {
                 UnresolvedValue::Typed(value) => value,
                 UnresolvedValue::Untyped(s) => {
-                    let ty = declared_types.get(&name).ok_or_else(|| {
-                        format!("`{name}` is not declared by the program, so its value `{s}` cannot be assigned a type")
-                    })?;
+                    let Some(ty) = declared_types.get(&name) else {
+                        continue;
+                    };
+
                     Value::parse_from_str(&s, ty)
                         .map_err(|error| format!("`{name}` is declared as `{ty}`: {error}"))?
                 }
@@ -226,6 +238,14 @@ impl AsRef<HashMap<WitnessName, ResolvedType>> for Parameters {
 ///
 /// An argument is the value of a parameter.
 /// Arguments have a name and a value of a given type.
+///
+/// # Serialization of enum values is one-way
+///
+/// Like [`WitnessValues`], values whose type mentions an enum serialize as
+/// bare value strings, which `Deserialize` for this type rejects. The
+/// supported round-trip goes through [`UnresolvedValues`]: deserialize the
+/// file into `UnresolvedValues` and resolve it against the program's
+/// declared parameter types.
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Arguments(Arc<HashMap<WitnessName, Value>>);
@@ -286,6 +306,10 @@ mod tests {
     use super::*;
     use crate::ast::ElementsJetHinter;
     use crate::parse::ParseFromStr;
+    #[cfg(feature = "serde")]
+    use crate::str::Identifier;
+    #[cfg(feature = "serde")]
+    use crate::types::{EnumInfo, EnumVariantInfo, TypeConstructible};
     use crate::value::ValueConstructible;
     use crate::{ast, parse, CompiledProgram, SatisfiedProgram};
 
@@ -383,14 +407,17 @@ fn main() {
             Some(&Value::u16(7))
         );
 
-        let unknown = UnresolvedValues::from_map(HashMap::from([(
-            WitnessName::from_str_unchecked("TYPO"),
+        // Entries the program does not declare are skipped (consistent with `WitnessValues::is_consistent`)
+        let extra = UnresolvedValues::from_map(HashMap::from([(
+            WitnessName::from_str_unchecked("UNUSED"),
             UnresolvedValue::Untyped("1".to_string()),
         )]));
-        let err = unknown
-            .resolve::<WitnessValues, _>(&witness_types)
-            .unwrap_err();
-        assert!(err.contains("TYPO"), "error should name the entry: {err}");
+        let resolved: WitnessValues = extra.resolve(&witness_types).unwrap();
+        assert_eq!(
+            resolved.get(&WitnessName::from_str_unchecked("UNUSED")),
+            None,
+            "undeclared bare entries are ignored"
+        );
 
         let bad = UnresolvedValues::from_map(HashMap::from([(
             WitnessName::from_str_unchecked("A"),
@@ -430,6 +457,95 @@ fn main() {
         // Duplicate names are rejected at parse time, as for WitnessValues.
         let dup = r#"{ "A": "1", "A": "2" }"#;
         assert!(serde_json::from_str::<UnresolvedValues>(dup).is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn enum_witness_resolves_by_variant_name() {
+        let variants: Arc<[EnumVariantInfo]> = ["Inherit", "ColdSpend", "HotSpend"]
+            .into_iter()
+            .map(|name| EnumVariantInfo::new(Identifier::from_str_unchecked(name), Arc::from([])))
+            .collect();
+        let action_ty = ResolvedType::enumeration(EnumInfo::new(Arc::from("Action"), variants));
+        let witness_types = WitnessTypes::from(HashMap::from([(
+            WitnessName::from_str_unchecked("ACTION"),
+            action_ty.clone(),
+        )]));
+
+        let resolve_one = |input: &str| -> Result<Value, String> {
+            let unresolved = UnresolvedValues::from_map(HashMap::from([(
+                WitnessName::from_str_unchecked("ACTION"),
+                UnresolvedValue::Untyped(input.to_string()),
+            )]));
+            let resolved: WitnessValues = unresolved.resolve(&witness_types)?;
+            Ok(resolved
+                .get(&WitnessName::from_str_unchecked("ACTION"))
+                .unwrap()
+                .clone())
+        };
+
+        let by_name = resolve_one("Action::ColdSpend").expect("written variant resolves");
+        assert!(by_name.is_of_type(&action_ty));
+
+        // The bare form is no longer a value: variants are written with
+        // their enum's name, the same syntax as in source code.
+        assert!(resolve_one("ColdSpend").is_err());
+
+        let err = resolve_one("Action::Withdraw").unwrap_err();
+        assert!(
+            err.contains("Withdraw") && err.contains("ColdSpend"),
+            "error names the bad value and the variants: {err}"
+        );
+
+        assert!(resolve_one("2").is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn enum_witness_resolves_inside_composite_types() {
+        let variants: Arc<[EnumVariantInfo]> = ["Hot", "Cold"]
+            .into_iter()
+            .map(|name| EnumVariantInfo::new(Identifier::from_str_unchecked(name), Arc::from([])))
+            .collect();
+        let action_ty = ResolvedType::enumeration(EnumInfo::new(Arc::from("Action"), variants));
+        let option_ty = ResolvedType::option(action_ty.clone());
+        let tuple_ty = ResolvedType::tuple([
+            action_ty.clone(),
+            ResolvedType::parse_from_str("u32").unwrap(),
+        ]);
+        let witness_types = WitnessTypes::from(HashMap::from([
+            (WitnessName::from_str_unchecked("MAYBE"), option_ty),
+            (WitnessName::from_str_unchecked("PAIR"), tuple_ty),
+        ]));
+
+        let unresolved = UnresolvedValues::from_map(HashMap::from([
+            (
+                WitnessName::from_str_unchecked("MAYBE"),
+                UnresolvedValue::Untyped("Some(Action::Cold)".to_string()),
+            ),
+            (
+                WitnessName::from_str_unchecked("PAIR"),
+                UnresolvedValue::Untyped("(Action::Hot, 42)".to_string()),
+            ),
+        ]));
+        let resolved: WitnessValues = unresolved
+            .resolve(&witness_types)
+            .expect("variants resolve inside options and tuples");
+        let maybe = resolved
+            .get(&WitnessName::from_str_unchecked("MAYBE"))
+            .unwrap();
+        assert_eq!("Some(Action::Cold)", &maybe.to_string());
+        let pair = resolved
+            .get(&WitnessName::from_str_unchecked("PAIR"))
+            .unwrap();
+        assert_eq!("(Action::Hot, 42)", &pair.to_string());
+
+        // A bare variant name in source code stays undefined: only files parse enum values.
+        let err = ast::Expression::analyze_const(
+            &parse::Expression::parse_from_str("Cold").unwrap(),
+            &action_ty,
+        );
+        assert!(err.is_err(), "bare variants are not source syntax");
     }
 
     #[test]

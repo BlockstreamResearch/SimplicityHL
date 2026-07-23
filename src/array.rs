@@ -57,15 +57,28 @@ impl<A: Clone> BTreeSlice<'_, A> {
     }
 }
 
+/// Index at which [`BTreeSlice`] splits a slice of length `n` into a left
+/// and a right subtree.
+///
+/// Exposed so that consumers which need to *navigate* the balanced tree.
+///
+/// ## Panics
+///
+/// `n` must be at least 2.
+pub fn btree_split_index(n: usize) -> usize {
+    debug_assert!(2 <= n);
+    let next_pow2 = n.next_power_of_two();
+    debug_assert!(0 < next_pow2 / 2);
+    debug_assert!(0 < n - next_pow2 / 2);
+    n - next_pow2 / 2
+}
+
 impl<A: Clone> TreeLike for BTreeSlice<'_, A> {
     fn as_node(&self) -> Tree<Self> {
         match self.0.len() {
             0 | 1 => Tree::Nullary,
             n => {
-                let next_pow2 = n.next_power_of_two();
-                debug_assert!(0 < next_pow2 / 2);
-                debug_assert!(0 < n - next_pow2 / 2);
-                let half = n - next_pow2 / 2;
+                let half = btree_split_index(n);
                 let left = BTreeSlice::from_slice(&self.0[..half]);
                 let right = BTreeSlice::from_slice(&self.0[half..]);
                 Tree::Binary(left, right)
