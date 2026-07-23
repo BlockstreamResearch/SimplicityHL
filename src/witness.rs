@@ -112,7 +112,10 @@ impl WitnessValues {
     /// finalized Simplicity program. However, before the finalization, we cannot know which
     /// witnesses will be pruned and which won't be pruned.
     pub fn is_consistent(&self, witness_types: &WitnessTypes, diagnostics: &mut DiagnosticManager) {
-        for (name, declared_ty) in witness_types.iter() {
+        let mut entries: Vec<_> = witness_types.iter().collect();
+        entries.sort_unstable_by_key(|(k, _)| *k);
+
+        for (name, declared_ty) in entries {
             let Some(value) = self.get(name) else {
                 diagnostics.push(Diagnostic::global(Error::WitnessMissing {
                     name: name.shallow_clone(),
@@ -237,7 +240,10 @@ impl Arguments {
     ///
     /// Arguments without a corresponding parameter are ignored.
     pub fn is_consistent(&self, parameters: &Parameters, diagnostics: &mut DiagnosticManager) {
-        for (name, parameter_ty) in parameters.iter() {
+        let mut entries: Vec<_> = parameters.iter().collect();
+        entries.sort_unstable_by_key(|(k, _)| *k);
+
+        for (name, parameter_ty) in entries {
             let Some(argument) = self.get(name) else {
                 diagnostics.push(Diagnostic::global(Error::ArgumentMissing {
                     name: name.shallow_clone(),
