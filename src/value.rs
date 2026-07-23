@@ -864,6 +864,7 @@ impl Value {
                         }
                     }
                 }
+                TypeInner::Never => unreachable!("poisoned type in value reconstruction; values exist only for error-free programs"),
             }
         }
         debug_assert_eq!(output.len(), 1);
@@ -937,6 +938,7 @@ impl crate::ArbitraryOfType for Value {
                     .collect::<arbitrary::Result<Vec<Self>>>()?;
                 Ok(Self::list(elements, ty.as_ref().clone(), *bound))
             }
+            TypeInner::Never => unreachable!("cannot generate a value of a poisoned type"),
         }
     }
 }
@@ -1257,7 +1259,7 @@ impl TreeLike for Destructor<'_> {
             Self::WrongType => return Tree::Nullary,
         };
         match ty.as_inner() {
-            TypeInner::Boolean | TypeInner::UInt(..) => Tree::Nullary,
+            TypeInner::Boolean | TypeInner::UInt(..) | TypeInner::Never => Tree::Nullary,
             TypeInner::Enum(info) => match destruct::as_enum_leaf(value, info.variants().len()) {
                 Some((index, leaf)) => {
                     Tree::Unary(Self::new(leaf, info.variants()[index].payload_type()))

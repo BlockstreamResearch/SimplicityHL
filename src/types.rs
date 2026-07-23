@@ -31,6 +31,9 @@ pub enum TypeInner<A> {
     /// Nominal enum type, represented as a balanced sum of its variants'
     /// payload types
     Enum(EnumInfo),
+    /// Type of a recovered subtree. Compatible with every type; never re-reported.
+    /// A diagnostic was already emitted for its span.
+    Never,
 }
 
 /// One variant of a nominal enum type: its name and payload types.
@@ -201,6 +204,7 @@ impl<A> TypeInner<A> {
                 }
             },
             TypeInner::Enum(info) => write!(f, "{}", info.name()),
+            TypeInner::Never => write!(f, "<never>"),
         }
     }
 }
@@ -459,6 +463,14 @@ impl ResolvedType {
     pub fn as_inner(&self) -> &TypeInner<Arc<Self>> {
         &self.0
     }
+
+    pub const fn never() -> Self {
+        Self(TypeInner::Never)
+    }
+
+    pub fn is_never(&self) -> bool {
+        matches!(self.0, TypeInner::Never)
+    }
 }
 
 /// Nominal enum types.
@@ -571,7 +583,9 @@ impl TypeDeconstructible for ResolvedType {
 impl TreeLike for &ResolvedType {
     fn as_node(&self) -> Tree<Self> {
         match &self.0 {
-            TypeInner::Boolean | TypeInner::UInt(..) | TypeInner::Enum(..) => Tree::Nullary,
+            TypeInner::Boolean | TypeInner::UInt(..) | TypeInner::Enum(..) | TypeInner::Never => {
+                Tree::Nullary
+            }
             TypeInner::Option(l) | TypeInner::Array(l, _) | TypeInner::List(l, _) => Tree::Unary(l),
             TypeInner::Either(l, r) => Tree::Binary(l, r),
             TypeInner::Tuple(elements) => Tree::Nary(elements.iter().map(Arc::as_ref).collect()),
@@ -729,6 +743,10 @@ impl AliasedType {
         Self(AliasedInner::Builtin(builtin))
     }
 
+    pub const fn error() -> Self {
+        Self(AliasedInner::Inner(TypeInner::Never))
+    }
+
     /// Resolve all aliases in the type based on the given map of `aliases` to types.
     pub fn resolve<F, E>(&self, mut get_alias: F) -> Result<ResolvedType, E>
     where
@@ -775,6 +793,7 @@ impl AliasedType {
                     TypeInner::Enum(info) => {
                         output.push(ResolvedType::enumeration(info.clone()));
                     }
+                    TypeInner::Never => output.push(ResolvedType::never()),
                 },
             }
         }
@@ -809,6 +828,7 @@ impl_require_feature!(TypeInner<Arc<AliasedType>> {
         Array(element, _),
         List(element, _),
         Enum(_),
+        Never,
 });
 
 impl TypeConstructible for AliasedType {
@@ -901,7 +921,10 @@ impl TreeLike for &AliasedType {
         match &self.0 {
             AliasedInner::Alias(_) | AliasedInner::Builtin(_) => Tree::Nullary,
             AliasedInner::Inner(inner) => match inner {
-                TypeInner::Boolean | TypeInner::UInt(..) | TypeInner::Enum(..) => Tree::Nullary,
+                TypeInner::Boolean
+                | TypeInner::UInt(..)
+                | TypeInner::Enum(..)
+                | TypeInner::Never => Tree::Nullary,
                 TypeInner::Option(l) | TypeInner::Array(l, _) | TypeInner::List(l, _) => {
                     Tree::Unary(l)
                 }
@@ -1205,6 +1228,9 @@ impl From<&ResolvedType> for StructuralType {
                 TypeInner::Enum(info) => {
                     output.push(StructuralType::balanced_sum(info.structural_variants()));
                 }
+                TypeInner::Never => unreachable!(
+                    "poisoned type reached codegen; compilation must be gated on zero errors"
+                ),
             }
         }
         debug_assert_eq!(output.len(), 1);
