@@ -83,7 +83,7 @@ pub enum Item {
     Use,
     Module(Vec<Item>),
     /// A placeholder used for error recovery during parsing.
-    Ignored,
+    Error,
 }
 
 /// Definition of a function.
@@ -115,6 +115,7 @@ pub enum Statement {
     Assignment(Assignment),
     /// Expression that returns nothing (the unit value).
     Expression(Expression),
+    Error,
 }
 
 /// Assignment of a value to a variable identifier.
@@ -254,6 +255,8 @@ pub enum SingleExpressionInner {
     ///
     /// The enum's definition lives in the type of the expression.
     EnumConstruction(EnumConstruction),
+    // TODO: Add docstring.
+    Error,
 }
 
 /// Call of a user-defined or of a builtin function.
@@ -595,6 +598,7 @@ impl TreeLike for ExprTree<'_> {
             Self::Statement(statement) => match statement {
                 Statement::Assignment(assignment) => Tree::Unary(Self::Assignment(assignment)),
                 Statement::Expression(expression) => Tree::Unary(Self::Expression(expression)),
+                Statement::Error => Tree::Nullary,
             },
             Self::Assignment(assignment) => Tree::Unary(Self::Expression(assignment.expression())),
             Self::Single(single) => match single.inner() {
@@ -602,7 +606,8 @@ impl TreeLike for ExprTree<'_> {
                 | S::Witness(_)
                 | S::Parameter(_)
                 | S::Variable(_)
-                | S::Option(None) => Tree::Nullary,
+                | S::Option(None)
+                | S::Error => Tree::Nullary,
                 S::Expression(l)
                 | S::Either(Either::Left(l))
                 | S::Either(Either::Right(l))
@@ -1383,7 +1388,7 @@ impl AbstractSyntaxTree for Item {
                 scope.exit_module();
                 Ok(Self::Module(analyzed_children))
             }
-            parse::Item::Ignored => Ok(Self::Ignored),
+            parse::Item::Ignored => Ok(Self::Error),
         }
     }
 }
@@ -1481,6 +1486,7 @@ impl AbstractSyntaxTree for Statement {
             parse::Statement::Expression(expression) => {
                 Expression::analyze(expression, ty, scope).map(Self::Expression)
             }
+            parse::Statement::Error(_) => Ok(Self::Error),
         }
     }
 }
@@ -1872,6 +1878,7 @@ impl AbstractSyntaxTree for SingleExpression {
             parse::SingleExpressionInner::EnumMatch(enum_match) => {
                 EnumMatch::analyze(enum_match, ty, scope).map(SingleExpressionInner::EnumMatch)?
             }
+            parse::SingleExpressionInner::Error => SingleExpressionInner::Error,
         };
 
         Ok(Self {

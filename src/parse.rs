@@ -410,6 +410,8 @@ pub enum Statement {
     Assignment(Assignment),
     /// An expression that returns nothing (the unit value).
     Expression(Expression),
+    /// Recovered from a parse error; a diagnostic was already emitted.
+    Error(Span),
 }
 
 impl Statement {
@@ -421,6 +423,7 @@ impl Statement {
         match self {
             Self::Assignment(assignment) => assignment.span(),
             Self::Expression(expression) => expression.span(),
+            Self::Error(span) => span,
         }
     }
 }
@@ -429,6 +432,7 @@ impl_require_feature!(Statement {
     variants:
         Assignment(assignment),
         Expression(expr),
+        Error(_),
 });
 
 /// The output of an expression is assigned to a pattern.
@@ -745,10 +749,10 @@ impl Expression {
         }
     }
 
-    pub fn empty(span: Span) -> Self {
+    pub fn error(span: Span) -> Self {
         Self {
             inner: ExpressionInner::Single(SingleExpression {
-                inner: SingleExpressionInner::Tuple(Arc::new([])),
+                inner: SingleExpressionInner::Error,
                 span,
             }),
             span,
@@ -839,6 +843,8 @@ pub enum SingleExpressionInner {
     ///
     /// The exclusive upper bound on the list size is not known at this point
     List(Arc<[Expression]>),
+    /// Recovered from a parse error; a diagnostic was already emmited.
+    Error,
 }
 
 impl_require_feature!(SingleExpressionInner {
@@ -860,6 +866,7 @@ impl_require_feature!(SingleExpressionInner {
         Tuple(exprs),
         Array(exprs),
         List(exprs),
+        Error,
 });
 
 /// Match expression.
@@ -1368,6 +1375,7 @@ impl TreeLike for ExprTree<'_> {
             Self::Statement(statement) => match statement {
                 Statement::Assignment(assignment) => Tree::Unary(Self::Assignment(assignment)),
                 Statement::Expression(expression) => Tree::Unary(Self::Expression(expression)),
+                Statement::Error(_) => Tree::Nullary,
             },
             Self::Assignment(assignment) => Tree::Unary(Self::Expression(assignment.expression())),
             Self::Single(single) => match single.inner() {
@@ -1378,7 +1386,8 @@ impl TreeLike for ExprTree<'_> {
                 | S::Variable(_)
                 | S::Witness(_)
                 | S::Parameter(_)
-                | S::Option(None) => Tree::Nullary,
+                | S::Option(None)
+                | S::Error => Tree::Nullary,
                 S::Option(Some(l))
                 | S::Either(Either::Left(l))
                 | S::Either(Either::Right(l))
@@ -1477,7 +1486,6 @@ impl fmt::Display for ExprTree<'_> {
                             write!(f, ")")?;
                         }
                     },
-                    S::Call(..) | S::Match(..) | S::EnumMatch(..) | S::EnumConstruction(..) => {}
                     S::Tuple(tuple) => {
                         if data.n_children_yielded == 0 {
                             write!(f, "(")?;
@@ -1508,6 +1516,11 @@ impl fmt::Display for ExprTree<'_> {
                             write!(f, "]")?;
                         }
                     }
+                    S::Call(..)
+                    | S::Match(..)
+                    | S::EnumMatch(..)
+                    | S::EnumConstruction(..)
+                    | S::Error => {}
                 },
                 Self::Call(call) => {
                     if data.n_children_yielded == 0 {
@@ -1919,11 +1932,12 @@ impl ChumskyParse for AliasedType {
             Token::DecLiteral(i) => i.clone()
         }
         .labelled("decimal number")
+        .map(Some)
         .recover_with(via_parser(
             none_of([Token::RAngle, Token::RBracket])
                 .ignored()
                 .or(empty())
-                .to(Decimal::from_str_unchecked("0")),
+                .to(None),
         ));
 
         recursive(|ty| {
@@ -1933,12 +1947,7 @@ impl ChumskyParse for AliasedType {
                     .then(ty.clone()),
                 Token::LAngle,
                 Token::RAngle,
-                |_| {
-                    (
-                        AliasedType::alias(AliasName::from_str_unchecked("error")),
-                        AliasedType::alias(AliasName::from_str_unchecked("error")),
-                    )
-                },
+                |_| (AliasedType::error(), AliasedType::error()),
             );
 
             let sum_type = just(Token::Ident("Either"))
@@ -1951,7 +1960,7 @@ impl ChumskyParse for AliasedType {
                     ty.clone(),
                     Token::LAngle,
                     Token::RAngle,
-                    |_| AliasedType::alias(AliasName::from_str_unchecked("error")),
+                    |_| AliasedType::error(),
                 ))
                 .map(AliasedType::option)
                 .labelled("Option");
@@ -1972,55 +1981,62 @@ impl ChumskyParse for AliasedType {
                 ty.clone()
                     .then_ignore(parse_token_with_recovery(Token::Semi))
                     .then(num.clone())
-                    .map(|(ty, size)| {
-                        let digits =
-                            crate::str::underscore_parsing::strip_digit_separators(size.as_inner());
+                    .validate(|(ty, size), e, emit| match size {
+                        None => AliasedType::error(),
+                        Some(size) => {
+                            let digits = crate::str::underscore_parsing::strip_digit_separators(
+                                size.as_inner(),
+                            );
 
-                        AliasedType::array(ty, usize::from_str(digits.as_ref()).unwrap_or_default())
+                            match usize::from_str(digits.as_ref()) {
+                                Ok(n) => AliasedType::array(ty, n),
+                                Err(_) => {
+                                    emit.emit(
+                                        Error::Grammar {
+                                            msg: format!("Invalid array size `{size}`"),
+                                        }
+                                        .with_span(e.span()),
+                                    );
+                                    AliasedType::error()
+                                }
+                            }
+                        }
                     }),
                 Token::LBracket,
                 Token::RBracket,
-                |_| {
-                    AliasedType::array(
-                        AliasedType::alias(AliasName::from_str_unchecked("error")),
-                        0,
-                    )
-                },
+                |_| AliasedType::error(),
             )
             .labelled("array");
 
             let list = just(Token::Ident("List"))
                 .ignore_then(delimited_with_recovery(
                     ty.then_ignore(parse_token_with_recovery(Token::Comma))
-                        .then(num.clone().validate(|num, e, emit| -> NonZeroPow2Usize {
-                            let digits = crate::str::underscore_parsing::strip_digit_separators(
-                                num.as_inner(),
-                            );
+                        .then(num.clone())
+                        .validate(|(ty, bound), e, emit| match bound {
+                            None => AliasedType::error(),
+                            Some(size) => {
+                                let digits = crate::str::underscore_parsing::strip_digit_separators(
+                                    size.as_inner(),
+                                );
 
-                            match NonZeroPow2Usize::from_str(digits.as_ref()) {
-                                Ok(number) => number,
-                                Err(err) => {
-                                    emit.emit(
-                                        Error::Grammar {
-                                            msg: format!("Cannot parse list bound: {err}"),
-                                        }
-                                        .with_span(e.span()),
-                                    );
-                                    // fallback to default value
-                                    NonZeroPow2Usize::TWO
+                                match NonZeroPow2Usize::from_str(digits.as_ref()) {
+                                    Ok(b) => AliasedType::list(ty, b),
+                                    Err(err) => {
+                                        emit.emit(
+                                            Error::Grammar {
+                                                msg: format!("Cannot parse list bound: {err}"),
+                                            }
+                                            .with_span(e.span()),
+                                        );
+                                        AliasedType::error()
+                                    }
                                 }
                             }
-                        })),
+                        }),
                     Token::LAngle,
                     Token::RAngle,
-                    |_| {
-                        (
-                            AliasedType::alias(AliasName::from_str_unchecked("error")),
-                            NonZeroPow2Usize::TWO,
-                        )
-                    },
+                    |_| AliasedType::error(),
                 ))
-                .map(|(ty, size)| AliasedType::list(ty, size))
                 .labelled("List");
 
             choice((sum_type, option_type, tuple, array, list, atom))
@@ -2133,7 +2149,7 @@ impl ChumskyParse for Function {
                     (Token::LParen, Token::RParen),
                     (Token::LBracket, Token::RBracket),
                 ],
-                Expression::empty,
+                Expression::error,
             )))
             .labelled("function body");
 
@@ -2608,7 +2624,7 @@ impl ChumskyParse for Expression {
                         (Token::LAngle, Token::RAngle),
                         (Token::LBracket, Token::RBracket),
                     ],
-                    |span| Expression::empty(span).inner().clone(),
+                    |span| Expression::error(span).inner().clone(),
                 );
 
                 let statements = statement
@@ -2787,12 +2803,7 @@ impl ChumskyParse for MatchPattern {
                         .then(AliasedType::parser()),
                     Token::LParen,
                     Token::RParen,
-                    |_| {
-                        (
-                            Pattern::Ignore,
-                            AliasedType::alias(AliasName::from_str_unchecked("error")),
-                        )
-                    },
+                    |_| (Pattern::Ignore, AliasedType::error()),
                 ))
                 .map(move |(id, ty)| ctor(id, ty))
         };
@@ -2920,10 +2931,14 @@ where
 /// A binary match with dummy arms, standing in for a malformed match so
 /// parsing can continue after its error was reported.
 fn placeholder_match(scrutinee: Arc<Expression>, span: Span) -> SingleExpressionInner {
+    // The arms stand in for code that could not be parsed, so their bodies are
+    // poison nodes. They carry the malformed match's own span: any span here is
+    // invented, but one pointing at the construct beats `Span::DUMMY`, which
+    // points at the start of the first file.
     let fallback_arm = MatchArm {
-        expression: Arc::new(Expression::empty(Span::DUMMY)),
         pattern: MatchPattern::False,
-        span: Span::DUMMY,
+        expression: Arc::new(Expression::error(span)),
+        span,
     };
     SingleExpressionInner::Match(Match {
         scrutinee,
@@ -2961,7 +2976,7 @@ fn assemble_match_arms(
                 msg: "match expression has no arms".to_string(),
             }
             .with_span(span),
-            placeholder_match(scrutinee, span),
+            SingleExpressionInner::Error,
         )));
     }
 
@@ -2998,7 +3013,7 @@ fn assemble_match_arms(
                 ),
             }
             .with_span(span),
-            placeholder_match(scrutinee, span),
+            SingleExpressionInner::Error,
         )));
     }
 
@@ -3009,7 +3024,7 @@ fn assemble_match_arms(
                 msg: "binary match requires exactly 2 arms".to_string(),
             }
             .with_span(span),
-            placeholder_match(scrutinee, span),
+            SingleExpressionInner::Error,
         )));
     };
 

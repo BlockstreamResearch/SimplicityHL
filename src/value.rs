@@ -714,7 +714,8 @@ impl Value {
                 | S::Variable(..)
                 | S::Call(..)
                 | S::Match(..)
-                | S::EnumMatch(..) => return None, // not const
+                | S::EnumMatch(..)
+                | S::Error => return None, // not const
                 S::Expression(..) => continue, // skip
                 S::Tuple(..) => {
                     let elements = output.split_off(output.len() - size);

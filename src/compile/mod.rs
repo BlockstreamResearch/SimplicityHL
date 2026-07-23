@@ -251,6 +251,9 @@ fn compile_blk<'brand>(
             let drop_iden = ProgNode::drop_(&ProgNode::iden(scope.ctx()));
             pair.comp(&drop_iden).with_span(expression)
         }
+        Statement::Error => unreachable!(
+            "poisoned statement reached codegen; compilation must be gated on zero errors"
+        ),
     }
 }
 
@@ -380,6 +383,9 @@ impl SingleExpression {
             }
             SingleExpressionInner::Match(match_) => match_.compile(scope)?,
             SingleExpressionInner::EnumMatch(enum_match) => enum_match.compile(scope)?,
+            SingleExpressionInner::Error => unreachable!(
+                "poisoned expression reached codegen; compilation must be gated on zero errors"
+            ),
         };
 
         scope
