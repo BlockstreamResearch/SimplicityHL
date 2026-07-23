@@ -3403,6 +3403,30 @@ mod test {
     }
 
     #[test]
+    fn inverted_empty_span_from_token_gap_does_not_panic() {
+        // Fuzz-found (compile_text).
+        //
+        // The input is irreducible. The broken `fn` prefix forces the parser into delimiter recovery.
+        // The only path that requests an empty span at a lex-error gap and the
+        // NUL after `enum` creates that gap.
+        // Chumsky builds such spans as `next_token.start .. previous_token.end`, which is inverted
+        // across the gap and panicked the strict `Span` constructor.
+        //
+        // Simplifying any part (even NUL to a space) loses the crash.
+        let src = "fn`u({?\u{12}$0;;enum\0===lHf\u{15}";
+        let mut diagnostics = DiagnosticManager::new();
+        let program = Program::parse_from_str_with_errors(
+            MAIN_MODULE,
+            src,
+            &UnstableFeatures::all(),
+            &mut diagnostics,
+        );
+
+        assert!(program.is_none(), "garbage input must be rejected");
+        assert!(diagnostics.has_errors());
+    }
+
+    #[test]
     fn recovery_synchronizes_at_enum_declaration() {
         // Discriminating setup: an invalid prefix followed by a malformed
         // enum. Without `Token::Enum` in the synchronization set the whole
