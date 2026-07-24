@@ -30,7 +30,7 @@ use crate::str::{
     SymbolName, WitnessName,
 };
 use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
-use crate::unstable::{impl_require_feature, RequireFeature, UnstableFeature, UnstableFeatures};
+use crate::unstable::{impl_require_feature, UnstableFeature, UnstableFeatures};
 use crate::version::SimcDirective;
 
 #[cfg(feature = "fmt")]
@@ -92,8 +92,13 @@ impl Program {
     }
 
     /// Parse source for formatting while retaining all comments and whitespace.
+    ///
+    /// Applies the same policy as [`ParseFromContent::parse_from_content`], but
+    /// lexes losslessly and keeps the token stream, which the formatter needs in
+    /// order to reproduce trivia. The grammar still only ever sees the semantic
+    /// tokens, so the two paths accept exactly the same language.
     #[cfg(feature = "fmt")]
-    pub fn parse_with_errors_for_fmt<'src>(
+    pub fn parse_from_content_for_fmt<'src>(
         file_id: usize,
         source: &'src str,
         unstable_features: &UnstableFeatures,
@@ -101,34 +106,73 @@ impl Program {
     ) -> Option<ParsedSource<'src>> {
         let before = diagnostics.error_count();
 
-        let start = pipeline::directive_prescan(source, file_id, diagnostics)?;
+        // A `simc` directive is source-file syntax. An incompatible or malformed
+        // one is the only meaningful diagnostic; lexing starts after a valid one,
+        // so the lexer/grammar never see it.
+        let start = match SimcDirective::prescan(source, file_id) {
+            Ok(start) => start,
+            Err((err, span)) => {
+                diagnostics.push(Diagnostic::new(err, span));
+                return None;
+            }
+        };
 
-        let (tokens, lex_errors) = crate::lexer::lex_lossless(file_id, source, start);
-        let lex_ok = pipeline::is_lex_ok(lex_errors, diagnostics)?;
+        let (tokens, mut diags) = crate::lexer::lex_lossless(file_id, source, start);
 
-        let tokens = tokens?;
+        // A stray `simc` past the prescan point makes every other diagnostic
+        // noise (its `"<range>";` remnant does not lex), so report it alone.
+        if diags
+            .iter()
+            .any(|diag| matches!(diag.error(), Error::ReservedSimcKeyword))
+        {
+            diags.retain(|diag| matches!(diag.error(), Error::ReservedSimcKeyword));
+            diagnostics.extend(diags);
+            return None;
+        }
 
-        let semantic_tokens = tokens
+        let Some(tokens) = tokens else {
+            // Lexer produced no stream; surface whatever it reported (or a
+            // fallback so the caller never sees an empty error set and no
+            // program).
+            if diags.is_empty() {
+                diags.push(Diagnostic::global(Error::CannotParse {
+                    msg: "Empty token stream without an error".to_string(),
+                }));
+            }
+            diagnostics.extend(diags);
+            return None;
+        };
+
+        // The grammar is defined over semantic tokens; the trivia stays behind
+        // in `tokens` for the formatter.
+        let semantic_tokens: Tokens<'_> = tokens
             .iter()
             .filter_map(|(token, span)| match token {
                 FmtToken::Token(token) => Some((token.clone(), *span)),
                 FmtToken::Trivia(_) => None,
             })
-            .collect::<Vec<_>>();
+            .collect();
 
-        let (program, parse_ok) =
-            pipeline::parse_ast(file_id, source, semantic_tokens, diagnostics);
+        let eoi = Span::eof(file_id, source.len());
+        let (program, parse_errs) = Self::parser()
+            .parse(semantic_tokens.as_slice().map(eoi, |(t, s)| (t, s)))
+            .into_output_errors();
+        diags.extend(parse_errs);
 
-        if parse_ok && lex_ok {
-            pipeline::post_check(unstable_features, program.as_ref(), diagnostics);
+        let parse_clean = diags.is_empty();
+        diagnostics.extend(diags);
+
+        // Feature gating reads the tree, so it only runs on a tree the parser
+        // built without recovering: a poisoned node has no feature to check.
+        if let (Some(program), true) = (&program, parse_clean) {
+            unstable_features.check_program(program, diagnostics);
         }
 
         if diagnostics.error_count() > before {
             None
         } else {
-            let program = program?;
             Some(ParsedSource {
-                program,
+                program: program?,
                 tokens,
                 prefix: Span::new(file_id, 0..start),
             })
@@ -1680,18 +1724,38 @@ trait AstNode: ChumskyParse + crate::unstable::RequireFeature + std::fmt::Debug 
 impl<T> AstNode for T where T: ChumskyParse + crate::unstable::RequireFeature + std::fmt::Debug {}
 
 /// Copy of [`FromStr`] that internally uses the `chumsky` parser.
+///
+/// # When to use this vs. [`ParseFromContent`]
+///
+/// Use `parse_from_str` for a **bare fragment** — a witness value, a type
+/// annotation, a single expression parsed out of a string. A fragment is not a
+/// source file: it has no `simc` directive (one appearing here is a
+/// reserved-keyword *error*), no `file_id`, and no feature gating. Callers only
+/// need to know *whether* it parsed, so a single [`Diagnostic`] — the first
+/// error — is the right, simplest surface.
+///
+/// For a whole source file, use [`ParseFromContent::parse_from_content`], which
+/// collects *every* error instead of stopping at the first.
 pub trait ParseFromStr: Sized {
-    /// Parse a value from the string `s`.
+    /// Parse fragment from the string `s`, returning the first error if any.
     fn parse_from_str(s: &str) -> Result<Self, Diagnostic>;
 }
 
-/// Trait for parsing with collection of errors.
-pub trait ParseFromStrWithErrors: Sized {
-    /// Parse a value from the string `content` with Errors.
-    ///
-    /// Feature-gated syntax in the parsed AST is checked against
-    /// `unstable_features`; uses of disabled features are pushed to `diagnostics`.
-    fn parse_from_str_with_errors(
+/// Parse a whole source file, collecting every diagnostic.
+///
+/// # When to use this vs. [`ParseFromStr`]
+///
+/// Use `parse_from_content` for a **source file** (the driver, `lib.rs`). Unlike
+/// [`ParseFromStr::parse_from_str`], it:
+/// * handles a leading `simc` directive via prescan,
+/// * carries a `file_id` so diagnostics point at the right file,
+/// * checks feature-gated syntax against `unstable_features`, and
+/// * pushes *all* lex/parse/feature errors into `diagnostics` rather than
+///   returning only the first — so the user sees every problem in one compile.
+pub trait ParseFromContent: Sized {
+    /// Parse the full `content` of a file, pushing every diagnostic into
+    /// `diagnostics`. Returns `Some` only when no error was produced.
+    fn parse_from_content(
         file_id: usize,
         content: &str,
         unstable_features: &UnstableFeatures,
@@ -1699,71 +1763,37 @@ pub trait ParseFromStrWithErrors: Sized {
     ) -> Option<Self>;
 }
 
-mod pipeline {
-    use super::*;
-    /// Handle the `simc` directive before lexing: an incompatible or malformed
-    /// directive is reported as the only diagnostic (the rest is noise), and
-    /// lexing starts right after a valid one, so the lexer and grammar never
-    /// see it.
-    pub fn directive_prescan(
-        content: &str,
-        file_id: usize,
-        diagnostics: &mut DiagnosticManager,
-    ) -> Option<usize> {
-        match SimcDirective::prescan(content, file_id) {
-            Ok(start) => Some(start),
-            Err((err, span)) => {
-                diagnostics.push(Diagnostic::new(err, span));
-                None
-            }
+/// Lex `content` starting at byte offset `start`, then run `A`'s parser over the
+/// token stream. Shared core of [`ParseFromStr`] and [`ParseFromContent`].
+///
+/// Returns the (maybe) AST together with every lex and parse diagnostic, in
+/// source order. Applies no policy: does not prescan `simc`, does not run the
+/// feature check, does not decide whether errors are fatal — the callers do.
+fn lex_and_parse<A: ChumskyParse>(
+    file_id: usize,
+    content: &str,
+    start: usize,
+) -> (Option<A>, Vec<Diagnostic>) {
+    let (tokens, mut diags) = crate::lexer::lex(file_id, content, start);
+
+    let Some(tokens) = tokens else {
+        // Lexer failed to produce a stream; surface whatever it reported (or a
+        // fallback so the caller never sees an empty error set with no AST).
+        if diags.is_empty() {
+            diags.push(Diagnostic::global(Error::CannotParse {
+                msg: "Empty token stream without an error".to_string(),
+            }));
         }
-    }
+        return (None, diags);
+    };
 
-    pub fn is_lex_ok(
-        mut lex_errs: Vec<Diagnostic>,
-        diagnostics: &mut DiagnosticManager,
-    ) -> Option<bool> {
-        // A stray `simc` makes every other diagnostic noise — its `"<range>";` remnant
-        // does not lex — so the reserved-keyword errors are reported alone.
-        if lex_errs
-            .iter()
-            .any(|e| matches!(e.error(), Error::ReservedSimcKeyword))
-        {
-            lex_errs.retain(|e| matches!(e.error(), Error::ReservedSimcKeyword));
-            diagnostics.extend(lex_errs);
-            None
-        } else {
-            let lex_ok = lex_errs.is_empty();
-            diagnostics.extend(lex_errs);
-            Some(lex_ok)
-        }
-    }
+    let eoi = Span::eof(file_id, content.len());
+    let (ast, parse_errs) = A::parser()
+        .parse(tokens.as_slice().map(eoi, |(t, s)| (t, s)))
+        .into_output_errors();
+    diags.extend(parse_errs);
 
-    pub fn parse_ast<T: ChumskyParse>(
-        file_id: usize,
-        src: &str,
-        tokens: Tokens<'_>,
-        diagnostics: &mut DiagnosticManager,
-    ) -> (Option<T>, bool) {
-        let eoi = Span::eof(file_id, src.len());
-        let (ast, parse_errs) = T::parser()
-            .parse(tokens.as_slice().map(eoi, |(t, s)| (t, s)))
-            .into_output_errors();
-
-        let parse_ok = parse_errs.is_empty();
-        diagnostics.extend(parse_errs);
-        (ast, parse_ok)
-    }
-
-    pub fn post_check<T: RequireFeature>(
-        unstable_features: &UnstableFeatures,
-        program: Option<&T>,
-        diagnostics: &mut DiagnosticManager,
-    ) {
-        if let Some(ast) = program {
-            unstable_features.check_program(ast, diagnostics);
-        }
-    }
+    (ast, diags)
 }
 
 /// Trait for generating parsers of themselves.
@@ -1780,48 +1810,42 @@ type ParseError<'src> = extra::Err<Diagnostic>;
 /// This implementation only returns first encountered error.
 impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
     fn parse_from_str(s: &str) -> Result<Self, Diagnostic> {
-        let (tokens, mut lex_errs) = crate::lexer::lex(MAIN_MODULE, s, 0);
+        let (ast, diags) = lex_and_parse::<A>(MAIN_MODULE, s, 0);
 
         // The `simc` directive is source-file syntax, so fragments have no prescan
         // and `simc` lexes as a reserved keyword. Its `"<range>";` remnant does not
         // lex either, so the first reserved-keyword error is reported alone.
-        if let Some(err) = lex_errs
-            .iter()
-            .find(|diag| matches!(diag.error(), Error::ReservedSimcKeyword))
-        {
-            return Err(err.clone());
+        let mut simc_err = None;
+        let mut first_err = None;
+
+        for diag in &diags {
+            if simc_err.is_none() && matches!(diag.error(), Error::ReservedSimcKeyword) {
+                simc_err = Some(diag);
+            }
+
+            if first_err.is_none() && matches!(diag.severity(), crate::error::Severity::Error) {
+                first_err = Some(diag);
+            }
+
+            if simc_err.is_some() && first_err.is_some() {
+                break;
+            }
         }
 
-        let Some(tokens) = tokens else {
-            return Err(lex_errs
-                .pop()
-                .unwrap_or(Diagnostic::global(Error::CannotParse {
-                    msg: "Empty token stream without an error".to_string(),
-                })));
-        };
+        if let Some(diag) = simc_err.or(first_err) {
+            return Err(diag.clone());
+        }
 
-        let (ast, parse_errs) = A::parser()
-            .map_with(|parsed, _| parsed)
-            .parse(
-                tokens
-                    .as_slice()
-                    .map(Span::eof(MAIN_MODULE, s.len()), |(t, s)| (t, s)),
-            )
-            .into_output_errors();
-
-        if parse_errs.is_empty() {
-            Ok(ast.ok_or(Diagnostic::global(Error::CannotParse {
+        ast.ok_or_else(|| {
+            Diagnostic::global(Error::CannotParse {
                 msg: "Empty AST without an error.".to_string(),
-            }))?)
-        } else {
-            let err = parse_errs.first().unwrap().clone();
-            Err(err)
-        }
+            })
+        })
     }
 }
 
-impl<A: AstNode> ParseFromStrWithErrors for A {
-    fn parse_from_str_with_errors(
+impl<A: AstNode> ParseFromContent for A {
+    fn parse_from_content(
         file_id: usize,
         content: &str,
         unstable_features: &UnstableFeatures,
@@ -1829,22 +1853,39 @@ impl<A: AstNode> ParseFromStrWithErrors for A {
     ) -> Option<Self> {
         let before = diagnostics.error_count();
 
-        let start = pipeline::directive_prescan(content, file_id, diagnostics)?;
+        // A `simc` directive is source-file syntax. An incompatible or malformed
+        // one is the only meaningful diagnostic; lexing starts after a valid one,
+        // so the lexer/grammar never see it.
+        let start = match SimcDirective::prescan(content, file_id) {
+            Ok(start) => start,
+            Err((err, span)) => {
+                diagnostics.push(Diagnostic::new(err, span));
+                return None;
+            }
+        };
 
-        let (tokens, lex_errs) = crate::lexer::lex(file_id, content, start);
+        let (ast, mut diags) = lex_and_parse::<A>(file_id, content, start);
 
-        let lex_ok = pipeline::is_lex_ok(lex_errs, diagnostics)?;
-
-        let tokens = tokens?;
-
-        let (ast, parse_status) = pipeline::parse_ast::<A>(file_id, content, tokens, diagnostics);
-
-        if lex_ok && parse_status {
-            let () = pipeline::post_check(unstable_features, ast.as_ref(), diagnostics);
+        // A stray `simc` past the prescan point makes every other diagnostic
+        // noise (its `"<range>";` remnant does not lex), so report it alone.
+        if diags
+            .iter()
+            .any(|diag| matches!(diag.error(), Error::ReservedSimcKeyword))
+        {
+            diags.retain(|diag| matches!(diag.error(), Error::ReservedSimcKeyword));
+            diagnostics.extend(diags);
+            return None;
         }
 
-        // TODO: We should return parsed result if we found errors, but because analyzing in `ast` module
-        // is not handling poisoned tree right now, we don't return parsed result
+        let parse_clean = diags.is_empty();
+        diagnostics.extend(diags);
+
+        if let (Some(ast), true) = (&ast, parse_clean) {
+            unstable_features.check_program(ast, diagnostics);
+        }
+
+        // TODO: return the parsed (possibly poisoned) tree even on error, once
+        // `ast` analysis handles poisoned trees. For now, discard on any error.
         if diagnostics.error_count() > before {
             None
         } else {
@@ -3603,7 +3644,7 @@ mod regular_parsing {
         let input = "fn main() { let ab: u8 = <(u4, u4)> : :into((0b1011, 0b1101)); }";
         let mut diagnostics = DiagnosticManager::new();
 
-        let parsed_program = Program::parse_from_str_with_errors(
+        let parsed_program = Program::parse_from_content(
             MAIN_MODULE,
             input,
             &UnstableFeatures::all(),
@@ -3619,7 +3660,7 @@ mod regular_parsing {
         let input = "fn main() { let pk: Pubkey = witnes::::PK; }";
         let mut diagnostics = DiagnosticManager::new();
 
-        let parsed_program = Program::parse_from_str_with_errors(
+        let parsed_program = Program::parse_from_content(
             MAIN_MODULE,
             input,
             &UnstableFeatures::all(),
@@ -3638,8 +3679,7 @@ mod regular_parsing {
     /// Parse `input` and return whether it was rejected and the collected error text.
     fn parse_with(input: &str, features: &UnstableFeatures) -> (bool, String) {
         let mut diagnostics = DiagnosticManager::new();
-        let program =
-            Program::parse_from_str_with_errors(MAIN_MODULE, input, features, &mut diagnostics);
+        let program = Program::parse_from_content(MAIN_MODULE, input, features, &mut diagnostics);
 
         let rejected = program.is_none();
         let text = diagnostics.to_string();
@@ -3660,7 +3700,7 @@ mod regular_parsing {
         // Simplifying any part (even NUL to a space) loses the crash.
         let src = "fn`u({?\u{12}$0;;enum\0===lHf\u{15}";
         let mut diagnostics = DiagnosticManager::new();
-        let program = Program::parse_from_str_with_errors(
+        let program = Program::parse_from_content(
             MAIN_MODULE,
             src,
             &UnstableFeatures::all(),
@@ -3679,7 +3719,7 @@ mod regular_parsing {
         // error is reported; with it, the enum parses as its own item and
         // its malformation is reported as a second error.
         let mut diagnostics = DiagnosticManager::new();
-        let program = Program::parse_from_str_with_errors(
+        let program = Program::parse_from_content(
             MAIN_MODULE,
             "let invalid = 1;\nenum Action { A B }\nfn main() {}",
             &UnstableFeatures::all(),
@@ -3757,7 +3797,7 @@ fn main() {
     assert!(jet::eq_32(chosen, chosen));
 }
 "#;
-        // `parse_from_str_with_errors` returns `Some` only when no errors were
+        // `parse_from_content` returns `Some` only when no errors were
         // collected, so a non-rejection already proves there were no gate errors.
         let (rejected, error) = parse_with(input, &UnstableFeatures::none());
         assert!(
@@ -3888,7 +3928,7 @@ mod fmt_parsing {
         features: &UnstableFeatures,
         diagnostics: &mut DiagnosticManager,
     ) -> Option<ParsedSource<'src>> {
-        Program::parse_with_errors_for_fmt(MAIN_MODULE, input, features, diagnostics)
+        Program::parse_from_content_for_fmt(MAIN_MODULE, input, features, diagnostics)
     }
 
     /// Parse `input` and return whether it was rejected and the collected error text.
@@ -3928,12 +3968,8 @@ mod fmt_parsing {
 
     fn assert_formatter_matches_regular_parser(input: &str, features: &UnstableFeatures) {
         let mut regular_diagnostics = DiagnosticManager::new();
-        let regular = Program::parse_from_str_with_errors(
-            MAIN_MODULE,
-            input,
-            features,
-            &mut regular_diagnostics,
-        );
+        let regular =
+            Program::parse_from_content(MAIN_MODULE, input, features, &mut regular_diagnostics);
 
         let mut formatting_diagnostics = DiagnosticManager::new();
         let formatting = parse_with_diagnostics(input, features, &mut formatting_diagnostics);
@@ -4107,7 +4143,7 @@ fn main() {
     assert!(jet::eq_32(chosen, chosen));
 }
 "#;
-        // `parse_from_str_with_errors` returns `Some` only when no errors were
+        // `parse_from_content` returns `Some` only when no errors were
         // collected, so a non-rejection already proves there were no gate errors.
         let (rejected, error) = parse_with(input, &UnstableFeatures::none());
         assert!(

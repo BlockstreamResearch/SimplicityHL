@@ -37,7 +37,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::error::{Diagnostic, DiagnosticManager, Error, Span};
-use crate::parse::{self, ParseFromStrWithErrors};
+use crate::parse::{self, ParseFromContent};
 use crate::resolution::{DependencyMap, ResolvedUse};
 use crate::source::{CanonPath, CanonSourceFile};
 use crate::unstable::UnstableFeatures;
@@ -221,7 +221,7 @@ impl DependencyGraph {
         let mut diagnostics = DiagnosticManager::default();
         let sources = SourceMap::with_source(root_source.clone());
 
-        let Some(program) = parse::Program::parse_from_str_with_errors(
+        let Some(program) = parse::Program::parse_from_content(
             MAIN_MODULE,
             &root_source.content(),
             unstable_features,
@@ -421,12 +421,8 @@ impl DependencyGraph {
     ) -> Option<parse::Program> {
         let before = diagnostics.error_count();
 
-        let ast = parse::Program::parse_from_str_with_errors(
-            new_id,
-            content,
-            unstable_features,
-            diagnostics,
-        );
+        let ast =
+            parse::Program::parse_from_content(new_id, content, unstable_features, diagnostics);
 
         if diagnostics.error_count() > before {
             return None;

@@ -42,7 +42,7 @@ pub use simplicity::elements;
 use crate::debug::DebugSymbols;
 use crate::driver::{DependencyGraph, SourceMap, MAIN_MODULE};
 use crate::error::DiagnosticManager;
-use crate::parse::ParseFromStrWithErrors;
+use crate::parse::ParseFromContent;
 use crate::resolution::DependencyMap;
 use crate::source::CanonSourceFile;
 pub use crate::types::ResolvedType;
@@ -149,7 +149,7 @@ impl TemplateProgram {
         let mut diagnostics = DiagnosticManager::default();
         let file = s.into();
 
-        let Some(resolved_program) = parse::Program::parse_from_str_with_errors(
+        let Some(resolved_program) = parse::Program::parse_from_content(
             MAIN_MODULE,
             &file,
             unstable_features,
@@ -594,7 +594,7 @@ pub(crate) mod tests {
 
         let mut diagnostics = DiagnosticManager::new();
 
-        let parse_program = parse::Program::parse_from_str_with_errors(
+        let parse_program = parse::Program::parse_from_content(
             MAIN_MODULE,
             &file,
             &UnstableFeatures::all(),
