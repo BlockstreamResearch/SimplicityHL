@@ -1,13 +1,27 @@
-# Unreleased
+# 0.7.0 - 2026-07-27
 
 ## Breaking Changes
 
 * Reserve the `simc` keyword for the compiler version directive: identifiers named `simc` no longer lex. [#263](https://github.com/BlockstreamResearch/SimplicityHL/pull/263)
+* Rework the diagnostics API: `RichError` -> `Diagnostic`, `ErrorCollector` -> `DiagnosticManager` (now owns `SourceMap`), `WithContent`/`WithSource` removed, `file_id` moved into `Span`, `TemplateProgram::source_map()` now returns `Option<&SourceMap>`, `SourceMap` accessor methods renamed, and `lexer::lex` gained `file_id` and `start` parameters. [#263](https://github.com/BlockstreamResearch/SimplicityHL/pull/263), [#363](https://github.com/BlockstreamResearch/SimplicityHL/pull/363), [#368](https://github.com/BlockstreamResearch/SimplicityHL/pull/368), [#369](https://github.com/BlockstreamResearch/SimplicityHL/pull/369), [#370](https://github.com/BlockstreamResearch/SimplicityHL/pull/370)
+* Nominative enum types with `EnumName::Variant` and match arms, gated behind `simc -Z enums` (or `UnstableFeature::Enums`). Not allowed across module dependencies. [#376](https://github.com/BlockstreamResearch/SimplicityHL/pull/376)
+* Multi-error reporting with deterministic ordering in `Arguments::is_consistent` and `WitnessValues::is_consistent`. [#378](https://github.com/BlockstreamResearch/SimplicityHL/pull/378), [#381](https://github.com/BlockstreamResearch/SimplicityHL/pull/381)
 
 ## Added
 
 * Add the optional `simc "<range>";` compiler version directive: a fail-fast SemVer compatibility check run on the raw source before lexing, covering the entry file and every reachable dependency. A missing directive produces a CLI warning; tooling can read the declared range without compiling via `version::SimcDirective::requirement_of`. See `doc/versioning.md`. [#263](https://github.com/BlockstreamResearch/SimplicityHL/pull/263)
 * Add `compiler_version` to `simc` output (JSON field and text printout) and `compiler_version()` accessors on `TemplateProgram` and `CompiledProgram`, identifying the exact compiler that produced a program. [#263](https://github.com/BlockstreamResearch/SimplicityHL/pull/263)
+* Expose `array::btree_split_index` as a public helper for splitting a sequence at its natural balanced-binary-tree boundary. [#376](https://github.com/BlockstreamResearch/SimplicityHL/pull/376)
+
+## Changed
+
+* Render errors via `ariadne`: source-annotated diagnostics with colored output when the terminal supports it. `SourceMap` owns file contents; internal `Result<_, String>` replaced by `DiagnosticManager`. [#363](https://github.com/BlockstreamResearch/SimplicityHL/pull/363), [#368](https://github.com/BlockstreamResearch/SimplicityHL/pull/368), [#369](https://github.com/BlockstreamResearch/SimplicityHL/pull/369), [#370](https://github.com/BlockstreamResearch/SimplicityHL/pull/370)
+* `simc` writes diagnostics to `stderr`, with color enabled when the target is a TTY. [#378](https://github.com/BlockstreamResearch/SimplicityHL/pull/378)
+* Resolve witness and argument values against the program's declared types, so `.wit`/`.args` files no longer need type annotations. Adds `simplicityhl::UnresolvedValues` (re-exported under the `serde` feature) and `CompiledProgram::witness_types()`. [#371](https://github.com/BlockstreamResearch/SimplicityHL/pull/371)
+
+## Fixed
+
+* Prevent malformed input from panicking during parser recovery when constructing an empty span. [#376](https://github.com/BlockstreamResearch/SimplicityHL/pull/376)
 
 # 0.6.0 - 2026-06-26
 
