@@ -459,16 +459,56 @@ pub trait TypeDeconstructible: Sized {
 pub struct ResolvedType(TypeInner<Arc<Self>>);
 
 impl ResolvedType {
+    /// Diagnostic-facing compatibility: a poisoned type unifies with anything,
+    /// recursively. Use before emitting a type-mismatch error.
+    pub fn compatible(&self, other: &Self) -> bool {
+        use TypeInner::*;
+
+        match (self.as_inner(), other.as_inner()) {
+            (Never, _) | (_, Never) => true,
+            (Either(a, b), Either(c, d)) => a.compatible(c) && b.compatible(d),
+            (Option(a), Option(b)) => a.compatible(b),
+            (Tuple(a), Tuple(b)) => {
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.compatible(y))
+            }
+            (Array(a, m), Array(b, n)) => m == n && a.compatible(b),
+            (List(a, m), List(b, n)) => m == n && a.compatible(b),
+            _ => self == other,
+        }
+    }
+
+    /// Replace this type's poisoned leaves with `other`'s types.
+    ///
+    /// Only meaningful for [`Self::compatible`] types, whose shapes line up. The
+    /// first concrete type to reach a poisoned slot fixes it, so a later
+    /// conflicting use of that slot is still a conflict rather than being
+    /// absorbed by the poison forever.
+    pub fn refine(&self, other: &Self) -> Self {
+        use TypeInner::*;
+
+        match (self.as_inner(), other.as_inner()) {
+            (Never, _) => other.clone(),
+            (Either(a, b), Either(c, d)) => Self::either(a.refine(c), b.refine(d)),
+            (Option(a), Option(b)) => Self::option(a.refine(b)),
+            (Tuple(a), Tuple(b)) if a.len() == b.len() => {
+                Self::tuple(a.iter().zip(b.iter()).map(|(x, y)| x.refine(y)))
+            }
+            (Array(a, m), Array(b, n)) if m == n => Self::array(a.refine(b), *m),
+            (List(a, m), List(b, n)) if m == n => Self::list(a.refine(b), *m),
+            _ => self.clone(),
+        }
+    }
+
     /// Access the inner type primitive.
     pub fn as_inner(&self) -> &TypeInner<Arc<Self>> {
         &self.0
     }
 
-    pub const fn never() -> Self {
+    pub(crate) const fn never() -> Self {
         Self(TypeInner::Never)
     }
 
-    pub fn is_never(&self) -> bool {
+    pub(crate) fn is_never(&self) -> bool {
         matches!(self.0, TypeInner::Never)
     }
 }
@@ -501,6 +541,16 @@ impl ResolvedType {
     pub fn contains_enum(&self) -> bool {
         self.post_order_iter()
             .any(|data| data.node.as_enum().is_some())
+    }
+
+    /// Check whether the type is poisoned, at any nesting depth.
+    ///
+    /// [`Self::is_never`] only inspects the outermost constructor, but a
+    /// poisoned leaf anywhere makes the type unrepresentable as a
+    /// [`StructuralType`], so analysis must consult this before any
+    /// structural comparison.
+    pub(crate) fn contains_never(&self) -> bool {
+        self.post_order_iter().any(|data| data.node.is_never())
     }
 }
 
@@ -743,7 +793,7 @@ impl AliasedType {
         Self(AliasedInner::Builtin(builtin))
     }
 
-    pub const fn error() -> Self {
+    pub const fn never() -> Self {
         Self(AliasedInner::Inner(TypeInner::Never))
     }
 

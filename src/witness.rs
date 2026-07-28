@@ -318,14 +318,28 @@ mod tests {
         let s = r#"fn main() {
     assert!(jet::eq_32(witness::A, witness::A));
 }"#;
+
+        let mut diagnostics = DiagnosticManager::new();
         let parse_program = parse::Program::parse_from_str(s).expect("parsing works");
-        match ast::Program::analyze(&parse_program, Box::new(ElementsJetHinter::new()))
-            .map_err(Error::from)
-        {
-            Ok(_) => panic!("Witness reuse was falsely accepted"),
-            Err(Error::WitnessReused { .. }) => {}
-            Err(error) => panic!("Unexpected error: {error}"),
-        }
+
+        let ast = ast::Program::analyze(
+            &parse_program,
+            Box::new(ElementsJetHinter::new()),
+            &mut diagnostics,
+        );
+
+        assert!(ast.is_none(), "witness reuse was falsely accepted");
+
+        let found = diagnostics
+            .diagnostics()
+            .iter()
+            .any(|diag| matches!(diag.error(), Error::WitnessReused { .. }));
+
+        assert!(
+            found,
+            "expected a WitnessReused diagnostic, got: {:?}",
+            diagnostics.to_string()
+        );
     }
 
     #[test]

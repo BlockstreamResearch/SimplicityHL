@@ -250,13 +250,7 @@ impl DependencyGraph {
         };
 
         graph.discover_dependencies(&mut diagnostics, unstable_features);
-
-        if diagnostics.has_errors() {
-            diagnostics.with_sources(graph.sources);
-            (None, diagnostics)
-        } else {
-            (Some(graph), diagnostics)
-        }
+        (Some(graph), diagnostics)
     }
 
     /// BFS over `use` declarations, populating `modules`, `dependencies`,
@@ -743,13 +737,8 @@ pub(crate) mod tests {
         // Setup: root imports from "unknown", which is not in our dependency map.
         // We use `setup_graph_raw` because we expect graph generation to fail and
         // emit an error, rather than panicking the standard test helper.
-        let (graph_option, _ids, _ws, diagnostics) =
+        let (_graph, _ids, _ws, diagnostics) =
             setup_graph_raw(vec![("main.simf", "use unknown::library::item;")]);
-
-        assert!(
-            graph_option.is_none(),
-            "Graph unexpectedly succeeded despite having an unknown import!"
-        );
 
         assert!(
             diagnostics.has_errors(),

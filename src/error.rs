@@ -81,6 +81,13 @@ impl Span {
         }
     }
 
+    /// Check whether this function lives in the main module.
+    ///
+    /// Useful for LSP.
+    pub const fn in_main_module(&self) -> bool {
+        self.file_id == MAIN_MODULE
+    }
+
     /// EOF sentinel: zero-width position at the end of `file_id`'s contents
     pub const fn eof(file_id: usize, source_len: usize) -> Self {
         // start == end is intentional

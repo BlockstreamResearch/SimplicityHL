@@ -19,8 +19,7 @@ use itertools::Itertools;
 use miniscript::iter::{Tree, TreeLike};
 
 use crate::driver::{CRATE_STR, MAIN_MODULE};
-use crate::error::DiagnosticManager;
-use crate::error::{Diagnostic, Error, Span};
+use crate::error::{Diagnostic, DiagnosticManager, Error, Severity, Span};
 use crate::impl_eq_hash;
 use crate::lexer::{Token, Tokens};
 use crate::num::NonZeroPow2Usize;
@@ -130,34 +129,19 @@ impl Program {
             return None;
         }
 
-        let Some(tokens) = tokens else {
-            // Lexer produced no stream; surface whatever it reported (or a
-            // fallback so the caller never sees an empty error set and no
-            // program).
-            if diags.is_empty() {
-                diags.push(Diagnostic::global(Error::CannotParse {
-                    msg: "Empty token stream without an error".to_string(),
-                }));
-            }
-            diagnostics.extend(diags);
-            return None;
-        };
-
         // The grammar is defined over semantic tokens; the trivia stays behind
-        // in `tokens` for the formatter.
-        let semantic_tokens: Tokens<'_> = tokens
-            .iter()
-            .filter_map(|(token, span)| match token {
-                FmtToken::Token(token) => Some((token.clone(), *span)),
-                FmtToken::Trivia(_) => None,
-            })
-            .collect();
+        // in `tokens` for the formatter to reproduce.
+        let semantic_tokens: Option<Tokens<'_>> = tokens.as_ref().map(|tokens| {
+            tokens
+                .iter()
+                .filter_map(|(token, span)| match token {
+                    FmtToken::Token(token) => Some((token.clone(), *span)),
+                    FmtToken::Trivia(_) => None,
+                })
+                .collect()
+        });
 
-        let eoi = Span::eof(file_id, source.len());
-        let (program, parse_errs) = Self::parser()
-            .parse(semantic_tokens.as_slice().map(eoi, |(t, s)| (t, s)))
-            .into_output_errors();
-        diags.extend(parse_errs);
+        let program = parse_tokens::<Self>(file_id, source, semantic_tokens.as_ref(), &mut diags);
 
         let parse_clean = diags.is_empty();
         diagnostics.extend(diags);
@@ -171,9 +155,11 @@ impl Program {
         if diagnostics.error_count() > before {
             None
         } else {
+            // Both are `Some` here: a missing stream or tree means `parse_tokens`
+            // reported, which the count check above already caught.
             Some(ParsedSource {
                 program: program?,
-                tokens,
+                tokens: tokens?,
                 prefix: Span::new(file_id, 0..start),
             })
         }
@@ -1775,7 +1761,23 @@ fn lex_and_parse<A: ChumskyParse>(
     start: usize,
 ) -> (Option<A>, Vec<Diagnostic>) {
     let (tokens, mut diags) = crate::lexer::lex(file_id, content, start);
+    let ast = parse_tokens::<A>(file_id, content, tokens.as_ref(), &mut diags);
 
+    (ast, diags)
+}
+
+/// Run `A`'s parser over `tokens`, appending every parse diagnostic to `diags`.
+///
+/// The half of parsing that does not depend on *how* the source was lexed. Both
+/// the plain and the lossless paths reduce to a semantic token stream and then
+/// run the same grammar over it, so the grammar and the empty-stream policy live
+/// here once. `None` tokens mean the lexer produced no stream at all.
+fn parse_tokens<A: ChumskyParse>(
+    file_id: usize,
+    content: &str,
+    tokens: Option<&Tokens<'_>>,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<A> {
     let Some(tokens) = tokens else {
         // Lexer failed to produce a stream; surface whatever it reported (or a
         // fallback so the caller never sees an empty error set with no AST).
@@ -1784,7 +1786,7 @@ fn lex_and_parse<A: ChumskyParse>(
                 msg: "Empty token stream without an error".to_string(),
             }));
         }
-        return (None, diags);
+        return None;
     };
 
     let eoi = Span::eof(file_id, content.len());
@@ -1793,7 +1795,7 @@ fn lex_and_parse<A: ChumskyParse>(
         .into_output_errors();
     diags.extend(parse_errs);
 
-    (ast, diags)
+    ast
 }
 
 /// Trait for generating parsers of themselves.
@@ -1823,7 +1825,7 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
                 simc_err = Some(diag);
             }
 
-            if first_err.is_none() && matches!(diag.severity(), crate::error::Severity::Error) {
+            if first_err.is_none() && matches!(diag.severity(), Severity::Error) {
                 first_err = Some(diag);
             }
 
@@ -1884,8 +1886,6 @@ impl<A: AstNode> ParseFromContent for A {
             unstable_features.check_program(ast, diagnostics);
         }
 
-        // TODO: return the parsed (possibly poisoned) tree even on error, once
-        // `ast` analysis handles poisoned trees. For now, discard on any error.
         if diagnostics.error_count() > before {
             None
         } else {
@@ -1988,7 +1988,7 @@ impl ChumskyParse for AliasedType {
                     .then(ty.clone()),
                 Token::LAngle,
                 Token::RAngle,
-                |_| (AliasedType::error(), AliasedType::error()),
+                |_| (AliasedType::never(), AliasedType::never()),
             );
 
             let sum_type = just(Token::Ident("Either"))
@@ -2001,7 +2001,7 @@ impl ChumskyParse for AliasedType {
                     ty.clone(),
                     Token::LAngle,
                     Token::RAngle,
-                    |_| AliasedType::error(),
+                    |_| AliasedType::never(),
                 ))
                 .map(AliasedType::option)
                 .labelled("Option");
@@ -2023,7 +2023,7 @@ impl ChumskyParse for AliasedType {
                     .then_ignore(parse_token_with_recovery(Token::Semi))
                     .then(num.clone())
                     .validate(|(ty, size), e, emit| match size {
-                        None => AliasedType::error(),
+                        None => AliasedType::never(),
                         Some(size) => {
                             let digits = crate::str::underscore_parsing::strip_digit_separators(
                                 size.as_inner(),
@@ -2038,14 +2038,14 @@ impl ChumskyParse for AliasedType {
                                         }
                                         .with_span(e.span()),
                                     );
-                                    AliasedType::error()
+                                    AliasedType::never()
                                 }
                             }
                         }
                     }),
                 Token::LBracket,
                 Token::RBracket,
-                |_| AliasedType::error(),
+                |_| AliasedType::never(),
             )
             .labelled("array");
 
@@ -2054,7 +2054,7 @@ impl ChumskyParse for AliasedType {
                     ty.then_ignore(parse_token_with_recovery(Token::Comma))
                         .then(num.clone())
                         .validate(|(ty, bound), e, emit| match bound {
-                            None => AliasedType::error(),
+                            None => AliasedType::never(),
                             Some(size) => {
                                 let digits = crate::str::underscore_parsing::strip_digit_separators(
                                     size.as_inner(),
@@ -2069,14 +2069,14 @@ impl ChumskyParse for AliasedType {
                                             }
                                             .with_span(e.span()),
                                         );
-                                        AliasedType::error()
+                                        AliasedType::never()
                                     }
                                 }
                             }
                         }),
                     Token::LAngle,
                     Token::RAngle,
-                    |_| AliasedType::error(),
+                    |_| AliasedType::never(),
                 ))
                 .labelled("List");
 
@@ -2844,7 +2844,7 @@ impl ChumskyParse for MatchPattern {
                         .then(AliasedType::parser()),
                     Token::LParen,
                     Token::RParen,
-                    |_| (Pattern::Ignore, AliasedType::error()),
+                    |_| (Pattern::Ignore, AliasedType::never()),
                 ))
                 .map(move |(id, ty)| ctor(id, ty))
         };
@@ -2967,26 +2967,6 @@ where
             }
             (head, expression, e.span())
         })
-}
-
-/// A binary match with dummy arms, standing in for a malformed match so
-/// parsing can continue after its error was reported.
-fn placeholder_match(scrutinee: Arc<Expression>, span: Span) -> SingleExpressionInner {
-    // The arms stand in for code that could not be parsed, so their bodies are
-    // poison nodes. They carry the malformed match's own span: any span here is
-    // invented, but one pointing at the construct beats `Span::DUMMY`, which
-    // points at the start of the first file.
-    let fallback_arm = MatchArm {
-        pattern: MatchPattern::False,
-        expression: Arc::new(Expression::error(span)),
-        span,
-    };
-    SingleExpressionInner::Match(Match {
-        scrutinee,
-        left: fallback_arm.clone(),
-        right: fallback_arm,
-        span,
-    })
 }
 
 /// Do the two patterns complement each other in canonical order
@@ -3644,14 +3624,14 @@ mod regular_parsing {
         let input = "fn main() { let ab: u8 = <(u4, u4)> : :into((0b1011, 0b1101)); }";
         let mut diagnostics = DiagnosticManager::new();
 
-        let parsed_program = Program::parse_from_content(
+        let _ = Program::parse_from_content(
             MAIN_MODULE,
             input,
             &UnstableFeatures::all(),
             &mut diagnostics,
         );
 
-        assert!(parsed_program.is_none());
+        assert!(diagnostics.has_errors());
         assert!(diagnostics.to_string().contains("Expected '::', found ':'"));
     }
 
@@ -3660,14 +3640,14 @@ mod regular_parsing {
         let input = "fn main() { let pk: Pubkey = witnes::::PK; }";
         let mut diagnostics = DiagnosticManager::new();
 
-        let parsed_program = Program::parse_from_content(
+        let _ = Program::parse_from_content(
             MAIN_MODULE,
             input,
             &UnstableFeatures::all(),
             &mut diagnostics,
         );
 
-        assert!(parsed_program.is_none());
+        assert!(diagnostics.has_errors());
         assert!(
             diagnostics
                 .to_string()
@@ -3676,15 +3656,15 @@ mod regular_parsing {
         );
     }
 
-    /// Parse `input` and return whether it was rejected and the collected error text.
+    /// Parse `input` and return whether it was has errors and the collected error text.
     fn parse_with(input: &str, features: &UnstableFeatures) -> (bool, String) {
         let mut diagnostics = DiagnosticManager::new();
-        let program = Program::parse_from_content(MAIN_MODULE, input, features, &mut diagnostics);
+        let _ = Program::parse_from_content(MAIN_MODULE, input, features, &mut diagnostics);
 
-        let rejected = program.is_none();
+        let has_errors = diagnostics.has_errors();
         let text = diagnostics.to_string();
 
-        (rejected, text)
+        (has_errors, text)
     }
 
     #[test]
@@ -3700,14 +3680,13 @@ mod regular_parsing {
         // Simplifying any part (even NUL to a space) loses the crash.
         let src = "fn`u({?\u{12}$0;;enum\0===lHf\u{15}";
         let mut diagnostics = DiagnosticManager::new();
-        let program = Program::parse_from_content(
+        let _ = Program::parse_from_content(
             MAIN_MODULE,
             src,
             &UnstableFeatures::all(),
             &mut diagnostics,
         );
 
-        assert!(program.is_none(), "garbage input must be rejected");
         assert!(diagnostics.has_errors());
     }
 
@@ -3719,13 +3698,12 @@ mod regular_parsing {
         // error is reported; with it, the enum parses as its own item and
         // its malformation is reported as a second error.
         let mut diagnostics = DiagnosticManager::new();
-        let program = Program::parse_from_content(
+        let _ = Program::parse_from_content(
             MAIN_MODULE,
             "let invalid = 1;\nenum Action { A B }\nfn main() {}",
             &UnstableFeatures::all(),
             &mut diagnostics,
         );
-        assert!(program.is_none(), "the invalid program must be rejected");
         assert_eq!(
             2,
             diagnostics.error_count(),
