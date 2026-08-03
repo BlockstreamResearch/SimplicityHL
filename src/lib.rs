@@ -982,7 +982,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn prune_removes_unused_witness_from_serialized_output() {
+    fn prune_removes_witness_in_unexecuted_match_branch_from_serialized_output() {
         use crate::value::ValueConstructible;
         // Program has three u8 witnesses: X, Y (true branch), Z (false branch).
         // With X=1 the true branch is taken, so Z is in the pruned (non-executed) branch.
@@ -1037,6 +1037,60 @@ pub(crate) mod tests {
             pruned_witness_bytes.len(),
             2,
             "pruned: expected 2 witness bytes (X + Y only), got {}",
+            pruned_witness_bytes.len()
+        );
+    }
+
+    #[test]
+    fn prune_removes_unused_byte_of_u16_witness_from_serialized_output() {
+        use crate::value::ValueConstructible;
+        // Program has a single u16 witness which is destructured into two u8s. Only the most
+        // significant byte is read so pruning should remove the least-significant byte.
+        let compiled = CompiledProgram::new(
+            std::borrow::Cow::Borrowed(
+                r#"fn main() {
+    let x: u16 = witness::X;
+    let (x1, x0) : (u8, u8) = <u16>::into(x);
+    assert!(jet::eq_8(x1, 0x12));
+}"#,
+            ),
+            Arguments::default(),
+            false,
+            Box::new(ElementsJetHinter::new()),
+        )
+        .expect("program compiles");
+
+        let mut witnesses = std::collections::HashMap::new();
+        witnesses.insert(crate::str::WitnessName::from_str_unchecked("X"), Value::u16(0x1234));
+        let witness_values = WitnessValues::from(witnesses);
+
+        // Without pruning: both bytes of X are serialized.
+        let unpruned = compiled
+            .satisfy(witness_values.shallow_clone())
+            .expect("satisfy succeeds");
+        let (_, unpruned_witness_bytes) = unpruned.redeem().to_vec_with_witness();
+        assert_eq!(
+            unpruned_witness_bytes.len(),
+            2,
+            "unpruned: expected 2 witness bytes, got {}",
+            unpruned_witness_bytes.len()
+        );
+
+        // With pruning: the least significant byte of X is removed from the DAG leaving only a
+        // most significant byte.
+        let env = dummy_env::dummy_with(
+            elements::LockTime::ZERO,
+            elements::Sequence::MAX,
+            false,
+        );
+        let pruned = compiled
+            .satisfy_with_env(witness_values, Some(&env))
+            .expect("satisfy_with_env succeeds");
+        let (_, pruned_witness_bytes) = pruned.redeem().to_vec_with_witness();
+        assert_eq!(
+            pruned_witness_bytes.len(),
+            1,
+            "pruned: expected 1 witness byte, got {}",
             pruned_witness_bytes.len()
         );
     }
