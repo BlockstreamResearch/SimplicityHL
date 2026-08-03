@@ -1006,9 +1006,18 @@ pub(crate) mod tests {
         .expect("program compiles");
 
         let mut witnesses = std::collections::HashMap::new();
-        witnesses.insert(crate::str::WitnessName::from_str_unchecked("X"), Value::u8(1));
-        witnesses.insert(crate::str::WitnessName::from_str_unchecked("Y"), Value::u8(2));
-        witnesses.insert(crate::str::WitnessName::from_str_unchecked("Z"), Value::u8(0));
+        witnesses.insert(
+            crate::str::WitnessName::from_str_unchecked("X"),
+            Value::u8(1),
+        );
+        witnesses.insert(
+            crate::str::WitnessName::from_str_unchecked("Y"),
+            Value::u8(2),
+        );
+        witnesses.insert(
+            crate::str::WitnessName::from_str_unchecked("Z"),
+            Value::u8(0),
+        );
         let witness_values = WitnessValues::from(witnesses);
 
         // Without pruning: all three witnesses (X, Y, Z) are serialized.
@@ -1024,11 +1033,7 @@ pub(crate) mod tests {
         );
 
         // With pruning: Z's node is removed from the DAG, leaving only X and Y.
-        let env = dummy_env::dummy_with(
-            elements::LockTime::ZERO,
-            elements::Sequence::MAX,
-            false,
-        );
+        let env = dummy_env::dummy_with(elements::LockTime::ZERO, elements::Sequence::MAX, false);
         let pruned = compiled
             .satisfy_with_env(witness_values, Some(&env))
             .expect("satisfy_with_env succeeds");
@@ -1061,7 +1066,10 @@ pub(crate) mod tests {
         .expect("program compiles");
 
         let mut witnesses = std::collections::HashMap::new();
-        witnesses.insert(crate::str::WitnessName::from_str_unchecked("X"), Value::u16(0x1234));
+        witnesses.insert(
+            crate::str::WitnessName::from_str_unchecked("X"),
+            Value::u16(0x1234),
+        );
         let witness_values = WitnessValues::from(witnesses);
 
         // Without pruning: both bytes of X are serialized.
@@ -1078,11 +1086,7 @@ pub(crate) mod tests {
 
         // With pruning: the least significant byte of X is removed from the DAG leaving only a
         // most significant byte.
-        let env = dummy_env::dummy_with(
-            elements::LockTime::ZERO,
-            elements::Sequence::MAX,
-            false,
-        );
+        let env = dummy_env::dummy_with(elements::LockTime::ZERO, elements::Sequence::MAX, false);
         let pruned = compiled
             .satisfy_with_env(witness_values, Some(&env))
             .expect("satisfy_with_env succeeds");
