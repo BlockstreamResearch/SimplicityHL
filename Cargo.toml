@@ -32,6 +32,7 @@ default = [ "serde" ]
 serde = ["dep:serde", "dep:serde_json"]
 docs = []
 external-jets = []
+fmt = []
 
 [dependencies]
 base64 = "0.21.2"
