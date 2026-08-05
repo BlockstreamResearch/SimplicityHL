@@ -524,316 +524,312 @@ pub fn is_keyword(s: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use chumsky::error::Rich;
-
+mod original_lexer {
     use super::*;
 
-    mod lexer {
-        use super::*;
+    fn lex<'src>(
+        input: &'src str,
+    ) -> (Option<Vec<Token<'src>>>, Vec<Rich<'src, char, SimpleSpan>>) {
+        let (tokens, errors) = lexer().parse(input).into_output_errors();
+        let tokens = tokens.map(|vec| {
+            vec.into_iter()
+                .map(|(tok, _)| tok.clone())
+                .collect::<Vec<_>>()
+        });
+        (tokens, errors)
+    }
+    #[test]
+    fn test_block_comment_simple() {
+        let input = "/* hello world */";
+        let (tokens, errors) = lex(input);
 
-        fn lex<'src>(
-            input: &'src str,
-        ) -> (Option<Vec<Token<'src>>>, Vec<Rich<'src, char, SimpleSpan>>) {
-            let (tokens, errors) = lexer().parse(input).into_output_errors();
-            let tokens = tokens.map(|vec| {
-                vec.into_iter()
-                    .map(|(tok, _)| tok.clone())
-                    .collect::<Vec<_>>()
-            });
-            (tokens, errors)
-        }
-        #[test]
-        fn test_block_comment_simple() {
-            let input = "/* hello world */";
-            let (tokens, errors) = lex(input);
-
-            assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
-            assert_eq!(
-                tokens,
-                Some(vec![]),
-                "Should produce a single block comment token"
-            );
-        }
-
-        #[test]
-        fn test_block_comment_nested() {
-            let input = "/* outer /* inner */ outer */";
-            let (tokens, errors) = lex(input);
-
-            assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
-            assert_eq!(tokens, Some(vec![]));
-        }
-
-        #[test]
-        fn test_block_comment_deeply_nested() {
-            let input = "/* 1 /* 2 /* 3 */ 2 */ 1 */";
-            let (tokens, errors) = lex(input);
-
-            assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
-            assert_eq!(tokens, Some(vec![]));
-        }
-
-        #[test]
-        fn test_block_comment_multiline() {
-            let input = "/* \n line 1 \n /* inner \n line */ \n */";
-            let (tokens, errors) = lex(input);
-
-            assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
-            assert_eq!(tokens, Some(vec![]));
-        }
-
-        #[test]
-        fn test_block_comment_unclosed() {
-            let input = "/* unclosed comment start";
-            let (tokens, errors) = lex(input);
-
-            assert_eq!(errors.len(), 1, "Expected exactly 1 error");
-
-            let err = &errors[0];
-            assert_eq!(err.span().start, 0);
-            assert_eq!(err.span().end, 2);
-            assert_eq!(err.to_string(), "Unclosed block comment");
-
-            assert_eq!(tokens, Some(vec![]));
-        }
-
-        #[test]
-        fn test_block_comment_partial_nesting_unclosed() {
-            let input = "/* outer /* inner */";
-            let (tokens, errors) = lex(input);
-
-            assert_eq!(errors.len(), 1);
-            assert_eq!(errors[0].span().start, 0);
-            assert_eq!(tokens, Some(vec![]));
-        }
-
-        #[test]
-        fn test_block_comment_double_unclosed() {
-            let input = "/* outer /* inner";
-            let (tokens, errors) = lex(input);
-
-            assert_eq!(errors.len(), 2);
-
-            assert_eq!(errors[0].span().start, 9);
-            assert_eq!(errors[0].to_string(), "Unclosed block comment");
-
-            assert_eq!(errors[1].span().start, 0);
-            assert_eq!(errors[1].to_string(), "Unclosed block comment");
-
-            assert_eq!(tokens, Some(vec![]));
-        }
-
-        #[test]
-        fn test_spaces_resolution() {
-            let input = "\r\n\n\r\r\r\r\r\n\r\n    \n\n\r\n\n\r";
-            let (tokens, errors) = lex(input);
-
-            assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
-            assert_eq!(tokens, Some(vec![]));
-        }
-
-        #[test]
-        fn test_ignoring_tokens_after_comment_with_incorrect_symbol() {
-            let input = "fn main() {} @// fn hello(){} simc";
-            let (tokens, errors) = lex(input);
-
-            assert_eq!(
-                errors.len(),
-                1,
-                "comment contents must not be retried as code"
-            );
-            assert!(errors[0].to_string().contains("found '@' expected"));
-            assert_eq!(
-                tokens,
-                Some(vec![
-                    Token::Fn,
-                    Token::Ident("main"),
-                    Token::LParen,
-                    Token::RParen,
-                    Token::LBrace,
-                    Token::RBrace,
-                ])
-            );
-
-            let (_tokens, diagnostics) = super::lex(0, input, 0);
-            assert_eq!(diagnostics.len(), 1);
-            assert!(matches!(diagnostics[0].error(), Error::CannotParse { .. }));
-        }
-
-        #[test]
-        fn test_ignoring_tokens_after_comment() {
-            let input = "fn main() {} /* fn hello(){} \n simc 0.6.0; */ \n\
-             // enum Name {} match true {} \n fn other_main() {} ";
-            let (tokens, errors) = lex(input);
-
-            assert!(errors.is_empty());
-            assert_eq!(
-                tokens,
-                Some(vec![
-                    Token::Fn,
-                    Token::Ident("main"),
-                    Token::LParen,
-                    Token::RParen,
-                    Token::LBrace,
-                    Token::RBrace,
-                    Token::Fn,
-                    Token::Ident("other_main"),
-                    Token::LParen,
-                    Token::RParen,
-                    Token::LBrace,
-                    Token::RBrace,
-                ])
-            );
-        }
-
-        #[test]
-        fn simc_is_reserved() {
-            // The prescan consumes the one legitimate leading directive before lexing,
-            // so `lex` reports any `simc` it sees and drops the sentinel token.
-            for src in ["simc", "fn simc() {}", "fn f() {}\nsimc"] {
-                let (tokens, errors) = super::lex(0, src, 0);
-                assert!(
-                    errors.iter().any(|e| e.to_string().contains("reserved")),
-                    "expected a reserved-keyword error for {src:?}, got: {errors:?}"
-                );
-                assert!(
-                    tokens
-                        .expect("recovery keeps the stream")
-                        .iter()
-                        .all(|(tok, _)| !matches!(tok, Token::Simc)),
-                    "the sentinel must not reach the token stream for {src:?}"
-                );
-            }
-
-            // Identifiers merely starting with `simc` are ordinary identifiers.
-            let (tokens, errors) = lex("simcfoo");
-            assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
-            assert_eq!(tokens, Some(vec![Token::Ident("simcfoo")]));
-        }
-
-        #[test]
-        fn test_enum_token() {
-            let (tokens, errors) = lex("enum Path { Inherit, ColdSpend }");
-            assert!(errors.is_empty());
-            assert_eq!(
-                tokens,
-                Some(vec![
-                    Token::Enum,
-                    Token::Ident("Path"),
-                    Token::LBrace,
-                    Token::Ident("Inherit"),
-                    Token::Comma,
-                    Token::Ident("ColdSpend"),
-                    Token::RBrace,
-                ])
-            );
-        }
-
-        #[test]
-        fn leading_whitespaces_before_main() {
-            let input = "                                                        fn main(){}";
-            let (tokens, errors) = lex(input);
-
-            assert!(errors.is_empty());
-            assert!(tokens.is_some());
-
-            let tokens = tokens.unwrap();
-            assert_eq!(tokens[0], Token::Fn);
-        }
-
-        #[test]
-        fn lexer_test() {
-            use chumsky::prelude::*;
-
-            // Check if the lexer parses the example file without errors.
-            let src = include_str!("../examples/last_will.simf");
-
-            let (tokens, lex_errs) = lexer().parse(src).into_output_errors();
-            let _ = tokens.unwrap();
-
-            assert!(lex_errs.is_empty());
-        }
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_eq!(
+            tokens,
+            Some(vec![]),
+            "Should produce a single block comment token"
+        );
     }
 
-    #[cfg(feature = "fmt")]
-    mod fmt_lexer {
-        use super::*;
+    #[test]
+    fn test_block_comment_nested() {
+        let input = "/* outer /* inner */ outer */";
+        let (tokens, errors) = lex(input);
 
-        fn lex_lossless<'src>(
-            input: &'src str,
-        ) -> (
-            Option<Vec<FmtToken<'src>>>,
-            Vec<Rich<'src, char, SimpleSpan>>,
-        ) {
-            let (tokens, errors) = lexer_lossless().parse(input).into_output_errors();
-            let tokens = tokens.map(|vec| {
-                vec.into_iter()
-                    .map(|(fmt_tok, _)| fmt_tok)
-                    .collect::<Vec<_>>()
-            });
-            (tokens, errors)
-        }
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_eq!(tokens, Some(vec![]));
+    }
 
-        fn fmt_trivia<'src>(kind: TriviaKind, text: &'src str) -> FmtToken<'src> {
-            let trivia = match kind {
-                TriviaKind::LineComment => Trivia::line_comment(text),
-                TriviaKind::BlockComment => Trivia::block_comment(text),
-                TriviaKind::Newline => Trivia::newline(match text {
-                    "\r\n" => LineEnding::CrLf,
-                    "\n" => LineEnding::Lf,
-                    "\r" => LineEnding::Cr,
-                    _ => panic!("invalid newline spelling: {text:?}"),
-                }),
-                TriviaKind::Whitespace => Trivia::whitespace(text),
-            };
+    #[test]
+    fn test_block_comment_deeply_nested() {
+        let input = "/* 1 /* 2 /* 3 */ 2 */ 1 */";
+        let (tokens, errors) = lex(input);
 
-            FmtToken::Trivia(trivia)
-        }
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_eq!(tokens, Some(vec![]));
+    }
 
-        #[test]
-        fn test_block_comment_simple_fmt() {
-            let input = "/* hello world */";
-            let (tokens, errors) = lex_lossless(input);
+    #[test]
+    fn test_block_comment_multiline() {
+        let input = "/* \n line 1 \n /* inner \n line */ \n */";
+        let (tokens, errors) = lex(input);
 
-            assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
-            assert_eq!(
-                tokens,
-                Some(vec![fmt_trivia(TriviaKind::BlockComment, input)]),
-                "Should produce a single block comment token"
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_eq!(tokens, Some(vec![]));
+    }
+
+    #[test]
+    fn test_block_comment_unclosed() {
+        let input = "/* unclosed comment start";
+        let (tokens, errors) = lex(input);
+
+        assert_eq!(errors.len(), 1, "Expected exactly 1 error");
+
+        let err = &errors[0];
+        assert_eq!(err.span().start, 0);
+        assert_eq!(err.span().end, 2);
+        assert_eq!(err.to_string(), "Unclosed block comment");
+
+        assert_eq!(tokens, Some(vec![]));
+    }
+
+    #[test]
+    fn test_block_comment_partial_nesting_unclosed() {
+        let input = "/* outer /* inner */";
+        let (tokens, errors) = lex(input);
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].span().start, 0);
+        assert_eq!(tokens, Some(vec![]));
+    }
+
+    #[test]
+    fn test_block_comment_double_unclosed() {
+        let input = "/* outer /* inner";
+        let (tokens, errors) = lex(input);
+
+        assert_eq!(errors.len(), 2);
+
+        assert_eq!(errors[0].span().start, 9);
+        assert_eq!(errors[0].to_string(), "Unclosed block comment");
+
+        assert_eq!(errors[1].span().start, 0);
+        assert_eq!(errors[1].to_string(), "Unclosed block comment");
+
+        assert_eq!(tokens, Some(vec![]));
+    }
+
+    #[test]
+    fn test_spaces_resolution() {
+        let input = "\r\n\n\r\r\r\r\r\n\r\n    \n\n\r\n\n\r";
+        let (tokens, errors) = lex(input);
+
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_eq!(tokens, Some(vec![]));
+    }
+
+    #[test]
+    fn test_ignoring_tokens_after_comment_with_incorrect_symbol() {
+        let input = "fn main() {} @// fn hello(){} simc";
+        let (tokens, errors) = lex(input);
+
+        assert_eq!(
+            errors.len(),
+            1,
+            "comment contents must not be retried as code"
+        );
+        assert!(errors[0].to_string().contains("found '@' expected"));
+        assert_eq!(
+            tokens,
+            Some(vec![
+                Token::Fn,
+                Token::Ident("main"),
+                Token::LParen,
+                Token::RParen,
+                Token::LBrace,
+                Token::RBrace,
+            ])
+        );
+
+        let (_tokens, diagnostics) = super::lex(0, input, 0);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(matches!(diagnostics[0].error(), Error::CannotParse { .. }));
+    }
+
+    #[test]
+    fn test_ignoring_tokens_after_comment() {
+        let input = "fn main() {} /* fn hello(){} \n simc 0.6.0; */ \n\
+             // enum Name {} match true {} \n fn other_main() {} ";
+        let (tokens, errors) = lex(input);
+
+        assert!(errors.is_empty());
+        assert_eq!(
+            tokens,
+            Some(vec![
+                Token::Fn,
+                Token::Ident("main"),
+                Token::LParen,
+                Token::RParen,
+                Token::LBrace,
+                Token::RBrace,
+                Token::Fn,
+                Token::Ident("other_main"),
+                Token::LParen,
+                Token::RParen,
+                Token::LBrace,
+                Token::RBrace,
+            ])
+        );
+    }
+
+    #[test]
+    fn simc_is_reserved() {
+        // The prescan consumes the one legitimate leading directive before lexing,
+        // so `lex` reports any `simc` it sees and drops the sentinel token.
+        for src in ["simc", "fn simc() {}", "fn f() {}\nsimc"] {
+            let (tokens, errors) = super::lex(0, src, 0);
+            assert!(
+                errors.iter().any(|e| e.to_string().contains("reserved")),
+                "expected a reserved-keyword error for {src:?}, got: {errors:?}"
+            );
+            assert!(
+                tokens
+                    .expect("recovery keeps the stream")
+                    .iter()
+                    .all(|(tok, _)| !matches!(tok, Token::Simc)),
+                "the sentinel must not reach the token stream for {src:?}"
             );
         }
 
-        #[test]
-        fn lossless_trivia_display_preserves_source_text() {
-            let input = "// comment\r\n\t";
-            let (tokens, errors) = lex_lossless(input);
+        // Identifiers merely starting with `simc` are ordinary identifiers.
+        let (tokens, errors) = lex("simcfoo");
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_eq!(tokens, Some(vec![Token::Ident("simcfoo")]));
+    }
 
-            assert!(errors.is_empty(), "Expected no errors, found: {errors:?}");
-            let rendered: String = tokens
-                .expect("lossless lexing succeeds")
-                .iter()
-                .map(ToString::to_string)
-                .collect();
+    #[test]
+    fn test_enum_token() {
+        let (tokens, errors) = lex("enum Path { Inherit, ColdSpend }");
+        assert!(errors.is_empty());
+        assert_eq!(
+            tokens,
+            Some(vec![
+                Token::Enum,
+                Token::Ident("Path"),
+                Token::LBrace,
+                Token::Ident("Inherit"),
+                Token::Comma,
+                Token::Ident("ColdSpend"),
+                Token::RBrace,
+            ])
+        );
+    }
 
-            assert_eq!(rendered, input);
-        }
+    #[test]
+    fn leading_whitespaces_before_main() {
+        let input = "                                                        fn main(){}";
+        let (tokens, errors) = lex(input);
 
-        #[test]
-        fn lossless_lexer_keeps_each_newline_kind_with_its_span() {
-            let input = "first\r\nsecond\rthird\nfourth";
-            let (tokens, errors) = super::lex_lossless(0, input, 0);
+        assert!(errors.is_empty());
+        assert!(tokens.is_some());
 
-            assert!(errors.is_empty(), "Expected no errors, found: {errors:?}");
-            let tokens = tokens.expect("lossless lexing succeeds");
-            let line_endings: Vec<_> = tokens
-                .iter()
-                .filter_map(|(token, _)| match token {
-                    FmtToken::Trivia(Trivia::Newline(line_ending)) => Some(*line_ending),
-                    _ => None,
-                })
-                .collect();
-            let newlines: Vec<_> = tokens
+        let tokens = tokens.unwrap();
+        assert_eq!(tokens[0], Token::Fn);
+    }
+
+    #[test]
+    fn lexer_test() {
+        use chumsky::prelude::*;
+
+        // Check if the lexer parses the example file without errors.
+        let src = include_str!("../examples/last_will.simf");
+
+        let (tokens, lex_errs) = lexer().parse(src).into_output_errors();
+        let _ = tokens.unwrap();
+
+        assert!(lex_errs.is_empty());
+    }
+}
+
+#[cfg(feature = "fmt")]
+#[cfg(test)]
+mod fmt_lexer {
+    use super::*;
+
+    fn lex_lossless<'src>(
+        input: &'src str,
+    ) -> (
+        Option<Vec<FmtToken<'src>>>,
+        Vec<Rich<'src, char, SimpleSpan>>,
+    ) {
+        let (tokens, errors) = lexer_lossless().parse(input).into_output_errors();
+        let tokens = tokens.map(|vec| {
+            vec.into_iter()
+                .map(|(fmt_tok, _)| fmt_tok)
+                .collect::<Vec<_>>()
+        });
+        (tokens, errors)
+    }
+
+    fn fmt_trivia<'src>(kind: TriviaKind, text: &'src str) -> FmtToken<'src> {
+        let trivia = match kind {
+            TriviaKind::LineComment => Trivia::line_comment(text),
+            TriviaKind::BlockComment => Trivia::block_comment(text),
+            TriviaKind::Newline => Trivia::newline(match text {
+                "\r\n" => LineEnding::CrLf,
+                "\n" => LineEnding::Lf,
+                "\r" => LineEnding::Cr,
+                _ => panic!("invalid newline spelling: {text:?}"),
+            }),
+            TriviaKind::Whitespace => Trivia::whitespace(text),
+        };
+
+        FmtToken::Trivia(trivia)
+    }
+
+    #[test]
+    fn test_block_comment_simple_fmt() {
+        let input = "/* hello world */";
+        let (tokens, errors) = lex_lossless(input);
+
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_eq!(
+            tokens,
+            Some(vec![fmt_trivia(TriviaKind::BlockComment, input)]),
+            "Should produce a single block comment token"
+        );
+    }
+
+    #[test]
+    fn lossless_trivia_display_preserves_source_text() {
+        let input = "// comment\r\n\t";
+        let (tokens, errors) = lex_lossless(input);
+
+        assert!(errors.is_empty(), "Expected no errors, found: {errors:?}");
+        let rendered: String = tokens
+            .expect("lossless lexing succeeds")
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        assert_eq!(rendered, input);
+    }
+
+    #[test]
+    fn lossless_lexer_keeps_each_newline_kind_with_its_span() {
+        let input = "first\r\nsecond\rthird\nfourth";
+        let (tokens, errors) = super::lex_lossless(0, input, 0);
+
+        assert!(errors.is_empty(), "Expected no errors, found: {errors:?}");
+        let tokens = tokens.expect("lossless lexing succeeds");
+        let line_endings: Vec<_> = tokens
+            .iter()
+            .filter_map(|(token, _)| match token {
+                FmtToken::Trivia(Trivia::Newline(line_ending)) => Some(*line_ending),
+                _ => None,
+            })
+            .collect();
+        let newlines: Vec<_> = tokens
                 .iter()
                 .filter(|(token, _)| {
                     matches!(token, FmtToken::Trivia(trivia) if trivia.kind() == TriviaKind::Newline)
@@ -841,282 +837,281 @@ mod tests {
                 .map(|(_, span)| span.to_slice(input))
                 .collect();
 
-            assert_eq!(
-                line_endings,
-                vec![LineEnding::CrLf, LineEnding::Cr, LineEnding::Lf]
+        assert_eq!(
+            line_endings,
+            vec![LineEnding::CrLf, LineEnding::Cr, LineEnding::Lf]
+        );
+        assert_eq!(newlines, vec![Some("\r\n"), Some("\r"), Some("\n")]);
+    }
+
+    #[test]
+    fn test_block_comment_nested_fmt() {
+        let input = "/* outer /* inner */ outer */";
+        let (tokens, errors) = lex_lossless(input);
+
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_eq!(
+            tokens,
+            Some(vec![fmt_trivia(TriviaKind::BlockComment, input)])
+        );
+    }
+
+    #[test]
+    fn test_block_comment_deeply_nested_fmt() {
+        let input = "/* 1 /* 2 /* 3 */ 2 */ 1 */";
+        let (tokens, errors) = lex_lossless(input);
+
+        assert!(errors.is_empty());
+        assert_eq!(
+            tokens,
+            Some(vec![fmt_trivia(TriviaKind::BlockComment, input)])
+        );
+    }
+
+    #[test]
+    fn test_block_comment_multiline_fmt() {
+        let input = "/* \n line 1 \n /* inner \n line */ \n */";
+        let (tokens, errors) = lex_lossless(input);
+
+        assert!(errors.is_empty());
+        assert_eq!(
+            tokens,
+            Some(vec![fmt_trivia(TriviaKind::BlockComment, input)])
+        );
+    }
+
+    #[test]
+    fn test_block_comment_unclosed_fmt() {
+        let input = "/* unclosed comment start";
+        let (tokens, errors) = lex_lossless(input);
+
+        assert_eq!(errors.len(), 1, "Expected exactly 1 error");
+
+        let err = &errors[0];
+        assert_eq!(err.span().start, 0);
+        assert_eq!(err.span().end, 2);
+        assert_eq!(err.to_string(), "Unclosed block comment");
+
+        assert_eq!(
+            tokens,
+            Some(vec![fmt_trivia(TriviaKind::BlockComment, input)])
+        );
+    }
+
+    #[test]
+    fn test_block_comment_partial_nesting_unclosed_fmt() {
+        let input = "/* outer /* inner */";
+        let (tokens, errors) = lex_lossless(input);
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].span().start, 0);
+        assert_eq!(
+            tokens,
+            Some(vec![fmt_trivia(TriviaKind::BlockComment, input)])
+        );
+    }
+
+    #[test]
+    fn test_block_comment_double_unclosed_fmt() {
+        let input = "/* outer /* inner";
+        let (tokens, errors) = lex_lossless(input);
+
+        assert_eq!(errors.len(), 2);
+
+        assert_eq!(errors[0].span().start, 9);
+        assert_eq!(errors[0].to_string(), "Unclosed block comment");
+
+        assert_eq!(errors[1].span().start, 0);
+        assert_eq!(errors[1].to_string(), "Unclosed block comment");
+
+        assert_eq!(
+            tokens,
+            Some(vec![fmt_trivia(TriviaKind::BlockComment, input)])
+        );
+    }
+
+    #[test]
+    fn test_spaces_resolution_fmt() {
+        let input = "\r\n\n\r\r\r\r\r\n\r\n    \n\n\r\n\n\r";
+        let (tokens, errors) = lex_lossless(input);
+
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_eq!(
+            tokens,
+            Some(vec![
+                fmt_trivia(TriviaKind::Newline, "\r\n"),
+                fmt_trivia(TriviaKind::Newline, "\n"),
+                fmt_trivia(TriviaKind::Newline, "\r"),
+                fmt_trivia(TriviaKind::Newline, "\r"),
+                fmt_trivia(TriviaKind::Newline, "\r"),
+                fmt_trivia(TriviaKind::Newline, "\r"),
+                fmt_trivia(TriviaKind::Newline, "\r\n"),
+                fmt_trivia(TriviaKind::Newline, "\r\n"),
+                fmt_trivia(TriviaKind::Whitespace, "    "),
+                fmt_trivia(TriviaKind::Newline, "\n"),
+                fmt_trivia(TriviaKind::Newline, "\n"),
+                fmt_trivia(TriviaKind::Newline, "\r\n"),
+                fmt_trivia(TriviaKind::Newline, "\n"),
+                fmt_trivia(TriviaKind::Newline, "\r"),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_ignoring_tokens_after_comment_with_incorrect_symbol() {
+        let input = "fn main() {} @// fn hello(){} simc";
+        let (tokens, errors) = lex_lossless(input);
+
+        assert_eq!(errors.len(), 1, "only the invalid character is an error");
+        assert!(errors[0].to_string().contains("found '@' expected"));
+
+        let tokens = tokens.expect("recovery keeps the lossless stream");
+        assert!(matches!(
+            tokens.last(),
+            Some(FmtToken::Trivia(Trivia::LineComment(_)))
+        ));
+        assert!(
+            tokens
+                .iter()
+                .all(|token| !matches!(token, FmtToken::Token(Token::Simc))),
+            "comment contents must not become semantic tokens"
+        );
+    }
+
+    #[test]
+    fn test_not_ignoring_tokens_after_comment() {
+        let input = "fn main() {} /* fn hello(){} \n simc 0.6.0; */ \n\
+             // enum Name {} match true {} \n fn other_main() {} ";
+        let (tokens, errors) = lex_lossless(input);
+
+        assert!(errors.is_empty());
+        assert_eq!(
+            tokens,
+            Some(vec![
+                FmtToken::Token(Token::Fn),
+                fmt_trivia(TriviaKind::Whitespace, " "),
+                FmtToken::Token(Token::Ident("main")),
+                FmtToken::Token(Token::LParen),
+                FmtToken::Token(Token::RParen),
+                fmt_trivia(TriviaKind::Whitespace, " "),
+                FmtToken::Token(Token::LBrace),
+                FmtToken::Token(Token::RBrace),
+                fmt_trivia(TriviaKind::Whitespace, " "),
+                fmt_trivia(
+                    TriviaKind::BlockComment,
+                    "/* fn hello(){} \n simc 0.6.0; */"
+                ),
+                fmt_trivia(TriviaKind::Whitespace, " "),
+                fmt_trivia(TriviaKind::Newline, "\n"),
+                fmt_trivia(TriviaKind::LineComment, "// enum Name {} match true {} "),
+                fmt_trivia(TriviaKind::Newline, "\n"),
+                fmt_trivia(TriviaKind::Whitespace, " "),
+                FmtToken::Token(Token::Fn),
+                fmt_trivia(TriviaKind::Whitespace, " "),
+                FmtToken::Token(Token::Ident("other_main")),
+                FmtToken::Token(Token::LParen),
+                FmtToken::Token(Token::RParen),
+                fmt_trivia(TriviaKind::Whitespace, " "),
+                FmtToken::Token(Token::LBrace),
+                FmtToken::Token(Token::RBrace),
+                fmt_trivia(TriviaKind::Whitespace, " "),
+            ])
+        );
+    }
+
+    #[test]
+    fn simc_is_reserved_fmt() {
+        // The prescan consumes the one legitimate leading directive before lexing,
+        // so `lex` reports any `simc` it sees and drops the sentinel token.
+        for src in ["simc", "fn simc() {}", "fn f() {}\nsimc"] {
+            let (tokens, errors) = super::lex_lossless(0, src, 0);
+            assert!(
+                errors.iter().any(|e| e.to_string().contains("reserved")),
+                "expected a reserved-keyword error for {src:?}, got: {errors:?}"
             );
-            assert_eq!(newlines, vec![Some("\r\n"), Some("\r"), Some("\n")]);
-        }
 
-        #[test]
-        fn test_block_comment_nested_fmt() {
-            let input = "/* outer /* inner */ outer */";
-            let (tokens, errors) = lex_lossless(input);
-
-            assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
-            assert_eq!(
-                tokens,
-                Some(vec![fmt_trivia(TriviaKind::BlockComment, input)])
-            );
-        }
-
-        #[test]
-        fn test_block_comment_deeply_nested_fmt() {
-            let input = "/* 1 /* 2 /* 3 */ 2 */ 1 */";
-            let (tokens, errors) = lex_lossless(input);
-
-            assert!(errors.is_empty());
-            assert_eq!(
-                tokens,
-                Some(vec![fmt_trivia(TriviaKind::BlockComment, input)])
-            );
-        }
-
-        #[test]
-        fn test_block_comment_multiline_fmt() {
-            let input = "/* \n line 1 \n /* inner \n line */ \n */";
-            let (tokens, errors) = lex_lossless(input);
-
-            assert!(errors.is_empty());
-            assert_eq!(
-                tokens,
-                Some(vec![fmt_trivia(TriviaKind::BlockComment, input)])
-            );
-        }
-
-        #[test]
-        fn test_block_comment_unclosed_fmt() {
-            let input = "/* unclosed comment start";
-            let (tokens, errors) = lex_lossless(input);
-
-            assert_eq!(errors.len(), 1, "Expected exactly 1 error");
-
-            let err = &errors[0];
-            assert_eq!(err.span().start, 0);
-            assert_eq!(err.span().end, 2);
-            assert_eq!(err.to_string(), "Unclosed block comment");
-
-            assert_eq!(
-                tokens,
-                Some(vec![fmt_trivia(TriviaKind::BlockComment, input)])
-            );
-        }
-
-        #[test]
-        fn test_block_comment_partial_nesting_unclosed_fmt() {
-            let input = "/* outer /* inner */";
-            let (tokens, errors) = lex_lossless(input);
-
-            assert_eq!(errors.len(), 1);
-            assert_eq!(errors[0].span().start, 0);
-            assert_eq!(
-                tokens,
-                Some(vec![fmt_trivia(TriviaKind::BlockComment, input)])
-            );
-        }
-
-        #[test]
-        fn test_block_comment_double_unclosed_fmt() {
-            let input = "/* outer /* inner";
-            let (tokens, errors) = lex_lossless(input);
-
-            assert_eq!(errors.len(), 2);
-
-            assert_eq!(errors[0].span().start, 9);
-            assert_eq!(errors[0].to_string(), "Unclosed block comment");
-
-            assert_eq!(errors[1].span().start, 0);
-            assert_eq!(errors[1].to_string(), "Unclosed block comment");
-
-            assert_eq!(
-                tokens,
-                Some(vec![fmt_trivia(TriviaKind::BlockComment, input)])
-            );
-        }
-
-        #[test]
-        fn test_spaces_resolution_fmt() {
-            let input = "\r\n\n\r\r\r\r\r\n\r\n    \n\n\r\n\n\r";
-            let (tokens, errors) = lex_lossless(input);
-
-            assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
-            assert_eq!(
-                tokens,
-                Some(vec![
-                    fmt_trivia(TriviaKind::Newline, "\r\n"),
-                    fmt_trivia(TriviaKind::Newline, "\n"),
-                    fmt_trivia(TriviaKind::Newline, "\r"),
-                    fmt_trivia(TriviaKind::Newline, "\r"),
-                    fmt_trivia(TriviaKind::Newline, "\r"),
-                    fmt_trivia(TriviaKind::Newline, "\r"),
-                    fmt_trivia(TriviaKind::Newline, "\r\n"),
-                    fmt_trivia(TriviaKind::Newline, "\r\n"),
-                    fmt_trivia(TriviaKind::Whitespace, "    "),
-                    fmt_trivia(TriviaKind::Newline, "\n"),
-                    fmt_trivia(TriviaKind::Newline, "\n"),
-                    fmt_trivia(TriviaKind::Newline, "\r\n"),
-                    fmt_trivia(TriviaKind::Newline, "\n"),
-                    fmt_trivia(TriviaKind::Newline, "\r"),
-                ])
-            );
-        }
-
-        #[test]
-        fn test_ignoring_tokens_after_comment_with_incorrect_symbol() {
-            let input = "fn main() {} @// fn hello(){} simc";
-            let (tokens, errors) = lex_lossless(input);
-
-            assert_eq!(errors.len(), 1, "only the invalid character is an error");
-            assert!(errors[0].to_string().contains("found '@' expected"));
-
-            let tokens = tokens.expect("recovery keeps the lossless stream");
-            assert!(matches!(
-                tokens.last(),
-                Some(FmtToken::Trivia(Trivia::LineComment(_)))
-            ));
             assert!(
                 tokens
+                    .expect("recovery keeps the stream")
                     .iter()
-                    .all(|token| !matches!(token, FmtToken::Token(Token::Simc))),
-                "comment contents must not become semantic tokens"
+                    .all(|(tok, _)| !matches!(tok, FmtToken::Token(Token::Simc))),
+                "the sentinel must not reach the token stream for {src:?}"
             );
         }
 
-        #[test]
-        fn test_not_ignoring_tokens_after_comment() {
-            let input = "fn main() {} /* fn hello(){} \n simc 0.6.0; */ \n\
-             // enum Name {} match true {} \n fn other_main() {} ";
-            let (tokens, errors) = lex_lossless(input);
+        // Identifiers merely starting with `simc` are ordinary identifiers.
+        let (tokens, errors) = lex_lossless("simcfoo");
+        assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
+        assert_eq!(tokens, Some(vec![FmtToken::Token(Token::Ident("simcfoo"))]));
+    }
 
-            assert!(errors.is_empty());
-            assert_eq!(
-                tokens,
-                Some(vec![
-                    FmtToken::Token(Token::Fn),
-                    fmt_trivia(TriviaKind::Whitespace, " "),
-                    FmtToken::Token(Token::Ident("main")),
-                    FmtToken::Token(Token::LParen),
-                    FmtToken::Token(Token::RParen),
-                    fmt_trivia(TriviaKind::Whitespace, " "),
-                    FmtToken::Token(Token::LBrace),
-                    FmtToken::Token(Token::RBrace),
-                    fmt_trivia(TriviaKind::Whitespace, " "),
-                    fmt_trivia(
-                        TriviaKind::BlockComment,
-                        "/* fn hello(){} \n simc 0.6.0; */"
-                    ),
-                    fmt_trivia(TriviaKind::Whitespace, " "),
-                    fmt_trivia(TriviaKind::Newline, "\n"),
-                    fmt_trivia(TriviaKind::LineComment, "// enum Name {} match true {} "),
-                    fmt_trivia(TriviaKind::Newline, "\n"),
-                    fmt_trivia(TriviaKind::Whitespace, " "),
-                    FmtToken::Token(Token::Fn),
-                    fmt_trivia(TriviaKind::Whitespace, " "),
-                    FmtToken::Token(Token::Ident("other_main")),
-                    FmtToken::Token(Token::LParen),
-                    FmtToken::Token(Token::RParen),
-                    fmt_trivia(TriviaKind::Whitespace, " "),
-                    FmtToken::Token(Token::LBrace),
-                    FmtToken::Token(Token::RBrace),
-                    fmt_trivia(TriviaKind::Whitespace, " "),
-                ])
-            );
-        }
+    #[test]
+    fn numeric_literals_preserve_underscores() {
+        let input = "1_234_567_89 0xDEAD_BEEF 0b__1010_0101_ 0b1010_0101 _1_234__567___890____000_____ 0x_DEAD_BEEF__BEEF_DEAD_";
+        let (tokens, errors) = lex_lossless(input);
 
-        #[test]
-        fn simc_is_reserved_fmt() {
-            // The prescan consumes the one legitimate leading directive before lexing,
-            // so `lex` reports any `simc` it sees and drops the sentinel token.
-            for src in ["simc", "fn simc() {}", "fn f() {}\nsimc"] {
-                let (tokens, errors) = super::lex_lossless(0, src, 0);
-                assert!(
-                    errors.iter().any(|e| e.to_string().contains("reserved")),
-                    "expected a reserved-keyword error for {src:?}, got: {errors:?}"
-                );
+        assert!(errors.is_empty(), "Expected no errors, found: {errors:?}");
+        assert!(tokens.is_some(), "lexing must succeed");
+        let tokens = tokens
+            .unwrap()
+            .into_iter()
+            .filter(|x| !matches!(x, FmtToken::Trivia(Trivia::Whitespace(_))))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tokens,
+            vec![
+                FmtToken::Token(Token::DecLiteral(Decimal::from_str_unchecked(
+                    "1_234_567_89"
+                ))),
+                FmtToken::Token(Token::HexLiteral(Hexadecimal::from_str_unchecked(
+                    "DEAD_BEEF"
+                ))),
+                FmtToken::Token(Token::BinLiteral(Binary::from_str_unchecked(
+                    "__1010_0101_"
+                ))),
+                FmtToken::Token(Token::BinLiteral(Binary::from_str_unchecked("1010_0101"))),
+                FmtToken::Token(Token::DecLiteral(Decimal::from_str_unchecked(
+                    "_1_234__567___890____000_____"
+                ))),
+                FmtToken::Token(Token::HexLiteral(Hexadecimal::from_str_unchecked(
+                    "_DEAD_BEEF__BEEF_DEAD_"
+                ))),
+            ]
+        );
 
-                assert!(
-                    tokens
-                        .expect("recovery keeps the stream")
-                        .iter()
-                        .all(|(tok, _)| !matches!(tok, FmtToken::Token(Token::Simc))),
-                    "the sentinel must not reach the token stream for {src:?}"
-                );
-            }
+        assert_eq!(
+            tokens
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" "),
+            input
+        );
+    }
 
-            // Identifiers merely starting with `simc` are ordinary identifiers.
-            let (tokens, errors) = lex_lossless("simcfoo");
-            assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
-            assert_eq!(tokens, Some(vec![FmtToken::Token(Token::Ident("simcfoo"))]));
-        }
+    #[test]
+    fn leading_whitespaces_before_main() {
+        let input = "                                                        fn main(){}";
+        let (tokens, errors) = lex_lossless(input);
 
-        #[test]
-        fn numeric_literals_preserve_underscores() {
-            let input = "1_234_567_89 0xDEAD_BEEF 0b__1010_0101_ 0b1010_0101 _1_234__567___890____000_____ 0x_DEAD_BEEF__BEEF_DEAD_";
-            let (tokens, errors) = lex_lossless(input);
+        assert!(errors.is_empty());
+        assert!(tokens.is_some());
 
-            assert!(errors.is_empty(), "Expected no errors, found: {errors:?}");
-            assert!(tokens.is_some(), "lexing must succeed");
-            let tokens = tokens
-                .unwrap()
-                .into_iter()
-                .filter(|x| !matches!(x, FmtToken::Trivia(Trivia::Whitespace(_))))
-                .collect::<Vec<_>>();
-            assert_eq!(
-                tokens,
-                vec![
-                    FmtToken::Token(Token::DecLiteral(Decimal::from_str_unchecked(
-                        "1_234_567_89"
-                    ))),
-                    FmtToken::Token(Token::HexLiteral(Hexadecimal::from_str_unchecked(
-                        "DEAD_BEEF"
-                    ))),
-                    FmtToken::Token(Token::BinLiteral(Binary::from_str_unchecked(
-                        "__1010_0101_"
-                    ))),
-                    FmtToken::Token(Token::BinLiteral(Binary::from_str_unchecked("1010_0101"))),
-                    FmtToken::Token(Token::DecLiteral(Decimal::from_str_unchecked(
-                        "_1_234__567___890____000_____"
-                    ))),
-                    FmtToken::Token(Token::HexLiteral(Hexadecimal::from_str_unchecked(
-                        "_DEAD_BEEF__BEEF_DEAD_"
-                    ))),
-                ]
-            );
+        let tokens = dbg!(tokens).unwrap();
+        assert!(matches!(tokens[0], FmtToken::Trivia(Trivia::Whitespace(_))));
+        assert!(matches!(tokens[1], FmtToken::Token(Token::Fn)));
+    }
 
-            assert_eq!(
-                tokens
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                input
-            );
-        }
+    #[test]
+    fn lossless_lexer_test() {
+        use chumsky::prelude::*;
 
-        #[test]
-        fn leading_whitespaces_before_main() {
-            let input = "                                                        fn main(){}";
-            let (tokens, errors) = lex_lossless(input);
+        // Check if the lexer parses the example file without errors.
+        let src = include_str!("../examples/last_will.simf");
 
-            assert!(errors.is_empty());
-            assert!(tokens.is_some());
+        let (tokens, lex_errs) = lexer_lossless().parse(src).into_output_errors();
+        let _ = tokens.unwrap();
 
-            let tokens = dbg!(tokens).unwrap();
-            assert!(matches!(tokens[0], FmtToken::Trivia(Trivia::Whitespace(_))));
-            assert!(matches!(tokens[1], FmtToken::Token(Token::Fn)));
-        }
-
-        #[test]
-        fn lossless_lexer_test() {
-            use chumsky::prelude::*;
-
-            // Check if the lexer parses the example file without errors.
-            let src = include_str!("../examples/last_will.simf");
-
-            let (tokens, lex_errs) = lexer_lossless().parse(src).into_output_errors();
-            let _ = tokens.unwrap();
-
-            assert!(lex_errs.is_empty());
-        }
+        assert!(lex_errs.is_empty());
     }
 }
