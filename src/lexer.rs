@@ -246,7 +246,11 @@ fn whitespace<'src>(
 /// Recognizer for whitespace or a newline.
 fn whitespace_or_newline<'src>(
 ) -> impl Parser<'src, &'src str, (), extra::Err<Rich<'src, char, SimpleSpan>>> + Clone {
-    any().filter(|c: &char| c.is_whitespace()).ignored()
+    any()
+        .filter(|c: &char| c.is_whitespace())
+        .repeated()
+        .at_least(1)
+        .ignored()
 }
 
 /// Recognizer for a (possibly nested) `/* ... */` block comment; an unterminated
@@ -281,9 +285,21 @@ pub(crate) fn trivia<'src>(
     trivia_item().repeated().ignored()
 }
 
-fn to_token<'src>(
-) -> impl Parser<'src, &'src str, Token<'src>, extra::Err<Rich<'src, char, SimpleSpan>>> {
-    let digits_with_underscore = |radix: u32| {
+/// Parses the digit body of a numeric literal.
+fn digits_with_underscores<'src>(
+    radix: u32,
+) -> impl Parser<'src, &'src str, &'src str, extra::Err<Rich<'src, char, SimpleSpan>>> {
+    #[cfg(feature = "fmt")]
+    {
+        let digit = any().filter(move |c: &char| c.is_digit(radix));
+        just('_')
+            .repeated()
+            .then(digit)
+            .then(choice((digit, just('_'))).repeated())
+            .to_slice()
+    }
+    #[cfg(not(feature = "fmt"))]
+    {
         any()
             .filter(move |c: &char| c.is_digit(radix))
             .then(
@@ -292,18 +308,19 @@ fn to_token<'src>(
                     .repeated(),
             )
             .to_slice()
-    };
+    }
+}
 
-    let num = digits_with_underscore(10)
-        .map(|s: &str| Token::DecLiteral(Decimal::from_str_unchecked(s.replace('_', "").as_str())));
+fn to_token<'src>(
+) -> impl Parser<'src, &'src str, Token<'src>, extra::Err<Rich<'src, char, SimpleSpan>>> {
+    let num = digits_with_underscores(10)
+        .map(|s: &str| Token::DecLiteral(Decimal::from_str_unchecked(s)));
     let hex = just("0x")
-        .ignore_then(digits_with_underscore(16))
-        .map(|s: &str| {
-            Token::HexLiteral(Hexadecimal::from_str_unchecked(s.replace('_', "").as_str()))
-        });
+        .ignore_then(digits_with_underscores(16))
+        .map(|s: &str| Token::HexLiteral(Hexadecimal::from_str_unchecked(s)));
     let bin = just("0b")
-        .ignore_then(digits_with_underscore(2))
-        .map(|s: &str| Token::BinLiteral(Binary::from_str_unchecked(s.replace('_', "").as_str())));
+        .ignore_then(digits_with_underscores(2))
+        .map(|s: &str| Token::BinLiteral(Binary::from_str_unchecked(s)));
 
     let macros =
         choice((just("assert!"), just("panic!"), just("dbg!"), just("list!"))).map(Token::Macro);
@@ -357,7 +374,7 @@ fn to_token<'src>(
         just(">").to(Token::RAngle),
     ));
 
-    choice((jet, witness, param, macros, keyword, hex, bin, num, op))
+    choice((jet, witness, param, macros, hex, bin, num, keyword, op))
 }
 
 pub fn lexer<'src>(
@@ -650,7 +667,7 @@ mod tests {
              // enum Name {} match true {} \n fn other_main() {} ";
             let (tokens, errors) = lex(input);
 
-            assert!(dbg!(errors).is_empty());
+            assert!(errors.is_empty());
             assert_eq!(
                 tokens,
                 Some(vec![
@@ -711,6 +728,18 @@ mod tests {
                     Token::RBrace,
                 ])
             );
+        }
+
+        #[test]
+        fn leading_whitespaces_before_main() {
+            let input = "                                                        fn main(){}";
+            let (tokens, errors) = lex(input);
+
+            assert!(errors.is_empty());
+            assert!(tokens.is_some());
+
+            let tokens = tokens.unwrap();
+            assert_eq!(tokens[0], Token::Fn);
         }
 
         #[test]
@@ -959,7 +988,7 @@ mod tests {
              // enum Name {} match true {} \n fn other_main() {} ";
             let (tokens, errors) = lex_lossless(input);
 
-            assert!(dbg!(errors).is_empty());
+            assert!(errors.is_empty());
             assert_eq!(
                 tokens,
                 Some(vec![
@@ -1018,6 +1047,63 @@ mod tests {
             let (tokens, errors) = lex_lossless("simcfoo");
             assert!(errors.is_empty(), "Expected no errors, found: {:?}", errors);
             assert_eq!(tokens, Some(vec![FmtToken::Token(Token::Ident("simcfoo"))]));
+        }
+
+        #[test]
+        fn numeric_literals_preserve_underscores() {
+            let input = "1_234_567_89 0xDEAD_BEEF 0b__1010_0101_ 0b1010_0101 _1_234__567___890____000_____ 0x_DEAD_BEEF__BEEF_DEAD_";
+            let (tokens, errors) = lex_lossless(input);
+
+            assert!(errors.is_empty(), "Expected no errors, found: {errors:?}");
+            assert!(tokens.is_some(), "lexing must succeed");
+            let tokens = tokens
+                .unwrap()
+                .into_iter()
+                .filter(|x| !matches!(x, FmtToken::Trivia(Trivia::Whitespace(_))))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                tokens,
+                vec![
+                    FmtToken::Token(Token::DecLiteral(Decimal::from_str_unchecked(
+                        "1_234_567_89"
+                    ))),
+                    FmtToken::Token(Token::HexLiteral(Hexadecimal::from_str_unchecked(
+                        "DEAD_BEEF"
+                    ))),
+                    FmtToken::Token(Token::BinLiteral(Binary::from_str_unchecked(
+                        "__1010_0101_"
+                    ))),
+                    FmtToken::Token(Token::BinLiteral(Binary::from_str_unchecked("1010_0101"))),
+                    FmtToken::Token(Token::DecLiteral(Decimal::from_str_unchecked(
+                        "_1_234__567___890____000_____"
+                    ))),
+                    FmtToken::Token(Token::HexLiteral(Hexadecimal::from_str_unchecked(
+                        "_DEAD_BEEF__BEEF_DEAD_"
+                    ))),
+                ]
+            );
+
+            assert_eq!(
+                tokens
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                input
+            );
+        }
+
+        #[test]
+        fn leading_whitespaces_before_main() {
+            let input = "                                                        fn main(){}";
+            let (tokens, errors) = lex_lossless(input);
+
+            assert!(errors.is_empty());
+            assert!(tokens.is_some());
+
+            let tokens = dbg!(tokens).unwrap();
+            assert!(matches!(tokens[0], FmtToken::Trivia(Trivia::Whitespace(_))));
+            assert!(matches!(tokens[1], FmtToken::Token(Token::Fn)));
         }
 
         #[test]

@@ -122,7 +122,12 @@ impl UIntValue {
 
     /// Create an integer from a `decimal` string and type.
     pub fn parse_decimal(decimal: &Decimal, ty: UIntType) -> Result<Self, Error> {
-        let s = decimal.as_inner();
+        #[cfg(feature = "fmt")]
+        let digits = decimal.strip_digit_separators();
+        #[cfg(not(feature = "fmt"))]
+        let digits = std::borrow::Cow::from(decimal.as_inner());
+
+        let s = digits.as_ref();
         match ty {
             UIntType::U1 => s.parse::<u8>().map_err(Error::from).and_then(Self::u1),
             UIntType::U2 => s.parse::<u8>().map_err(Error::from).and_then(Self::u2),
@@ -138,7 +143,12 @@ impl UIntValue {
 
     /// Create an integer from a `binary` string and type.
     pub fn parse_binary(binary: &Binary, ty: UIntType) -> Result<Self, Error> {
-        let s = binary.as_inner();
+        #[cfg(feature = "fmt")]
+        let digits = binary.strip_digit_separators();
+        #[cfg(not(feature = "fmt"))]
+        let digits = std::borrow::Cow::from(binary.as_inner());
+
+        let s = digits.as_ref();
         let bit_len = Pow2Usize::new(s.len()).ok_or(Error::BitStringPow2 { len: s.len() })?;
         let bit_ty =
             UIntType::from_bit_width(bit_len).ok_or(Error::BitStringPow2 { len: s.len() })?;
@@ -655,7 +665,13 @@ impl Value {
             TypeInner::Array(inner, len) if inner.as_integer() == Some(UIntType::U8) => *len,
             _ => return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }),
         };
-        let s = hexadecimal.as_inner();
+
+        #[cfg(feature = "fmt")]
+        let digits = hexadecimal.strip_digit_separators();
+        #[cfg(not(feature = "fmt"))]
+        let digits = std::borrow::Cow::from(hexadecimal.as_inner());
+
+        let s = digits.as_ref();
         if s.len() % 2 != 0 || s.len() != expected_byte_len * 2 {
             return Err(Error::ExpressionUnexpectedType { ty: ty.clone() });
         }
@@ -981,13 +997,13 @@ impl TreeLike for StructuralValue {
 
 impl fmt::Debug for StructuralValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", &self.0)
+        write!(f, "{}", self.0)
     }
 }
 
 impl fmt::Display for StructuralValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", &self.0)
+        write!(f, "{}", self.0)
     }
 }
 
