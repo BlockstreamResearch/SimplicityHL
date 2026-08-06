@@ -122,10 +122,7 @@ impl UIntValue {
 
     /// Create an integer from a `decimal` string and type.
     pub fn parse_decimal(decimal: &Decimal, ty: UIntType) -> Result<Self, Error> {
-        #[cfg(feature = "fmt")]
-        let digits = decimal.strip_digit_separators();
-        #[cfg(not(feature = "fmt"))]
-        let digits = std::borrow::Cow::from(decimal.as_inner());
+        let digits = crate::str::underscore_parsing::strip_digit_separators(decimal.as_inner());
 
         let s = digits.as_ref();
         match ty {
@@ -143,10 +140,7 @@ impl UIntValue {
 
     /// Create an integer from a `binary` string and type.
     pub fn parse_binary(binary: &Binary, ty: UIntType) -> Result<Self, Error> {
-        #[cfg(feature = "fmt")]
-        let digits = binary.strip_digit_separators();
-        #[cfg(not(feature = "fmt"))]
-        let digits = std::borrow::Cow::from(binary.as_inner());
+        let digits = crate::str::underscore_parsing::strip_digit_separators(binary.as_inner());
 
         let s = digits.as_ref();
         let bit_len = Pow2Usize::new(s.len()).ok_or(Error::BitStringPow2 { len: s.len() })?;
@@ -666,10 +660,7 @@ impl Value {
             _ => return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }),
         };
 
-        #[cfg(feature = "fmt")]
-        let digits = hexadecimal.strip_digit_separators();
-        #[cfg(not(feature = "fmt"))]
-        let digits = std::borrow::Cow::from(hexadecimal.as_inner());
+        let digits = crate::str::underscore_parsing::strip_digit_separators(hexadecimal.as_inner());
 
         let s = digits.as_ref();
         if s.len() % 2 != 0 || s.len() != expected_byte_len * 2 {

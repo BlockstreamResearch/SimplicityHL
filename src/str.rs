@@ -299,36 +299,16 @@ pub struct Hexadecimal(Arc<str>);
 
 wrapped_string!(Hexadecimal, "hexadecimal string");
 
-#[cfg(feature = "fmt")]
-mod underscore_parsing {
-    use super::*;
+pub(crate) mod underscore_parsing {
     use std::borrow::Cow;
 
     /// Remove digit separators from a numeric literal while avoiding an allocation
     /// when the literal contains no separators.
-    fn strip_digit_separators(input: &str) -> Cow<'_, str> {
+    pub(crate) fn strip_digit_separators(input: &str) -> Cow<'_, str> {
         if input.contains('_') {
             Cow::Owned(input.replace('_', ""))
         } else {
             Cow::Borrowed(input)
-        }
-    }
-
-    impl Decimal {
-        pub fn strip_digit_separators(&self) -> Cow<'_, str> {
-            strip_digit_separators(self.0.as_ref())
-        }
-    }
-
-    impl Binary {
-        pub fn strip_digit_separators(&self) -> Cow<'_, str> {
-            strip_digit_separators(self.0.as_ref())
-        }
-    }
-
-    impl Hexadecimal {
-        pub fn strip_digit_separators(&self) -> Cow<'_, str> {
-            strip_digit_separators(self.0.as_ref())
         }
     }
 }

@@ -1973,10 +1973,8 @@ impl ChumskyParse for AliasedType {
                     .then_ignore(parse_token_with_recovery(Token::Semi))
                     .then(num.clone())
                     .map(|(ty, size)| {
-                        #[cfg(feature = "fmt")]
-                        let digits = size.strip_digit_separators();
-                        #[cfg(not(feature = "fmt"))]
-                        let digits = std::borrow::Cow::from(size.as_inner());
+                        let digits =
+                            crate::str::underscore_parsing::strip_digit_separators(size.as_inner());
 
                         AliasedType::array(ty, usize::from_str(digits.as_ref()).unwrap_or_default())
                     }),
@@ -1995,10 +1993,9 @@ impl ChumskyParse for AliasedType {
                 .ignore_then(delimited_with_recovery(
                     ty.then_ignore(parse_token_with_recovery(Token::Comma))
                         .then(num.clone().validate(|num, e, emit| -> NonZeroPow2Usize {
-                            #[cfg(feature = "fmt")]
-                            let digits = num.strip_digit_separators();
-                            #[cfg(not(feature = "fmt"))]
-                            let digits = std::borrow::Cow::from(num.as_inner());
+                            let digits = crate::str::underscore_parsing::strip_digit_separators(
+                                num.as_inner(),
+                            );
 
                             match NonZeroPow2Usize::from_str(digits.as_ref()) {
                                 Ok(number) => number,
@@ -2381,10 +2378,8 @@ impl ChumskyParse for CallName {
             .then(select! { Token::DecLiteral(s) => s }.labelled("list size"))
             .then_ignore(generics_close.clone())
             .validate(|(func, bound_str), e, emit| {
-                #[cfg(feature = "fmt")]
-                let digits = bound_str.strip_digit_separators();
-                #[cfg(not(feature = "fmt"))]
-                let digits = std::borrow::Cow::from(bound_str.as_inner());
+                let digits =
+                    crate::str::underscore_parsing::strip_digit_separators(bound_str.as_inner());
 
                 let bound = match digits.parse::<usize>() {
                     Ok(num) => match NonZeroPow2Usize::new(num) {
@@ -2415,10 +2410,8 @@ impl ChumskyParse for CallName {
             .then(select! { Token::DecLiteral(s) => s }.labelled("array size"))
             .then_ignore(generics_close.clone())
             .validate(|(func, size_str), e, emit| {
-                #[cfg(feature = "fmt")]
-                let digits = size_str.strip_digit_separators();
-                #[cfg(not(feature = "fmt"))]
-                let digits = std::borrow::Cow::from(size_str.as_inner());
+                let digits =
+                    crate::str::underscore_parsing::strip_digit_separators(size_str.as_inner());
 
                 let size = match digits.parse::<usize>() {
                     Ok(0) => {

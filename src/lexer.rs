@@ -289,38 +289,42 @@ pub(crate) fn trivia<'src>(
 fn digits_with_underscores<'src>(
     radix: u32,
 ) -> impl Parser<'src, &'src str, &'src str, extra::Err<Rich<'src, char, SimpleSpan>>> {
-    #[cfg(feature = "fmt")]
-    {
-        let digit = any().filter(move |c: &char| c.is_digit(radix));
-        just('_')
-            .repeated()
-            .then(digit)
-            .then(choice((digit, just('_'))).repeated())
-            .to_slice()
-    }
-    #[cfg(not(feature = "fmt"))]
-    {
-        any()
-            .filter(move |c: &char| c.is_digit(radix))
-            .then(
-                any()
-                    .filter(move |c: &char| c.is_digit(radix) || *c == '_')
-                    .repeated(),
-            )
-            .to_slice()
+    any()
+        .filter(move |c: &char| c.is_digit(radix))
+        .then(
+            any()
+                .filter(move |c: &char| c.is_digit(radix) || *c == '_')
+                .repeated(),
+        )
+        .to_slice()
+}
+
+fn digit_literal_text<const PRESERVE: bool>(input: &str) -> std::borrow::Cow<'_, str> {
+    if PRESERVE || !input.contains('_') {
+        std::borrow::Cow::Borrowed(input)
+    } else {
+        std::borrow::Cow::Owned(input.replace('_', ""))
     }
 }
 
-fn to_token<'src>(
+fn to_token<'src, const PRESERVE: bool>(
 ) -> impl Parser<'src, &'src str, Token<'src>, extra::Err<Rich<'src, char, SimpleSpan>>> {
-    let num = digits_with_underscores(10)
-        .map(|s: &str| Token::DecLiteral(Decimal::from_str_unchecked(s)));
+    let num = digits_with_underscores(10).map(|s: &str| {
+        let text = digit_literal_text::<PRESERVE>(s);
+        Token::DecLiteral(Decimal::from_str_unchecked(text.as_ref()))
+    });
     let hex = just("0x")
         .ignore_then(digits_with_underscores(16))
-        .map(|s: &str| Token::HexLiteral(Hexadecimal::from_str_unchecked(s)));
+        .map(|s: &str| {
+            let text = digit_literal_text::<PRESERVE>(s);
+            Token::HexLiteral(Hexadecimal::from_str_unchecked(text.as_ref()))
+        });
     let bin = just("0b")
         .ignore_then(digits_with_underscores(2))
-        .map(|s: &str| Token::BinLiteral(Binary::from_str_unchecked(s)));
+        .map(|s: &str| {
+            let text = digit_literal_text::<PRESERVE>(s);
+            Token::BinLiteral(Binary::from_str_unchecked(text.as_ref()))
+        });
 
     let macros =
         choice((just("assert!"), just("panic!"), just("dbg!"), just("list!"))).map(Token::Macro);
@@ -380,9 +384,14 @@ fn to_token<'src>(
 pub fn lexer<'src>(
 ) -> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, extra::Err<Rich<'src, char, SimpleSpan>>>
 {
-    let lexeme = choice((trivia_item().to(None), to_token().map(Some)))
-        .map_with(|token, e| (token, e.span()))
-        .recover_with(skip_then_retry_until(any().ignored(), end()));
+    const REMOVE_SEPARATORS: bool = false;
+
+    let lexeme = choice((
+        trivia_item().to(None),
+        to_token::<REMOVE_SEPARATORS>().map(Some),
+    ))
+    .map_with(|token, e| (token, e.span()))
+    .recover_with(skip_then_retry_until(any().ignored(), end()));
 
     lexeme.repeated().collect::<Vec<_>>().map(|lexemes| {
         lexemes
@@ -396,7 +405,9 @@ pub fn lexer<'src>(
 pub fn lexer_lossless<'src>(
 ) -> impl Parser<'src, &'src str, Vec<Spanned<FmtToken<'src>>>, extra::Err<Rich<'src, char, SimpleSpan>>>
 {
-    let token = to_token().map(FmtToken::Token);
+    const PRESERVE_SEPARATORS: bool = true;
+
+    let token = to_token::<PRESERVE_SEPARATORS>().map(FmtToken::Token);
 
     let newline = line_ending().map(Trivia::newline).map(FmtToken::Trivia);
     let whitespace = whitespace()
@@ -726,6 +737,56 @@ mod original_lexer {
     }
 
     #[test]
+    fn numeric_literals_with_underscores_and_underscore_digit_identifiers() {
+        let cases = [
+            (
+                "[u8; 1_6]",
+                vec![
+                    Token::LBracket,
+                    Token::Ident("u8"),
+                    Token::Semi,
+                    Token::DecLiteral(Decimal::from_str_unchecked("16")),
+                    Token::RBracket,
+                ],
+            ),
+            (
+                "List<u8, 1_6>",
+                vec![
+                    Token::Ident("List"),
+                    Token::LAngle,
+                    Token::Ident("u8"),
+                    Token::Comma,
+                    Token::DecLiteral(Decimal::from_str_unchecked("16")),
+                    Token::RAngle,
+                ],
+            ),
+            (
+                "1_3_3_7",
+                vec![Token::DecLiteral(Decimal::from_str_unchecked("1337"))],
+            ),
+            (
+                "0x1_",
+                vec![Token::HexLiteral(Hexadecimal::from_str_unchecked("1"))],
+            ),
+            (
+                "0b1010_0101",
+                vec![Token::BinLiteral(Binary::from_str_unchecked("10100101"))],
+            ),
+            ("_34", vec![Token::Ident("_34")]),
+            ("_34foo", vec![Token::Ident("_34foo")]),
+        ];
+
+        for (input, expected) in cases {
+            let (tokens, errors) = lex(input);
+            assert!(
+                errors.is_empty(),
+                "Expected no errors for {input:?}: {errors:?}"
+            );
+            assert_eq!(tokens, Some(expected), "Unexpected tokens for {input:?}");
+        }
+    }
+
+    #[test]
     fn leading_whitespaces_before_main() {
         let input = "                                                        fn main(){}";
         let (tokens, errors) = lex(input);
@@ -830,12 +891,12 @@ mod fmt_lexer {
             })
             .collect();
         let newlines: Vec<_> = tokens
-                .iter()
-                .filter(|(token, _)| {
-                    matches!(token, FmtToken::Trivia(trivia) if trivia.kind() == TriviaKind::Newline)
-                })
-                .map(|(_, span)| span.to_slice(input))
-                .collect();
+            .iter()
+            .filter(|(token, _)| {
+                matches!(token, FmtToken::Trivia(trivia) if trivia.kind() == TriviaKind::Newline)
+            })
+            .map(|(_, span)| span.to_slice(input))
+            .collect();
 
         assert_eq!(
             line_endings,
@@ -1047,7 +1108,7 @@ mod fmt_lexer {
 
     #[test]
     fn numeric_literals_preserve_underscores() {
-        let input = "1_234_567_89 0xDEAD_BEEF 0b__1010_0101_ 0b1010_0101 _1_234__567___890____000_____ 0x_DEAD_BEEF__BEEF_DEAD_";
+        let input = "1_234_567_89 0xDEAD_BEEF 0b1010_0101_ 0b1010_0101 1_234__567___890____000_____ 0xDEAD_BEEF__BEEF_DEAD_";
         let (tokens, errors) = lex_lossless(input);
 
         assert!(errors.is_empty(), "Expected no errors, found: {errors:?}");
@@ -1066,15 +1127,13 @@ mod fmt_lexer {
                 FmtToken::Token(Token::HexLiteral(Hexadecimal::from_str_unchecked(
                     "DEAD_BEEF"
                 ))),
-                FmtToken::Token(Token::BinLiteral(Binary::from_str_unchecked(
-                    "__1010_0101_"
-                ))),
+                FmtToken::Token(Token::BinLiteral(Binary::from_str_unchecked("1010_0101_"))),
                 FmtToken::Token(Token::BinLiteral(Binary::from_str_unchecked("1010_0101"))),
                 FmtToken::Token(Token::DecLiteral(Decimal::from_str_unchecked(
-                    "_1_234__567___890____000_____"
+                    "1_234__567___890____000_____"
                 ))),
                 FmtToken::Token(Token::HexLiteral(Hexadecimal::from_str_unchecked(
-                    "_DEAD_BEEF__BEEF_DEAD_"
+                    "DEAD_BEEF__BEEF_DEAD_"
                 ))),
             ]
         );
