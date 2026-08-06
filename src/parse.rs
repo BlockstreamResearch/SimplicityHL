@@ -22,7 +22,7 @@ use crate::driver::{CRATE_STR, MAIN_MODULE};
 use crate::error::DiagnosticManager;
 use crate::error::{Diagnostic, Error, Span};
 use crate::impl_eq_hash;
-use crate::lexer::Token;
+use crate::lexer::{Token, Tokens};
 use crate::num::NonZeroPow2Usize;
 use crate::pattern::Pattern;
 use crate::str::{
@@ -30,14 +30,51 @@ use crate::str::{
     SymbolName, WitnessName,
 };
 use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
-use crate::unstable::{impl_require_feature, UnstableFeature, UnstableFeatures};
+use crate::unstable::{impl_require_feature, RequireFeature, UnstableFeature, UnstableFeatures};
 use crate::version::SimcDirective;
+
+#[cfg(feature = "fmt")]
+use crate::lexer::{FmtToken, FmtTokens};
 
 /// A program is a sequence of items.
 #[derive(Clone, Debug)]
 pub struct Program {
     items: Arc<[Item]>,
     span: Span,
+}
+
+/// Source-aware parse result used by formatters.
+///
+/// The compiler keeps using [`Program`] directly. Formatters need the same
+/// semantic tree plus the lossless trivia stream that the grammar intentionally
+/// does not consume.
+#[cfg(feature = "fmt")]
+#[derive(Clone, Debug)]
+pub struct ParsedSource<'src> {
+    program: Program,
+    tokens: FmtTokens<'src>,
+    prefix: Span,
+}
+
+#[cfg(feature = "fmt")]
+impl<'src> ParsedSource<'src> {
+    /// Access the semantic program used for formatting.
+    pub fn program(&self) -> &Program {
+        &self.program
+    }
+
+    /// Access the lossless token stream in source order.
+    pub fn tokens(&self) -> &FmtTokens<'src> {
+        &self.tokens
+    }
+
+    /// Access the source prefix skipped by the version-directive prescan.
+    ///
+    /// A formatter should preserve this range verbatim until the directive gains
+    /// its own formatting grammar.
+    pub fn prefix(&self) -> Span {
+        self.prefix
+    }
 }
 
 impl Program {
@@ -52,6 +89,50 @@ impl Program {
     /// Access the items of the program.
     pub fn items(&self) -> &[Item] {
         &self.items
+    }
+
+    /// Parse source for formatting while retaining all comments and whitespace.
+    #[cfg(feature = "fmt")]
+    pub fn parse_with_errors_for_fmt<'src>(
+        file_id: usize,
+        source: &'src str,
+        unstable_features: &UnstableFeatures,
+        diagnostics: &mut DiagnosticManager,
+    ) -> Option<ParsedSource<'src>> {
+        let before = diagnostics.error_count();
+
+        let start = pipeline::directive_prescan(source, file_id, diagnostics)?;
+
+        let (tokens, lex_errors) = crate::lexer::lex_lossless(file_id, source, start);
+        let lex_ok = pipeline::is_lex_ok(lex_errors, diagnostics)?;
+
+        let tokens = tokens?;
+
+        let semantic_tokens = tokens
+            .iter()
+            .filter_map(|(token, span)| match token {
+                FmtToken::Token(token) => Some((token.clone(), *span)),
+                FmtToken::Trivia(_) => None,
+            })
+            .collect::<Vec<_>>();
+
+        let (program, parse_ok) =
+            pipeline::parse_ast(file_id, source, semantic_tokens, diagnostics);
+
+        if parse_ok && lex_ok {
+            pipeline::post_check(unstable_features, program.as_ref(), diagnostics);
+        }
+
+        if diagnostics.error_count() > before {
+            None
+        } else {
+            let program = program?;
+            Some(ParsedSource {
+                program,
+                tokens,
+                prefix: Span::new(file_id, 0..start),
+            })
+        }
     }
 }
 
@@ -78,6 +159,22 @@ pub enum Item {
     /// When the parser encounters a syntax error, it skips the malformed tokens
     /// until it reaches a valid top-level keyword and inserts `Ignored` into the AST.
     Ignored,
+}
+
+impl Item {
+    /// Access the source span when this item was parsed successfully.
+    ///
+    /// Error-recovery placeholders have no source node to decorate.
+    pub fn span(&self) -> Option<&Span> {
+        match self {
+            Self::TypeAlias(alias) => Some(alias.span()),
+            Self::Function(function) => Some(function.span()),
+            Self::Use(use_decl) => Some(use_decl.span()),
+            Self::EnumDeclaration(declaration) => Some(declaration.span()),
+            Self::Module(module) => Some(module.span()),
+            Self::Ignored => None,
+        }
+    }
 }
 
 impl_require_feature!(Item {
@@ -277,11 +374,12 @@ impl_eq_hash!(Function; visibility, name, params, ret, body);
 impl_require_feature!(Function { recurse: params, ret, body; });
 
 /// Parameter of a function.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct FunctionParam {
     identifier: Identifier,
     ty: AliasedType,
+    span: Span,
 }
 
 impl FunctionParam {
@@ -294,7 +392,14 @@ impl FunctionParam {
     pub fn ty(&self) -> &AliasedType {
         &self.ty
     }
+
+    /// Access the source span of the complete parameter.
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
 }
+
+impl_eq_hash!(FunctionParam; identifier, ty);
 
 impl_require_feature!(FunctionParam { recurse: ty; });
 
@@ -305,6 +410,19 @@ pub enum Statement {
     Assignment(Assignment),
     /// An expression that returns nothing (the unit value).
     Expression(Expression),
+}
+
+impl Statement {
+    /// Access the span of the statement contents.
+    ///
+    /// The terminating semicolon is deliberately not part of this span: it is a
+    /// separator owned by the containing block's layout.
+    pub fn span(&self) -> &Span {
+        match self {
+            Self::Assignment(assignment) => assignment.span(),
+            Self::Expression(expression) => expression.span(),
+        }
+    }
 }
 
 impl_require_feature!(Statement {
@@ -502,6 +620,11 @@ impl EnumVariant {
     pub fn payload(&self) -> &[AliasedType] {
         &self.payload
     }
+
+    /// Access the source span of the complete variant.
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
 }
 
 impl_eq_hash!(EnumVariant; name, payload);
@@ -532,6 +655,11 @@ impl EnumDeclaration {
 
     pub fn variants(&self) -> &[EnumVariant] {
         &self.variants
+    }
+
+    /// Access the source span of the complete declaration.
+    pub fn span(&self) -> &Span {
+        &self.span
     }
 }
 
@@ -829,6 +957,7 @@ pub struct EnumMatchArm {
     variant: Identifier,
     bindings: Arc<[(Pattern, AliasedType)]>,
     expression: Arc<Expression>,
+    span: Span,
 }
 
 impl EnumMatchArm {
@@ -859,6 +988,11 @@ impl EnumMatchArm {
     /// Access the expression that is executed in the match arm.
     pub fn expression(&self) -> &Expression {
         &self.expression
+    }
+
+    /// Access the source span of the complete arm, including its optional comma.
+    pub fn span(&self) -> &Span {
+        &self.span
     }
 }
 
@@ -942,10 +1076,11 @@ impl AsRef<Span> for EnumConstruction {
 }
 
 /// Arm of a match expression.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug)]
 pub struct MatchArm {
     pattern: MatchPattern,
     expression: Arc<Expression>,
+    span: Span,
 }
 
 impl MatchArm {
@@ -958,7 +1093,14 @@ impl MatchArm {
     pub fn expression(&self) -> &Expression {
         &self.expression
     }
+
+    /// Access the source span of the complete arm, including its optional comma.
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
 }
+
+impl_eq_hash!(MatchArm; pattern, expression);
 
 impl_require_feature!(MatchArm {recurse: pattern, expression; });
 
@@ -1520,6 +1662,10 @@ impl_parse_wrapped_string!(WitnessName, "witness name");
 impl_parse_wrapped_string!(AliasName, "alias name");
 impl_parse_wrapped_string!(ModuleName, "module name");
 
+trait AstNode: ChumskyParse + crate::unstable::RequireFeature + std::fmt::Debug {}
+
+impl<T> AstNode for T where T: ChumskyParse + crate::unstable::RequireFeature + std::fmt::Debug {}
+
 /// Copy of [`FromStr`] that internally uses the `chumsky` parser.
 pub trait ParseFromStr: Sized {
     /// Parse a value from the string `s`.
@@ -1538,6 +1684,73 @@ pub trait ParseFromStrWithErrors: Sized {
         unstable_features: &UnstableFeatures,
         diagnostics: &mut DiagnosticManager,
     ) -> Option<Self>;
+}
+
+mod pipeline {
+    use super::*;
+    /// Handle the `simc` directive before lexing: an incompatible or malformed
+    /// directive is reported as the only diagnostic (the rest is noise), and
+    /// lexing starts right after a valid one, so the lexer and grammar never
+    /// see it.
+    pub fn directive_prescan(
+        content: &str,
+        file_id: usize,
+        diagnostics: &mut DiagnosticManager,
+    ) -> Option<usize> {
+        match SimcDirective::prescan(content, file_id) {
+            Ok(start) => Some(start),
+            Err((err, span)) => {
+                diagnostics.push(Diagnostic::new(err, span));
+                None
+            }
+        }
+    }
+
+    pub fn is_lex_ok(
+        mut lex_errs: Vec<Diagnostic>,
+        diagnostics: &mut DiagnosticManager,
+    ) -> Option<bool> {
+        // A stray `simc` makes every other diagnostic noise — its `"<range>";` remnant
+        // does not lex — so the reserved-keyword errors are reported alone.
+        if lex_errs
+            .iter()
+            .any(|e| matches!(e.error(), Error::ReservedSimcKeyword))
+        {
+            lex_errs.retain(|e| matches!(e.error(), Error::ReservedSimcKeyword));
+            diagnostics.extend(lex_errs);
+            None
+        } else {
+            let lex_ok = lex_errs.is_empty();
+            diagnostics.extend(lex_errs);
+            Some(lex_ok)
+        }
+    }
+
+    pub fn parse_ast<T: ChumskyParse>(
+        file_id: usize,
+        src: &str,
+        tokens: Tokens<'_>,
+        diagnostics: &mut DiagnosticManager,
+    ) -> (Option<T>, bool) {
+        let eoi = Span::eof(file_id, src.len());
+        let (ast, parse_errs) = T::parser()
+            .parse(tokens.as_slice().map(eoi, |(t, s)| (t, s)))
+            .into_output_errors();
+
+        let parse_ok = parse_errs.is_empty();
+        diagnostics.extend(parse_errs);
+        (ast, parse_ok)
+    }
+
+    pub fn post_check<T: RequireFeature>(
+        unstable_features: &UnstableFeatures,
+        program: Option<&T>,
+        diagnostics: &mut DiagnosticManager,
+    ) {
+        if let Some(ast) = program {
+            unstable_features.check_program(ast, diagnostics);
+        }
+    }
 }
 
 /// Trait for generating parsers of themselves.
@@ -1594,9 +1807,7 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
     }
 }
 
-impl<A: ChumskyParse + crate::unstable::RequireFeature + std::fmt::Debug> ParseFromStrWithErrors
-    for A
-{
+impl<A: AstNode> ParseFromStrWithErrors for A {
     fn parse_from_str_with_errors(
         file_id: usize,
         content: &str,
@@ -1605,42 +1816,18 @@ impl<A: ChumskyParse + crate::unstable::RequireFeature + std::fmt::Debug> ParseF
     ) -> Option<Self> {
         let before = diagnostics.error_count();
 
-        // Handle the `simc` directive before lexing: an incompatible or malformed
-        // directive is reported as the only diagnostic (the rest is noise), and
-        // lexing starts right after a valid one, so the lexer and grammar never
-        // see it.
-        let start = match SimcDirective::prescan(content, file_id) {
-            Ok(start) => start,
-            Err((err, span)) => {
-                diagnostics.push(Diagnostic::new(err, span));
-                return None;
-            }
-        };
+        let start = pipeline::directive_prescan(content, file_id, diagnostics)?;
 
-        let (tokens, mut lex_errs) = crate::lexer::lex(file_id, content, start);
-        // A stray `simc` makes every other diagnostic noise — its `"<range>";` remnant
-        // does not lex — so the reserved-keyword errors are reported alone.
-        if lex_errs
-            .iter()
-            .any(|e| matches!(e.error(), Error::ReservedSimcKeyword))
-        {
-            lex_errs.retain(|e| matches!(e.error(), Error::ReservedSimcKeyword));
-            diagnostics.extend(lex_errs);
-            return None;
-        }
-        let lex_ok = lex_errs.is_empty();
-        diagnostics.extend(lex_errs);
+        let (tokens, lex_errs) = crate::lexer::lex(file_id, content, start);
+
+        let lex_ok = pipeline::is_lex_ok(lex_errs, diagnostics)?;
+
         let tokens = tokens?;
 
-        let eoi = Span::eof(file_id, content.len());
-        let (ast, parse_errs) = A::parser()
-            .parse(tokens.as_slice().map(eoi, |(t, s)| (t, s)))
-            .into_output_errors();
-        let parse_ok = parse_errs.is_empty();
-        diagnostics.extend(parse_errs);
+        let (ast, parse_status) = pipeline::parse_ast::<A>(file_id, content, tokens, diagnostics);
 
-        if let (Some(ast), true) = (&ast, lex_ok && parse_ok) {
-            unstable_features.check_program(ast, diagnostics);
+        if lex_ok && parse_status {
+            let () = pipeline::post_check(unstable_features, ast.as_ref(), diagnostics);
         }
 
         // TODO: We should return parsed result if we found errors, but because analyzing in `ast` module
@@ -1786,7 +1973,10 @@ impl ChumskyParse for AliasedType {
                     .then_ignore(parse_token_with_recovery(Token::Semi))
                     .then(num.clone())
                     .map(|(ty, size)| {
-                        AliasedType::array(ty, usize::from_str(size.as_inner()).unwrap_or_default())
+                        let digits =
+                            crate::str::underscore_parsing::strip_digit_separators(size.as_inner());
+
+                        AliasedType::array(ty, usize::from_str(digits.as_ref()).unwrap_or_default())
                     }),
                 Token::LBracket,
                 Token::RBracket,
@@ -1803,7 +1993,11 @@ impl ChumskyParse for AliasedType {
                 .ignore_then(delimited_with_recovery(
                     ty.then_ignore(parse_token_with_recovery(Token::Comma))
                         .then(num.clone().validate(|num, e, emit| -> NonZeroPow2Usize {
-                            match NonZeroPow2Usize::from_str(num.as_inner()) {
+                            let digits = crate::str::underscore_parsing::strip_digit_separators(
+                                num.as_inner(),
+                            );
+
+                            match NonZeroPow2Usize::from_str(digits.as_ref()) {
                                 Ok(number) => number,
                                 Err(err) => {
                                     emit.emit(
@@ -2034,7 +2228,11 @@ impl ChumskyParse for FunctionParam {
         identifier
             .then_ignore(just(Token::Colon))
             .then(ty)
-            .map(|(identifier, ty)| Self { identifier, ty })
+            .map_with(|(identifier, ty), e| Self {
+                identifier,
+                ty,
+                span: e.span(),
+            })
     }
 }
 
@@ -2180,7 +2378,10 @@ impl ChumskyParse for CallName {
             .then(select! { Token::DecLiteral(s) => s }.labelled("list size"))
             .then_ignore(generics_close.clone())
             .validate(|(func, bound_str), e, emit| {
-                let bound = match bound_str.as_inner().parse::<usize>() {
+                let digits =
+                    crate::str::underscore_parsing::strip_digit_separators(bound_str.as_inner());
+
+                let bound = match digits.parse::<usize>() {
                     Ok(num) => match NonZeroPow2Usize::new(num) {
                         Some(val) => val,
                         None => {
@@ -2209,7 +2410,10 @@ impl ChumskyParse for CallName {
             .then(select! { Token::DecLiteral(s) => s }.labelled("array size"))
             .then_ignore(generics_close.clone())
             .validate(|(func, size_str), e, emit| {
-                let size = match size_str.as_inner().parse::<usize>() {
+                let digits =
+                    crate::str::underscore_parsing::strip_digit_separators(size_str.as_inner());
+
+                let size = match digits.parse::<usize>() {
                     Ok(0) => {
                         emit.emit(Error::ArraySizeNonZero { size: 0 }.with_span(e.span()));
                         NonZeroUsize::new(1).unwrap()
@@ -2613,20 +2817,20 @@ struct EnumArmHead {
 }
 
 impl EnumArmHead {
-    fn into_arm(self, expression: Arc<Expression>) -> EnumMatchArm {
+    fn into_arm(self, expression: Arc<Expression>, span: Span) -> EnumMatchArm {
         EnumMatchArm {
             enum_path: self.enum_path,
             variant: self.variant,
             bindings: self.bindings,
             expression,
+            span,
         }
     }
 }
 
 /// One parsed match arm. An enum variant head or a built-in pattern,
-/// plus the arm body. The head classification decides below whether the
-/// whole match becomes an [`EnumMatch`] or a binary [`Match`].
-type ParsedMatchArm = (Either<EnumArmHead, MatchPattern>, Arc<Expression>);
+/// plus the arm body and its source boundaries.
+type ParsedMatchArm = (Either<EnumArmHead, MatchPattern>, Arc<Expression>, Span);
 
 /// Parser for the head of an enum match arm: `EnumName::Variant` with
 /// optional payload bindings `(pattern: Type, ...)`.
@@ -2709,7 +2913,7 @@ where
                     .with_span(e.span()),
                 );
             }
-            (head, expression)
+            (head, expression, e.span())
         })
 }
 
@@ -2719,6 +2923,7 @@ fn placeholder_match(scrutinee: Arc<Expression>, span: Span) -> SingleExpression
     let fallback_arm = MatchArm {
         expression: Arc::new(Expression::empty(Span::DUMMY)),
         pattern: MatchPattern::False,
+        span: Span::DUMMY,
     };
     SingleExpressionInner::Match(Match {
         scrutinee,
@@ -2765,11 +2970,12 @@ fn assemble_match_arms(
     // reports missing variants. The binary arm-count error below would be misleading there.
     let (enum_arms, builtin_arms): (Vec<EnumMatchArm>, Vec<MatchArm>) = arms
         .into_iter()
-        .partition_map(|(head, expression)| match head {
-            Either::Left(head) => Either::Left(head.into_arm(expression)),
+        .partition_map(|(head, expression, arm_span)| match head {
+            Either::Left(head) => Either::Left(head.into_arm(expression, arm_span)),
             Either::Right(pattern) => Either::Right(MatchArm {
                 pattern,
                 expression,
+                span: arm_span,
             }),
         });
 
@@ -2950,6 +3156,12 @@ impl AsRef<Span> for Function {
     }
 }
 
+impl AsRef<Span> for FunctionParam {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
 impl AsRef<Span> for Assignment {
     fn as_ref(&self) -> &Span {
         &self.span
@@ -2981,6 +3193,18 @@ impl AsRef<Span> for Call {
 }
 
 impl AsRef<Span> for Match {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl AsRef<Span> for MatchArm {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl AsRef<Span> for EnumMatchArm {
     fn as_ref(&self) -> &Span {
         &self.span
     }
@@ -3306,10 +3530,12 @@ impl crate::ArbitraryRec for Match {
             left: MatchArm {
                 pattern: pat_l,
                 expression: expr_l,
+                span: Span::DUMMY,
             },
             right: MatchArm {
                 pattern: pat_r,
                 expression: expr_r,
+                span: Span::DUMMY,
             },
             span: Span::DUMMY,
         })
@@ -3317,22 +3543,8 @@ impl crate::ArbitraryRec for Match {
 }
 
 #[cfg(test)]
-mod test {
-    use crate::parse;
-
+mod type_alias {
     use super::*;
-
-    impl UseDecl {
-        /// Creates a dummy `UseDecl` specifically for testing `DependencyMap` resolution.
-        pub fn dummy_path(path: Vec<Identifier>) -> Self {
-            Self {
-                visibility: Visibility::default(),
-                path,
-                items: UseItems::List(Vec::new()),
-                span: Span::DUMMY,
-            }
-        }
-    }
 
     #[test]
     fn test_reject_redefined_builtin_type() {
@@ -3351,6 +3563,24 @@ mod test {
             .expect_err("a version directive must not be accepted in a fragment");
 
         assert!(matches!(err.error(), Error::ReservedSimcKeyword));
+    }
+}
+
+#[cfg(test)]
+mod regular_parsing {
+    use super::*;
+    use crate::parse;
+
+    impl UseDecl {
+        /// Creates a dummy `UseDecl` specifically for testing `DependencyMap` resolution.
+        pub fn dummy_path(path: Vec<Identifier>) -> Self {
+            Self {
+                visibility: Visibility::default(),
+                path,
+                items: UseItems::List(Vec::new()),
+                span: Span::DUMMY,
+            }
+        }
     }
 
     #[test]
@@ -3560,6 +3790,25 @@ fn main() {
         }
     }
 
+    #[test]
+    fn statement_spans_exclude_terminating_semicolons() {
+        let input = "fn main() { let value: u8 = 0; value; }";
+        let program = Program::parse_from_str(input).expect("program parses");
+
+        let Item::Function(function) = &program.items()[0] else {
+            panic!("expected a function item");
+        };
+        let ExpressionInner::Block(statements, None) = function.body().inner() else {
+            panic!("expected a block containing only statements");
+        };
+
+        assert_eq!(
+            statements[0].span().to_slice(input),
+            Some("let value: u8 = 0")
+        );
+        assert_eq!(statements[1].span().to_slice(input), Some("value"));
+    }
+
     fn parse_item(input: &str) -> Item {
         let program = parse::Program::parse_from_str(input).expect("parsing should succeed");
         program.items().first().expect("expected one item").clone()
@@ -3610,5 +3859,471 @@ fn main() {
                 "error should say the name is reserved: {error}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "fmt")]
+mod fmt_parsing {
+    use super::*;
+
+    /// Parse `input`, appending any formatter diagnostics to `diagnostics`.
+    fn parse_with_diagnostics<'src>(
+        input: &'src str,
+        features: &UnstableFeatures,
+        diagnostics: &mut DiagnosticManager,
+    ) -> Option<ParsedSource<'src>> {
+        Program::parse_with_errors_for_fmt(MAIN_MODULE, input, features, diagnostics)
+    }
+
+    /// Parse `input` and return whether it was rejected and the collected error text.
+    fn parse_with(input: &str, features: &UnstableFeatures) -> (bool, String) {
+        let mut diagnostics = DiagnosticManager::new();
+        let program = parse_with_diagnostics(input, features, &mut diagnostics);
+
+        let rejected = program.is_none();
+        let text = diagnostics.to_string();
+
+        (rejected, text)
+    }
+
+    /// Parse `input` and return whether it was rejected and the collected error in `DiagnosticManager`.
+    fn parse_with_diagnosis(input: &str, features: &UnstableFeatures) -> (bool, DiagnosticManager) {
+        let mut diagnostics = DiagnosticManager::new();
+        let program = parse_with_diagnostics(input, features, &mut diagnostics);
+
+        let rejected = program.is_none();
+
+        (rejected, diagnostics)
+    }
+
+    /// Parse `input` and return whether it was rejected and the collected error text together with `ParsedSource`.
+    fn parse_with_extended_out<'src>(
+        input: &'src str,
+        features: &UnstableFeatures,
+    ) -> (bool, String, Option<ParsedSource<'src>>) {
+        let mut diagnostics = DiagnosticManager::new();
+        let program = parse_with_diagnostics(input, features, &mut diagnostics);
+
+        let rejected = program.is_none();
+        let text = diagnostics.to_string();
+
+        (rejected, text, program)
+    }
+
+    fn assert_formatter_matches_regular_parser(input: &str, features: &UnstableFeatures) {
+        let mut regular_diagnostics = DiagnosticManager::new();
+        let regular = Program::parse_from_str_with_errors(
+            MAIN_MODULE,
+            input,
+            features,
+            &mut regular_diagnostics,
+        );
+
+        let mut formatting_diagnostics = DiagnosticManager::new();
+        let formatting = parse_with_diagnostics(input, features, &mut formatting_diagnostics);
+
+        assert_eq!(
+            formatting.as_ref().map(ParsedSource::program),
+            regular.as_ref(),
+            "formatter and regular parsers must produce the same AST for {input:?}"
+        );
+        assert_eq!(
+                formatting_diagnostics.error_count(),
+                regular_diagnostics.error_count(),
+                "formatter and regular parsers must report the same number of errors for {input:?}, \n\
+                 fmt errors: \n\t '{formatting_diagnostics}, \n regular errors: \n\t '{regular_diagnostics}"
+            );
+    }
+
+    fn assert_lossless_source(input: &str, parsed: &ParsedSource<'_>) {
+        let prefix = parsed.prefix();
+        assert_eq!(prefix.file_id, MAIN_MODULE);
+
+        let mut reconstructed = prefix
+            .to_slice(input)
+            .expect("the directive prefix must be a valid source slice")
+            .to_owned();
+        let mut cursor = prefix.end;
+
+        for (_, span) in parsed.tokens() {
+            assert_eq!(span.file_id, MAIN_MODULE);
+            assert!(
+                span.start >= prefix.end,
+                "formatter tokens must not overlap the preserved directive prefix"
+            );
+            assert_eq!(
+                span.start, cursor,
+                "formatter token spans must be contiguous and in source order"
+            );
+
+            let text = span
+                .to_slice(input)
+                .expect("formatter token spans must be valid source slices");
+            assert!(
+                !text.is_empty(),
+                "the formatter token stream must not contain empty source slices"
+            );
+            reconstructed.push_str(text);
+            cursor = span.end;
+        }
+
+        assert_eq!(cursor, input.len(), "formatter tokens must reach EOF");
+        assert_eq!(reconstructed, input, "formatter input must be lossless");
+    }
+
+    #[test]
+    fn test_double_colon() {
+        let input = "fn main() { let ab: u8 = <(u4, u4)> : :into((0b1011, 0b1101)); }";
+
+        let (rejected, text) = parse_with(input, &UnstableFeatures::all());
+
+        assert!(rejected);
+        assert!(text.contains("Expected '::', found ':'"));
+    }
+
+    #[test]
+    fn test_double_double_colon() {
+        let input = "fn main() { let pk: Pubkey = witnes::::PK; }";
+
+        let (rejected, text) = parse_with(input, &UnstableFeatures::all());
+
+        assert!(rejected);
+        assert!(
+            text.contains("Expected identifier, found ::"),
+            "the second :: should be reported as the error site"
+        );
+    }
+
+    #[test]
+    fn inverted_empty_span_from_token_gap_does_not_panic() {
+        // Fuzz-found (compile_text).
+        //
+        // The input is irreducible. The broken `fn` prefix forces the parser into delimiter recovery.
+        // The only path that requests an empty span at a lex-error gap and the
+        // NUL after `enum` creates that gap.
+        // Chumsky builds such spans as `next_token.start .. previous_token.end`, which is inverted
+        // across the gap and panicked the strict `Span` constructor.
+        //
+        // Simplifying any part (even NUL to a space) loses the crash.
+        let src = "fn`u({?\u{12}$0;;enum\0===lHf\u{15}";
+        let (rejected, text) = parse_with(src, &UnstableFeatures::all());
+
+        assert!(rejected, "garbage input must be rejected");
+        assert!(!text.is_empty());
+    }
+
+    #[test]
+    fn recovery_synchronizes_at_enum_declaration() {
+        // Discriminating setup: an invalid prefix followed by a malformed
+        // enum. Without `Token::Enum` in the synchronization set the whole
+        // enum is swallowed into the prefix's recovery span and only one
+        // error is reported; with it, the enum parses as its own item and
+        // its malformation is reported as a second error.
+
+        let src = "let invalid = 1;\nenum Action { A B }\nfn main() {}";
+        let (rejected, diagnostics) = parse_with_diagnosis(src, &UnstableFeatures::all());
+
+        assert!(rejected, "the invalid program must be rejected");
+        assert_eq!(
+            2,
+            diagnostics.error_count(),
+            "the invalid prefix and the malformed enum must each report an error"
+        );
+    }
+
+    #[test]
+    fn recovery_after_malformed_enum_reaches_next_item() {
+        let src = "enum Action { A B }\nfn main() {}";
+        let (rejected, _text) = parse_with(src, &UnstableFeatures::all());
+        assert!(rejected, "a malformed enum must fail compilation");
+    }
+
+    #[test]
+    fn malformed_construct_containing_enum_keyword_reports_errors() {
+        // `enum` inside a badly malformed nested construct may be mistaken
+        // for an item boundary; compilation must still fail cleanly.
+        let src = "fn broken() { let x = (enum; }\nfn main() {}";
+        let (rejected, _text) = parse_with(src, &UnstableFeatures::all());
+        assert!(rejected, "a malformed construct must fail compilation");
+    }
+
+    #[test]
+    fn test_gated_syntax_is_rejected_without_features() {
+        // Real `use`/`mod` syntax: rejected under none() (naming the feature + a
+        // -Z hint), accepted under all(). Delete when `imports` stabilizes.
+        for input in [
+            "use crate::foo::bar;\nfn main() { }",
+            "mod inner { }\nfn main() { }",
+        ] {
+            let (rejected, error) = parse_with(input, &UnstableFeatures::none());
+            assert!(
+                rejected,
+                "gated syntax must be rejected without features (if this feature was \
+                 just stabilized, delete this test):\n{input}"
+            );
+            assert!(
+                error.contains("imports") && error.contains("-Z"),
+                "rejection should name the feature and suggest -Z, got:\n{error}"
+            );
+
+            let (rejected, error) = parse_with(input, &UnstableFeatures::all());
+            assert!(
+                !rejected,
+                "the same syntax must parse with all features enabled:\n{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_type_heavy_program_needs_no_features() {
+        // Types are traversed by `RequireFeature` but not gated, so a type-heavy,
+        // import-free program must parse with no features (no false-positive gates).
+        let input = r#"type Alias = u32;
+fn pick(e: Either<u32, u32>) -> u32 {
+    match e {
+        Left(a: u32) => a,
+        Right(b: u32) => b,
+    }
+}
+fn main() {
+    let casted: u32 = <(u16, u16)>::into((0xbeef, 0xbabe));
+    let chosen: Alias = pick(Left(casted));
+    assert!(jet::eq_32(chosen, chosen));
+}
+"#;
+        // `parse_from_str_with_errors` returns `Some` only when no errors were
+        // collected, so a non-rejection already proves there were no gate errors.
+        let (rejected, error) = parse_with(input, &UnstableFeatures::none());
+        assert!(
+            !rejected,
+            "type-heavy but import-free program should parse with no features:\n{error}"
+        );
+    }
+
+    #[test]
+    fn test_syntax_error_does_not_produce_spurious_feature_gate_error() {
+        // The gate check skips error-recovered ASTs, so a program with
+        // both a syntax error and gated syntax reports only the syntax error.
+        let input = "use crate::foo;\nfn main( {";
+        let (rejected, error) = parse_with(input, &UnstableFeatures::none());
+        assert!(rejected, "broken program must be rejected");
+        assert!(
+            !error.contains("-Z"),
+            "syntax error should not produce a spurious feature-gate hint, got:\n{error}"
+        );
+    }
+
+    #[test]
+    fn test_lexer_error_does_not_produce_spurious_feature_gate_error() {
+        // Lexer-side companion to the case above: the stray `@` lexes with an
+        // error but recovers a cleanly-parsing `use` AST, and a program that
+        // didn't lex cleanly skips the gate check — so no spurious `-Z` hint.
+        let input = "use crate@::foo;\nfn main() { }";
+        let (rejected, error) = parse_with(input, &UnstableFeatures::none());
+        assert!(rejected, "program with a lexer error must be rejected");
+        assert!(
+            !error.contains("-Z"),
+            "lexer error should not produce a spurious feature-gate hint, got:\n{error}"
+        );
+    }
+
+    #[test]
+    fn test_use_decl_display_round_trips_with_aliases() {
+        for input in [
+            "use lib::A::foo;",
+            "use lib::A::foo as bar;",
+            "use lib::A::{foo, bar as baz};",
+        ] {
+            let (rejected, _, program) = parse_with_extended_out(input, &UnstableFeatures::all());
+            assert!(!rejected, "parsing works");
+            assert_eq!(program.unwrap().program.to_string(), format!("{input}\n"));
+        }
+    }
+
+    #[test]
+    fn statement_spans_exclude_terminating_semicolons() {
+        let input = "fn main() { let value: u8 = 0; value; }";
+
+        let (rejected, _, program) = parse_with_extended_out(input, &UnstableFeatures::none());
+        assert!(!rejected, "parsing works");
+        let program = program.unwrap().program;
+
+        let Item::Function(function) = &program.items()[0] else {
+            panic!("expected a function item");
+        };
+        let ExpressionInner::Block(statements, None) = function.body().inner() else {
+            panic!("expected a block containing only statements");
+        };
+
+        assert_eq!(
+            statements[0].span().to_slice(input),
+            Some("let value: u8 = 0")
+        );
+        assert_eq!(statements[1].span().to_slice(input), Some("value"));
+    }
+
+    fn parse_item(input: &str) -> Item {
+        let (rejected, _, program) = parse_with_extended_out(input, &UnstableFeatures::all());
+        assert!(!rejected, "parsing works");
+        let program = program.unwrap().program;
+
+        program.items().first().expect("expected one item").clone()
+    }
+
+    #[test]
+    fn test_enum_declaration_basic() {
+        let item = parse_item("enum Path { Inherit, ColdSpend, RefreshSpend, }");
+        let Item::EnumDeclaration(decl) = item else {
+            panic!("expected EnumDeclaration, got {item:?}");
+        };
+        assert_eq!(decl.name().as_inner(), "Path");
+        assert_eq!(decl.variants().len(), 3);
+        assert_eq!(decl.variants()[0].name().as_inner(), "Inherit");
+        assert_eq!(decl.variants()[2].name().as_inner(), "RefreshSpend");
+    }
+
+    #[test]
+    fn test_enum_declaration_pub() {
+        let item = parse_item("pub enum Color { Red, Green, Blue, }");
+        let Item::EnumDeclaration(decl) = item else {
+            panic!("expected EnumDeclaration");
+        };
+        assert_eq!(decl.visibility(), &Visibility::Public);
+        assert_eq!(decl.name().as_inner(), "Color");
+    }
+
+    #[test]
+    fn test_enum_declaration_display_round_trip() {
+        let input = "enum Path { Inherit, ColdSpend, RefreshSpend, }";
+        let item = parse_item(input);
+        let Item::EnumDeclaration(decl) = item else {
+            panic!("expected EnumDeclaration");
+        };
+        assert_eq!(
+            decl.to_string(),
+            "enum Path { Inherit, ColdSpend, RefreshSpend, }"
+        );
+    }
+
+    #[test]
+    fn test_enum_declaration_reserved_name() {
+        for reserved in RESERVED_PATTERN_NAMES {
+            let input = format!("enum {reserved} {{ A, B, }}");
+            let (rejected, error) = parse_with(&input, &UnstableFeatures::none());
+            assert!(rejected, "enum name {reserved} is reserved");
+            assert!(
+                error.contains("reserved"),
+                "error should say the name is reserved: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn formatting_parse_is_lossless_after_directive_prescan() {
+        let input = "// header\r\nsimc \"*\";\r\n\t/* block */ fn main() { // body\r\n\t}\r";
+
+        let (_rejected, _error, parsed) = parse_with_extended_out(input, &UnstableFeatures::none());
+        let parsed = parsed.expect("formatting parse should succeed");
+
+        assert_eq!(
+            parsed.prefix().to_slice(input),
+            Some("// header\r\nsimc \"*\";")
+        );
+        for trivia in [
+            crate::lexer::TriviaKind::BlockComment,
+            crate::lexer::TriviaKind::LineComment,
+            crate::lexer::TriviaKind::Newline,
+            crate::lexer::TriviaKind::Whitespace,
+        ] {
+            assert!(
+                    parsed.tokens().iter().any(
+                        |(token, _)| matches!(token, FmtToken::Trivia(token_trivia) if token_trivia.kind() == trivia)
+                    ),
+                    "formatter token stream should retain {trivia:?}"
+                );
+        }
+        assert_lossless_source(input, &parsed);
+        assert_eq!(parsed.program().items().len(), 1);
+    }
+
+    #[test]
+    fn formatting_parse_matches_regular_parser_pipeline() {
+        let no_features = UnstableFeatures::none();
+        let all_features = UnstableFeatures::all();
+
+        for (input, features) in [
+            (
+                "/* header */\r\nfn\tmain() { // comment\r\n}\r",
+                &no_features,
+            ),
+            ("// version\r\nsimc \"*\";\r\nfn main() {}", &no_features),
+            ("use crate::foo::bar;\nfn main() {}", &no_features),
+            ("use crate::foo::bar;\nfn main() {}", &all_features),
+            ("fn main( {", &no_features),
+            ("fn main() { @// comment }", &no_features),
+        ] {
+            assert_formatter_matches_regular_parser(input, features);
+        }
+    }
+
+    #[test]
+    fn formatting_parse_ignores_preexisting_errors() {
+        let input = "fn main() {}";
+        let mut diagnostics = DiagnosticManager::new();
+        diagnostics.push(Diagnostic::global(Error::CannotParse {
+            msg: "an error from an earlier source file".to_owned(),
+        }));
+        let before = diagnostics.error_count();
+
+        let parsed = parse_with_diagnostics(input, &UnstableFeatures::none(), &mut diagnostics);
+
+        assert!(
+            parsed.is_some(),
+            "valid source must still produce ParsedSource"
+        );
+        assert_eq!(diagnostics.error_count(), before);
+        assert_eq!(diagnostics.diagnostics().len(), before);
+    }
+
+    #[test]
+    fn formatting_parse_stops_after_invalid_directive() {
+        for (input, is_malformed) in [
+            ("simc \"*\"\nfn broken( @", true),
+            ("simc \">99.0.0\"; @", false),
+        ] {
+            let (rejected, diagnostics) = parse_with_diagnosis(input, &UnstableFeatures::none());
+
+            assert!(rejected, "invalid directive must abort formatting parse");
+            assert_eq!(
+                diagnostics.error_count(),
+                1,
+                "the invalid body must not add diagnostics after prescan aborts"
+            );
+            if is_malformed {
+                assert!(matches!(
+                    diagnostics.diagnostics()[0].error(),
+                    Error::MalformedSimcDirective
+                ));
+            } else {
+                assert!(matches!(
+                    diagnostics.diagnostics()[0].error(),
+                    Error::SimcVersionMismatch { .. }
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn formatting_parse_reports_missing_match_arm_comma() {
+        let input = "fn main() { match true { false => () true => (), } }";
+
+        let (rejected, error) = parse_with(input, &UnstableFeatures::none());
+
+        assert!(rejected);
+        assert!(
+            error.contains("Missing ',' after a match arm that isn't block expression"),
+            "expected the missing-comma diagnostic, got {error:?}"
+        );
     }
 }

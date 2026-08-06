@@ -254,7 +254,7 @@ impl<'a> arbitrary::Arbitrary<'a> for AliasName {
     }
 }
 
-/// A string of decimal digits.
+/// A string of decimal digits, optionally separated by underscores (requires the `"fmt"` feature).
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Decimal(Arc<str>);
 
@@ -273,7 +273,7 @@ impl<'a> arbitrary::Arbitrary<'a> for Decimal {
     }
 }
 
-/// A string of binary digits.
+/// A string of binary digits, optionally separated by underscores (requires the `"fmt"` feature).
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Binary(Arc<str>);
 
@@ -293,11 +293,25 @@ impl<'a> arbitrary::Arbitrary<'a> for Binary {
     }
 }
 
-/// A string of hexadecimal digits.
+/// A string of hexadecimal digits, optionally separated by underscores (requires the `"fmt"` feature).
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Hexadecimal(Arc<str>);
 
 wrapped_string!(Hexadecimal, "hexadecimal string");
+
+pub(crate) mod underscore_parsing {
+    use std::borrow::Cow;
+
+    /// Remove digit separators from a numeric literal while avoiding an allocation
+    /// when the literal contains no separators.
+    pub(crate) fn strip_digit_separators(input: &str) -> Cow<'_, str> {
+        if input.contains('_') {
+            Cow::Owned(input.replace('_', ""))
+        } else {
+            Cow::Borrowed(input)
+        }
+    }
+}
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for Hexadecimal {

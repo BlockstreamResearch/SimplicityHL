@@ -343,10 +343,11 @@ impl PartialEq for CallName {
 }
 
 /// Definition of a custom function.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug)]
 pub struct CustomFunction {
     params: Arc<[FunctionParam]>,
     body: Arc<Expression>,
+    span: Span,
 }
 
 impl CustomFunction {
@@ -358,6 +359,11 @@ impl CustomFunction {
     /// Access the body of the function.
     pub fn body(&self) -> &Expression {
         &self.body
+    }
+
+    /// Access the span of the complete function declaration.
+    pub fn span(&self) -> &Span {
+        &self.span
     }
 
     /// Return a pattern for the parameters of the function.
@@ -372,11 +378,14 @@ impl CustomFunction {
     }
 }
 
+impl_eq_hash!(CustomFunction; params, body);
+
 /// Parameter of a function.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug)]
 pub struct FunctionParam {
     identifier: Identifier,
     ty: ResolvedType,
+    span: Span,
 }
 
 impl FunctionParam {
@@ -389,7 +398,14 @@ impl FunctionParam {
     pub fn ty(&self) -> &ResolvedType {
         &self.ty
     }
+
+    /// Access the span of the complete parameter declaration.
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
 }
+
+impl_eq_hash!(FunctionParam; identifier, ty);
 
 /// Match expression.
 #[derive(Clone, Debug)]
@@ -461,6 +477,7 @@ pub struct EnumMatchArm {
     /// variants.
     pattern: Pattern,
     body: Arc<Expression>,
+    span: Span,
 }
 
 impl EnumMatchArm {
@@ -472,6 +489,11 @@ impl EnumMatchArm {
     /// Access the expression that is executed in the match arm.
     pub fn body(&self) -> &Expression {
         &self.body
+    }
+
+    /// Access the span of the complete enum match arm.
+    pub fn span(&self) -> &Span {
+        &self.span
     }
 }
 
@@ -514,10 +536,11 @@ impl AsRef<Span> for EnumMatch {
 }
 
 /// Arm of a [`Match`] expression.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug)]
 pub struct MatchArm {
     pattern: MatchPattern,
     expression: Arc<Expression>,
+    span: Span,
 }
 
 impl MatchArm {
@@ -530,7 +553,14 @@ impl MatchArm {
     pub fn expression(&self) -> &Expression {
         &self.expression
     }
+
+    /// Access the span of the complete match arm.
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
 }
+
+impl_eq_hash!(MatchArm; pattern, expression);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum ExprTree<'a> {
@@ -1379,7 +1409,11 @@ impl AbstractSyntaxTree for Function {
                 .map(|param| {
                     let identifier = param.identifier().clone();
                     let ty = scope.resolve(param.ty())?;
-                    Ok(FunctionParam { identifier, ty })
+                    Ok(FunctionParam {
+                        identifier,
+                        ty,
+                        span: *param.span(),
+                    })
                 })
                 .collect::<Result<Arc<[FunctionParam]>, Error>>()
                 .with_span(from)?;
@@ -1398,7 +1432,11 @@ impl AbstractSyntaxTree for Function {
             scope.exit_block();
 
             debug_assert!(scope.is_outside_function());
-            let function = CustomFunction { params, body };
+            let function = CustomFunction {
+                params,
+                body,
+                span: *from.span(),
+            };
             scope
                 .insert_function(from.name().clone(), from.visibility().clone(), function)
                 .with_span(from)?;
@@ -1945,10 +1983,11 @@ impl AbstractSyntaxTree for EnumMatch {
             .into_iter()
             .zip(info.variants())
             .map(|(arm, variant)| {
-                let pattern = analyze_enum_arm_bindings(arm, variant, scope, span)?;
+                let arm_span = *arm.span();
+                let pattern = analyze_enum_arm_bindings(arm, variant, scope, arm_span)?;
                 scope.enter_block();
                 let payload_ty = variant.payload_type();
-                let typed_variables = pattern.is_of_type(payload_ty).with_span(span)?;
+                let typed_variables = pattern.is_of_type(payload_ty).with_span(arm_span)?;
                 for (identifier, variable_ty) in typed_variables {
                     scope.insert_variable(identifier, variable_ty);
                 }
@@ -1957,6 +1996,7 @@ impl AbstractSyntaxTree for EnumMatch {
                 Ok(EnumMatchArm {
                     pattern,
                     body: body?,
+                    span: arm_span,
                 })
             })
             .collect::<Result<Arc<[EnumMatchArm]>, Diagnostic>>()?;
@@ -2347,8 +2387,8 @@ impl AbstractSyntaxTree for Match {
 
         scope.enter_block();
         if let Some((pat_l, ty_l)) = from.left().pattern().as_typed_pattern() {
-            let ty_l = scope.resolve(ty_l).with_span(from)?;
-            let typed_variables = pat_l.is_of_type(&ty_l).with_span(from)?;
+            let ty_l = scope.resolve(ty_l).with_span(from.left())?;
+            let typed_variables = pat_l.is_of_type(&ty_l).with_span(from.left())?;
             for (identifier, ty) in typed_variables {
                 scope.insert_variable(identifier, ty);
             }
@@ -2357,8 +2397,8 @@ impl AbstractSyntaxTree for Match {
         scope.exit_block();
         scope.enter_block();
         if let Some((pat_r, ty_r)) = from.right().pattern().as_typed_pattern() {
-            let ty_r = scope.resolve(ty_r).with_span(from)?;
-            let typed_variables = pat_r.is_of_type(&ty_r).with_span(from)?;
+            let ty_r = scope.resolve(ty_r).with_span(from.right())?;
+            let typed_variables = pat_r.is_of_type(&ty_r).with_span(from.right())?;
             for (identifier, ty) in typed_variables {
                 scope.insert_variable(identifier, ty);
             }
@@ -2371,10 +2411,12 @@ impl AbstractSyntaxTree for Match {
             left: MatchArm {
                 pattern: from.left().pattern().clone(),
                 expression: ast_l,
+                span: *from.left().span(),
             },
             right: MatchArm {
                 pattern: from.right().pattern().clone(),
                 expression: ast_r,
+                span: *from.right().span(),
             },
             span: *from.as_ref(),
         })
@@ -2382,6 +2424,18 @@ impl AbstractSyntaxTree for Match {
 }
 
 impl AsRef<Span> for Assignment {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl AsRef<Span> for FunctionParam {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl AsRef<Span> for CustomFunction {
     fn as_ref(&self) -> &Span {
         &self.span
     }
@@ -2408,6 +2462,110 @@ impl AsRef<Span> for Call {
 impl AsRef<Span> for Match {
     fn as_ref(&self) -> &Span {
         &self.span
+    }
+}
+
+impl AsRef<Span> for MatchArm {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl AsRef<Span> for EnumMatchArm {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+#[cfg(test)]
+mod span_tests {
+    use crate::parse::ParseFromStr;
+
+    use super::*;
+
+    #[test]
+    fn analyzed_custom_function_preserves_declaration_and_parameter_spans() {
+        let source = "fn helper(value: u8) -> u8 { value }";
+        let parsed = parse::Function::parse_from_str(source).expect("function parses");
+        let mut scope = Scope::new(Box::new(ElementsJetHinter));
+
+        Function::analyze(&parsed, &ResolvedType::unit(), &mut scope).expect("function analyzes");
+        let function = scope
+            .get_function(parsed.name())
+            .expect("function is registered in scope");
+
+        assert_eq!(function.span().to_slice(source), Some(source));
+        assert_eq!(
+            function.params()[0].span().to_slice(source),
+            Some("value: u8")
+        );
+    }
+
+    #[test]
+    fn analyzed_match_arms_preserve_their_parsed_spans() {
+        let source = r#"fn main() {
+    let input: Either<u8, u8> = Left(1);
+    match input {
+        Left(left: u8) => {},
+        Right(right: u8) => {},
+    }
+}"#;
+        let parsed = parse::Program::parse_from_str(source).expect("program parses");
+        let program =
+            Program::analyze(&parsed, Box::new(ElementsJetHinter)).expect("program analyzes");
+
+        let ExpressionInner::Block(_, Some(last)) = program.main().inner() else {
+            panic!("main body should end in a match");
+        };
+        let ExpressionInner::Single(single) = last.inner() else {
+            panic!("match should be a single expression");
+        };
+        let SingleExpressionInner::Match(match_) = single.inner() else {
+            panic!("expected a binary match");
+        };
+
+        assert_eq!(
+            match_.left().span().to_slice(source),
+            Some("Left(left: u8) => {},")
+        );
+        assert_eq!(
+            match_.right().span().to_slice(source),
+            Some("Right(right: u8) => {},")
+        );
+    }
+
+    #[test]
+    fn analyzed_enum_match_arms_preserve_their_parsed_spans() {
+        let source = r#"enum Choice { First, Second, }
+fn main() {
+    let input: Choice = Choice::First;
+    match input {
+        Choice::First => {},
+        Choice::Second => {},
+    }
+}"#;
+        let parsed = parse::Program::parse_from_str(source).expect("program parses");
+        let program =
+            Program::analyze(&parsed, Box::new(ElementsJetHinter)).expect("program analyzes");
+
+        let ExpressionInner::Block(_, Some(last)) = program.main().inner() else {
+            panic!("main body should end in an enum match");
+        };
+        let ExpressionInner::Single(single) = last.inner() else {
+            panic!("enum match should be a single expression");
+        };
+        let SingleExpressionInner::EnumMatch(match_) = single.inner() else {
+            panic!("expected an enum match");
+        };
+
+        assert_eq!(
+            match_.arms()[0].span().to_slice(source),
+            Some("Choice::First => {},")
+        );
+        assert_eq!(
+            match_.arms()[1].span().to_slice(source),
+            Some("Choice::Second => {},")
+        );
     }
 }
 
@@ -3444,5 +3602,47 @@ mod enum_tests {
             Box::new(ElementsJetHinter::new()),
         );
         assert!(result.is_err(), "enum syntax is gated behind -Z enums");
+    }
+}
+
+#[cfg(feature = "fmt")]
+#[cfg(test)]
+mod literal_tests {
+    use crate::parse::ParseFromStr;
+    use crate::value::{UIntValue, Value};
+
+    use super::*;
+
+    #[test]
+    fn analyzed_numeric_literals_accept_digit_separators() {
+        let cases = [
+            ("1_337", UIntType::U16, Value::from(UIntValue::U16(1_337))),
+            (
+                "0b1010_0101",
+                UIntType::U8,
+                Value::from(UIntValue::U8(0b1010_0101)),
+            ),
+            (
+                "0xDE_AD_BE_EF",
+                UIntType::U32,
+                Value::from(UIntValue::U32(0xdead_beef)),
+            ),
+        ];
+
+        for (source, integer_type, expected) in cases {
+            let parsed = parse::Expression::parse_from_str(source).expect("literal parses");
+            let analyzed =
+                Expression::analyze_const(&parsed, &integer_type.into()).expect("literal analyzes");
+
+            let ExpressionInner::Single(single) = analyzed.inner() else {
+                panic!("expected a single expression")
+            };
+            let SingleExpressionInner::Constant(value) = single.inner() else {
+                panic!("expected a constant expression")
+            };
+
+            assert_eq!(value, &expected, "unexpected value for {source:?}");
+            assert_eq!(single.span().to_slice(source), Some(source));
+        }
     }
 }
