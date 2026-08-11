@@ -29,10 +29,10 @@ use crate::str::{
     AliasName, Binary, Decimal, FunctionName, Hexadecimal, Identifier, JetName, ModuleName,
     SymbolName,
 };
-use crate::template_program::WitnessName;
 use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
 use crate::unstable::{impl_require_feature, RequireFeature, UnstableFeature, UnstableFeatures};
 use crate::version::SimcDirective;
+use crate::TemplateProgramWitness;
 
 #[cfg(feature = "fmt")]
 use crate::lexer::{FmtToken, FmtTokens};
@@ -817,9 +817,9 @@ pub enum SingleExpressionInner {
     /// Hexadecimal string literal.
     Hexadecimal(Hexadecimal),
     /// Witness value.
-    Witness(WitnessName),
+    Witness(TemplateProgramWitness),
     /// Parameter value.
-    Parameter(WitnessName),
+    Parameter(TemplateProgramWitness),
     /// Variable identifier expression
     Variable(Identifier),
     /// Function call
@@ -2710,8 +2710,8 @@ impl SingleExpression {
             Token::DecLiteral(s) => SingleExpressionInner::Decimal(s),
             Token::HexLiteral(s) => SingleExpressionInner::Hexadecimal(s),
             Token::BinLiteral(s) => SingleExpressionInner::Binary(s),
-            Token::Witness(s) => SingleExpressionInner::Witness(WitnessName::from_str_unchecked(s)),
-            Token::Param(s) => SingleExpressionInner::Parameter(WitnessName::from_str_unchecked(s)),
+            Token::Witness(s) => SingleExpressionInner::Witness(TemplateProgramWitness::from_str_unchecked(s)),
+            Token::Param(s) => SingleExpressionInner::Parameter(TemplateProgramWitness::from_str_unchecked(s)),
         };
 
         // Enum variant construction: `Path::To::Enum::Variant(args..)`.
@@ -3420,7 +3420,7 @@ impl crate::ArbitraryRec for SingleExpression {
                 2 => Decimal::arbitrary(u).map(S::Decimal),
                 3 => Hexadecimal::arbitrary(u).map(S::Hexadecimal),
                 4 => Identifier::arbitrary(u).map(S::Variable),
-                5 => WitnessName::arbitrary(u).map(S::Witness),
+                5 => TemplateProgramWitness::arbitrary(u).map(S::Witness),
                 6 => Ok(S::Option(None)),
                 _ => unreachable!(),
             },
@@ -3430,7 +3430,7 @@ impl crate::ArbitraryRec for SingleExpression {
                 2 => Decimal::arbitrary(u).map(S::Decimal),
                 3 => Hexadecimal::arbitrary(u).map(S::Hexadecimal),
                 4 => Identifier::arbitrary(u).map(S::Variable),
-                5 => WitnessName::arbitrary(u).map(S::Witness),
+                5 => TemplateProgramWitness::arbitrary(u).map(S::Witness),
                 6 => Ok(S::Option(None)),
                 7 => Expression::arbitrary_rec(u, new_budget)
                     .map(Arc::new)

@@ -22,9 +22,9 @@ use crate::driver::{SourceMap, CRATE_STR, MAIN_MODULE};
 use crate::lexer::Token;
 use crate::parse::MatchPattern;
 use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName};
-use crate::template_program::WitnessName;
 use crate::types::{ResolvedType, UIntType};
 use crate::unstable::UnstableFeature;
+use crate::TemplateProgramWitness;
 
 /// Area that an object spans inside a file.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -865,18 +865,18 @@ pub enum Error {
         identifier: Identifier,
     },
     WitnessReused {
-        name: WitnessName,
+        name: TemplateProgramWitness,
     },
     WitnessMissing {
-        name: WitnessName,
+        name: TemplateProgramWitness,
     },
     WitnessTypeMismatch {
-        name: WitnessName,
+        name: TemplateProgramWitness,
         declared: ResolvedType,
         assigned: ResolvedType,
     },
     WitnessReassigned {
-        name: WitnessName,
+        name: TemplateProgramWitness,
     },
     WitnessOutsideMain,
     ModuleRedefined {
@@ -889,10 +889,10 @@ pub enum Error {
         name: ModuleName,
     },
     ArgumentMissing {
-        name: WitnessName,
+        name: TemplateProgramWitness,
     },
     ArgumentTypeMismatch {
-        name: WitnessName,
+        name: TemplateProgramWitness,
         declared: ResolvedType,
         assigned: ResolvedType,
     },

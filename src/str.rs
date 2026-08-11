@@ -96,7 +96,7 @@ macro_rules! impl_arbitrary_lowercase_alpha {
     };
 }
 
-impl_arbitrary_lowercase_alpha!(crate::template_program::WitnessName);
+impl_arbitrary_lowercase_alpha!(crate::template_program::TemplateProgramWitness);
 
 /// The name of a function.
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]

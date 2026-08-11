@@ -1,3 +1,3 @@
 mod witness;
 
-pub use self::witness::WitnessName;
+pub use self::witness::TemplateProgramWitness;

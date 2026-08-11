@@ -15,13 +15,13 @@ use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::parse::{MatchPattern, UseDecl, Visibility};
 use crate::pattern::Pattern;
 use crate::str::{AliasName, FunctionName, Identifier, ModuleName, SymbolName};
-use crate::template_program::WitnessName;
 use crate::types::{
     AliasedType, EnumInfo, EnumVariantInfo, ResolvedType, StructuralType, TypeConstructible,
     TypeDeconstructible, TypeInner, UIntType,
 };
 use crate::value::{UIntValue, Value};
 use crate::witness::{Parameters, WitnessTypes};
+use crate::TemplateProgramWitness;
 use crate::{impl_eq_hash, parse};
 
 /// A program consists of the main function.
@@ -228,9 +228,9 @@ pub enum SingleExpressionInner {
     /// Constant value.
     Constant(Value),
     /// Witness value.
-    Witness(WitnessName),
+    Witness(TemplateProgramWitness),
     /// Parameter value.
-    Parameter(WitnessName),
+    Parameter(TemplateProgramWitness),
     /// Variable that has been assigned a value.
     Variable(Identifier),
     /// Expression in parentheses.
@@ -726,8 +726,8 @@ struct Scope {
 
     /// Block-level variable scopes. Push on block enter, pop on block exit.
     variables: Vec<HashMap<Identifier, ResolvedType>>,
-    parameters: HashMap<WitnessName, ResolvedType>,
-    witnesses: HashMap<WitnessName, ResolvedType>,
+    parameters: HashMap<TemplateProgramWitness, ResolvedType>,
+    witnesses: HashMap<TemplateProgramWitness, ResolvedType>,
     /// Allow enum constructions to name an enum by its declared name even
     /// when that name is not an alias in scope. Enabled only for value
     /// parsing (witness and argument files), which runs without a scope.
@@ -1143,7 +1143,11 @@ impl Scope {
     /// ## Errors
     ///
     /// * [`Error::ExpressionTypeMismatch`] A parameter of the same name has already been defined as a different type.
-    pub fn insert_parameter(&mut self, name: WitnessName, ty: ResolvedType) -> Result<(), Error> {
+    pub fn insert_parameter(
+        &mut self,
+        name: TemplateProgramWitness,
+        ty: ResolvedType,
+    ) -> Result<(), Error> {
         match self.parameters.entry(name.clone()) {
             Entry::Occupied(entry) if entry.get() == &ty => Ok(()),
             Entry::Occupied(entry) => Err(Error::ExpressionTypeMismatch {
@@ -1163,7 +1167,11 @@ impl Scope {
     ///
     /// * [`Error::WitnessOutsideMain`] The current scope is not inside the main function.
     /// * [`Error::WitnessReused`] A witness with the same name has already been defined.
-    pub fn insert_witness(&mut self, name: WitnessName, ty: ResolvedType) -> Result<(), Error> {
+    pub fn insert_witness(
+        &mut self,
+        name: TemplateProgramWitness,
+        ty: ResolvedType,
+    ) -> Result<(), Error> {
         if !self.is_main {
             return Err(Error::WitnessOutsideMain);
         }

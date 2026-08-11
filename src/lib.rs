@@ -17,7 +17,7 @@ pub mod parse;
 pub mod pattern;
 pub mod resolution;
 pub mod source;
-pub mod template_program;
+mod template_program;
 pub mod unstable;
 
 #[cfg(feature = "serde")]
@@ -46,6 +46,7 @@ use crate::error::DiagnosticManager;
 use crate::parse::ParseFromStrWithErrors;
 use crate::resolution::DependencyMap;
 use crate::source::CanonSourceFile;
+pub use crate::template_program::TemplateProgramWitness;
 pub use crate::types::ResolvedType;
 pub use crate::unstable::{UnstableFeature, UnstableFeatures};
 pub use crate::value::Value;
@@ -563,7 +564,6 @@ pub(crate) mod tests {
     use crate::resolution::DependencyMapBuilder;
     use crate::source::CanonPath;
     use crate::str::Identifier;
-    use crate::template_program::WitnessName;
     use crate::test_utils::TempWorkspace;
     use base64::display::Base64Display;
     use base64::engine::general_purpose::STANDARD;
@@ -1662,7 +1662,7 @@ fn main() {
             serde_json::from_str(r#"{ "ACT": "Action::Cold" }"#).unwrap();
         let witness: WitnessValues = unresolved.resolve(compiled.witness_types()).unwrap();
         assert!(witness
-            .get(&WitnessName::from_str_unchecked("ACT"))
+            .get(&TemplateProgramWitness::from_str_unchecked("ACT"))
             .is_some());
         TestCase::program_text_with_unstable(Cow::Borrowed(src), UnstableFeatures::all())
             .with_witness_values(witness)
@@ -1693,19 +1693,22 @@ fn main() {
         .unwrap();
         let selector_ty = compiled
             .witness_types()
-            .get(&WitnessName::from_str_unchecked("SELECTOR"))
+            .get(&TemplateProgramWitness::from_str_unchecked("SELECTOR"))
             .unwrap()
             .clone();
 
         // Only SELECTOR and A are provided; B is omitted. The strict entry
         // points must reject the omitted witness rather than zero-filling it.
-        let mut map: HashMap<WitnessName, Value> = HashMap::new();
+        let mut map: HashMap<TemplateProgramWitness, Value> = HashMap::new();
         map.insert(
-            WitnessName::from_str_unchecked("SELECTOR"),
+            TemplateProgramWitness::from_str_unchecked("SELECTOR"),
             Value::enum_variant(&selector_ty, &Identifier::from_str_unchecked("A"), vec![])
                 .unwrap(),
         );
-        map.insert(WitnessName::from_str_unchecked("A"), Value::u32(0));
+        map.insert(
+            TemplateProgramWitness::from_str_unchecked("A"),
+            Value::u32(0),
+        );
 
         let err = compiled
             .satisfy(WitnessValues::from(map.clone()))
@@ -1752,7 +1755,7 @@ fn main() {
             .unwrap();
             let action_ty = compiled
                 .witness_types()
-                .get(&WitnessName::from_str_unchecked("ACT"))
+                .get(&TemplateProgramWitness::from_str_unchecked("ACT"))
                 .expect("ACT is declared")
                 .clone();
 
@@ -1762,9 +1765,9 @@ fn main() {
                         .expect("declared variant");
                 let expected = u32::try_from((i + 1) * 10).unwrap();
                 let map = HashMap::from([
-                    (WitnessName::from_str_unchecked("ACT"), action),
+                    (TemplateProgramWitness::from_str_unchecked("ACT"), action),
                     (
-                        WitnessName::from_str_unchecked("EXPECTED"),
+                        TemplateProgramWitness::from_str_unchecked("EXPECTED"),
                         crate::value::ValueConstructible::u32(expected),
                     ),
                 ]);

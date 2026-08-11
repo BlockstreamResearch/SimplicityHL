@@ -5,11 +5,10 @@ use std::marker::PhantomData;
 
 use crate::parse::ParseFromStr as _;
 use crate::str::Identifier;
-use crate::template_program::WitnessName;
 use crate::types::ResolvedType;
 use crate::value::Value;
 use crate::witness::{Arguments, UnresolvedValue, UnresolvedValues, WitnessValues};
-use crate::{AbiMeta, Parameters, WitnessTypes};
+use crate::{AbiMeta, Parameters, TemplateProgramWitness, WitnessTypes};
 use serde::{de, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 
 /// Visitor for a map from identifiers to values of type `V`, rejecting duplicate names.
@@ -54,7 +53,7 @@ impl<'de> Deserialize<'de> for WitnessValues {
         D: Deserializer<'de>,
     {
         deserializer
-            .deserialize_map(NamedMapVisitor::new(WitnessName::from_ident))
+            .deserialize_map(NamedMapVisitor::new(TemplateProgramWitness::from_ident))
             .map(Self::from)
     }
 }
@@ -102,7 +101,7 @@ impl<'de> Deserialize<'de> for UnresolvedValues {
         D: Deserializer<'de>,
     {
         deserializer
-            .deserialize_map(NamedMapVisitor::new(WitnessName::from_ident))
+            .deserialize_map(NamedMapVisitor::new(TemplateProgramWitness::from_ident))
             .map(Self::from_map)
     }
 }
@@ -166,7 +165,7 @@ impl<'de> Deserialize<'de> for Arguments {
         D: Deserializer<'de>,
     {
         deserializer
-            .deserialize_map(NamedMapVisitor::new(WitnessName::from_ident))
+            .deserialize_map(NamedMapVisitor::new(TemplateProgramWitness::from_ident))
             .map(Self::from)
     }
 }
@@ -264,7 +263,7 @@ impl<'de> Deserialize<'de> for Identifier {
     }
 }
 
-struct WitnessMapSerializer<'a>(&'a HashMap<WitnessName, Value>);
+struct WitnessMapSerializer<'a>(&'a HashMap<TemplateProgramWitness, Value>);
 
 impl<'a> Serialize for WitnessMapSerializer<'a> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -357,17 +356,20 @@ mod tests {
 
         let action_ty = unit_enum("Action", &["Inherit", "ColdSpend"]);
         let witness_types = WitnessTypes::from(HashMap::from([
-            (WitnessName::from_str_unchecked("ACTION"), action_ty.clone()),
             (
-                WitnessName::from_str_unchecked("MAYBE"),
+                TemplateProgramWitness::from_str_unchecked("ACTION"),
+                action_ty.clone(),
+            ),
+            (
+                TemplateProgramWitness::from_str_unchecked("MAYBE"),
                 ResolvedType::option(action_ty.clone()),
             ),
             (
-                WitnessName::from_str_unchecked("PAIR"),
+                TemplateProgramWitness::from_str_unchecked("PAIR"),
                 ResolvedType::tuple([action_ty, unit_enum("Reaction", &["Fast", "Slow"])]),
             ),
             (
-                WitnessName::from_str_unchecked("PLAIN"),
+                TemplateProgramWitness::from_str_unchecked("PLAIN"),
                 crate::parse::ParseFromStr::parse_from_str("u32").unwrap(),
             ),
         ]));
@@ -389,7 +391,7 @@ mod tests {
         )
         .unwrap();
         let witness = WitnessValues::from(HashMap::from([(
-            WitnessName::from_str_unchecked("ACTION"),
+            TemplateProgramWitness::from_str_unchecked("ACTION"),
             value,
         )]));
 
@@ -401,7 +403,7 @@ mod tests {
         let text = serde_json::to_string(&witness).unwrap();
         let unresolved: UnresolvedValues = serde_json::from_str(&text).unwrap();
         let witness_types = WitnessTypes::from(HashMap::from([(
-            WitnessName::from_str_unchecked("ACTION"),
+            TemplateProgramWitness::from_str_unchecked("ACTION"),
             action_ty,
         )]));
         let round_tripped: WitnessValues = unresolved.resolve(&witness_types).unwrap();
@@ -438,7 +440,7 @@ mod tests {
         )
         .unwrap();
         let witness = WitnessValues::from(HashMap::from([(
-            WitnessName::from_str_unchecked("ACTION"),
+            TemplateProgramWitness::from_str_unchecked("ACTION"),
             value,
         )]));
 
@@ -449,7 +451,7 @@ mod tests {
         let text = serde_json::to_string(&witness).unwrap();
         let unresolved: UnresolvedValues = serde_json::from_str(&text).unwrap();
         let witness_types = WitnessTypes::from(HashMap::from([(
-            WitnessName::from_str_unchecked("ACTION"),
+            TemplateProgramWitness::from_str_unchecked("ACTION"),
             action_ty,
         )]));
         let round_tripped: WitnessValues = unresolved.resolve(&witness_types).unwrap();
@@ -466,7 +468,7 @@ mod tests {
         let cold = Value::enum_variant(&action_ty, &Identifier::from_str_unchecked("Cold"), vec![])
             .unwrap();
         let witness = WitnessValues::from(HashMap::from([(
-            WitnessName::from_str_unchecked("MAYBE"),
+            TemplateProgramWitness::from_str_unchecked("MAYBE"),
             Value::some(cold),
         )]));
 
@@ -478,7 +480,7 @@ mod tests {
         let text = serde_json::to_string(&witness).unwrap();
         let unresolved: UnresolvedValues = serde_json::from_str(&text).unwrap();
         let witness_types = WitnessTypes::from(HashMap::from([(
-            WitnessName::from_str_unchecked("MAYBE"),
+            TemplateProgramWitness::from_str_unchecked("MAYBE"),
             option_ty,
         )]));
         let round_tripped: WitnessValues = unresolved.resolve(&witness_types).unwrap();

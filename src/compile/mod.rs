@@ -19,11 +19,10 @@ use crate::error::{Diagnostic, Error, Span, WithSpan};
 use crate::named::{self, CoreExt, PairBuilder};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::pattern::{BasePattern, Pattern};
-use crate::template_program::WitnessName;
 use crate::types::{StructuralType, TypeDeconstructible};
 use crate::value::StructuralValue;
 use crate::witness::Arguments;
-use crate::Value;
+use crate::{TemplateProgramWitness, Value};
 
 type ProgNode<'brand> = Arc<named::ConstructNode<'brand>>;
 
@@ -217,7 +216,7 @@ impl<'brand> Scope<'brand> {
         }
     }
 
-    pub fn get_argument(&self, name: &WitnessName) -> &Value {
+    pub fn get_argument(&self, name: &TemplateProgramWitness) -> &Value {
         self.arguments
             .get(name)
             .expect("Precondition: Arguments are consistent with parameters")
