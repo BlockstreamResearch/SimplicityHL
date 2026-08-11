@@ -7,7 +7,7 @@ use simplicity::node::{
 use simplicity::Cmr;
 use simplicity::{types, FailEntropy};
 
-use crate::str::WitnessName;
+use crate::template_program::WitnessName;
 use crate::value::StructuralValue;
 use crate::witness::WitnessValues;
 

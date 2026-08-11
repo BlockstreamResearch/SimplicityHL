@@ -27,8 +27,9 @@ use crate::num::NonZeroPow2Usize;
 use crate::pattern::Pattern;
 use crate::str::{
     AliasName, Binary, Decimal, FunctionName, Hexadecimal, Identifier, JetName, ModuleName,
-    SymbolName, WitnessName,
+    SymbolName,
 };
+use crate::template_program::WitnessName;
 use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
 use crate::unstable::{impl_require_feature, RequireFeature, UnstableFeature, UnstableFeatures};
 use crate::version::SimcDirective;

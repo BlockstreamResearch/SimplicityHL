@@ -21,7 +21,8 @@ use itertools::Itertools;
 use crate::driver::{SourceMap, CRATE_STR, MAIN_MODULE};
 use crate::lexer::Token;
 use crate::parse::MatchPattern;
-use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName, WitnessName};
+use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName};
+use crate::template_program::WitnessName;
 use crate::types::{ResolvedType, UIntType};
 use crate::unstable::UnstableFeature;
 

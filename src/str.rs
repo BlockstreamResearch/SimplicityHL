@@ -77,7 +77,7 @@ macro_rules! wrapped_string {
 /// which cannot be used as identifiers. To ensure valid grammar
 /// for fuzzing, any generated keywords are padded with the `_`.
 macro_rules! impl_arbitrary_lowercase_alpha {
-    ($wrapper:ident) => {
+    ($wrapper:path) => {
         #[cfg(feature = "arbitrary")]
         impl<'a> arbitrary::Arbitrary<'a> for $wrapper {
             fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
@@ -95,6 +95,8 @@ macro_rules! impl_arbitrary_lowercase_alpha {
         }
     };
 }
+
+impl_arbitrary_lowercase_alpha!(crate::template_program::WitnessName);
 
 /// The name of a function.
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
@@ -213,19 +215,6 @@ pub struct Identifier(Arc<str>);
 
 wrapped_string!(Identifier, "variable identifier");
 impl_arbitrary_lowercase_alpha!(Identifier);
-
-/// The name of a witness.
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct WitnessName(Arc<str>);
-
-wrapped_string!(WitnessName, "witness name");
-impl_arbitrary_lowercase_alpha!(WitnessName);
-
-impl AsRef<str> for WitnessName {
-    fn as_ref(&self) -> &str {
-        self.0.as_ref()
-    }
-}
 
 /// The name of a jet.
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]

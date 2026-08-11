@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::error::{Diagnostic, DiagnosticManager, Error, WithSpan};
 use crate::parse::ParseFromStr;
-use crate::str::WitnessName;
+use crate::template_program::WitnessName;
 use crate::types::{AliasedType, ResolvedType};
 use crate::value::Value;
 

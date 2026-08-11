@@ -14,7 +14,8 @@ use crate::jet::{source_type, target_type, JetHL};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::parse::{MatchPattern, UseDecl, Visibility};
 use crate::pattern::Pattern;
-use crate::str::{AliasName, FunctionName, Identifier, ModuleName, SymbolName, WitnessName};
+use crate::str::{AliasName, FunctionName, Identifier, ModuleName, SymbolName};
+use crate::template_program::WitnessName;
 use crate::types::{
     AliasedType, EnumInfo, EnumVariantInfo, ResolvedType, StructuralType, TypeConstructible,
     TypeDeconstructible, TypeInner, UIntType,

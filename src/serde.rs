@@ -4,7 +4,8 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use crate::parse::ParseFromStr as _;
-use crate::str::{Identifier, WitnessName};
+use crate::str::Identifier;
+use crate::template_program::WitnessName;
 use crate::types::ResolvedType;
 use crate::value::Value;
 use crate::witness::{Arguments, UnresolvedValue, UnresolvedValues, WitnessValues};
@@ -324,6 +325,7 @@ impl Serialize for Arguments {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::str::Identifier;
 
     #[test]
     fn witness_serde_duplicate_assignment() {
@@ -339,7 +341,6 @@ mod tests {
     }
 
     fn unit_enum(name: &str, variants: &[&str]) -> ResolvedType {
-        use crate::str::Identifier;
         use crate::types::{EnumInfo, EnumVariantInfo};
         use std::sync::Arc;
 
@@ -352,7 +353,6 @@ mod tests {
 
     #[test]
     fn abi_enum_type_serializes_as_name() {
-        use crate::str::WitnessName;
         use crate::types::TypeConstructible;
 
         let action_ty = unit_enum("Action", &["Inherit", "ColdSpend"]);
@@ -381,8 +381,6 @@ mod tests {
 
     #[test]
     fn enum_witness_value_serializes_as_variant_name() {
-        use crate::str::{Identifier, WitnessName};
-
         let action_ty = unit_enum("Action", &["Inherit", "ColdSpend"]);
         let value = Value::enum_variant(
             &action_ty,
@@ -420,7 +418,6 @@ mod tests {
 
     #[test]
     fn payload_enum_witness_value_round_trips() {
-        use crate::str::{Identifier, WitnessName};
         use crate::types::{EnumInfo, EnumVariantInfo};
         use crate::value::ValueConstructible;
         use std::sync::Arc;
@@ -461,7 +458,6 @@ mod tests {
 
     #[test]
     fn nested_enum_witness_value_serializes_as_bare_string() {
-        use crate::str::{Identifier, WitnessName};
         use crate::types::TypeConstructible;
         use crate::value::ValueConstructible;
 

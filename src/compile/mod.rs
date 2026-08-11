@@ -19,7 +19,7 @@ use crate::error::{Diagnostic, Error, Span, WithSpan};
 use crate::named::{self, CoreExt, PairBuilder};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::pattern::{BasePattern, Pattern};
-use crate::str::WitnessName;
+use crate::template_program::WitnessName;
 use crate::types::{StructuralType, TypeDeconstructible};
 use crate::value::StructuralValue;
 use crate::witness::Arguments;

@@ -17,6 +17,7 @@ pub mod parse;
 pub mod pattern;
 pub mod resolution;
 pub mod source;
+pub mod template_program;
 pub mod unstable;
 
 #[cfg(feature = "serde")]
@@ -561,6 +562,8 @@ pub(crate) mod tests {
     use crate::resolution::tests::{build_map, canon};
     use crate::resolution::DependencyMapBuilder;
     use crate::source::CanonPath;
+    use crate::str::Identifier;
+    use crate::template_program::WitnessName;
     use crate::test_utils::TempWorkspace;
     use base64::display::Base64Display;
     use base64::engine::general_purpose::STANDARD;
@@ -1637,8 +1640,6 @@ fn main() {
     #[test]
     #[cfg(feature = "serde")]
     fn enum_match_witness_file_variant_name() {
-        use crate::str::WitnessName;
-
         // The witness file names the variant; resolution constructs the
         // enum value at the declared type.
         let src = "enum Action { Hot, Cold, }
@@ -1670,7 +1671,6 @@ fn main() {
 
     #[test]
     fn strict_satisfy_rejects_missing_witness() {
-        use crate::str::{Identifier, WitnessName};
         use crate::value::ValueConstructible;
         use std::collections::HashMap;
 
@@ -1718,7 +1718,6 @@ fn main() {
 
     #[test]
     fn enum_match_dispatches_every_variant() {
-        use crate::str::{Identifier, WitnessName};
         use std::collections::HashMap;
 
         // Three and five variants cover leaves at unequal depths
