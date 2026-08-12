@@ -22,7 +22,12 @@ macro_rules! wrapped_string {
             }
 
             /// Access the inner string.
-            pub fn as_inner(&self) -> &str {
+            pub fn as_inner(&self) -> &Arc<str> {
+                &self.0
+            }
+
+            /// Access the inner string.
+            pub fn as_str(&self) -> &str {
                 self.0.as_ref()
             }
 
@@ -30,17 +35,36 @@ macro_rules! wrapped_string {
             pub fn shallow_clone(&self) -> Self {
                 Self(Arc::clone(&self.0))
             }
-        }
 
-        impl std::fmt::Display for $wrapper {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                std::fmt::Display::fmt(&self.0, f)
+            #[doc = "Creates a "]
+            #[doc = $name]
+            #[doc = " from an identifier.\n"]
+            pub fn from_ident(ident: &Identifier) -> Self {
+                Self(Arc::clone(ident.as_inner()))
             }
         }
 
-        impl std::fmt::Debug for $wrapper {
+        impl core::cmp::PartialEq<str> for $wrapper {
+            fn eq(&self, other: &str) -> bool {
+                self.0.as_ref() == other
+            }
+        }
+
+        impl core::cmp::PartialEq<$wrapper> for str {
+            fn eq(&self, other: &$wrapper) -> bool {
+                self == other.0.as_ref()
+            }
+        }
+
+        impl core::fmt::Display for $wrapper {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                std::fmt::Display::fmt(&self.0, f)
+                self.0.fmt(f)
+            }
+        }
+
+        impl core::fmt::Debug for $wrapper {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.fmt(f)
             }
         }
     };

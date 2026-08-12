@@ -388,7 +388,7 @@ impl DependencyMap {
         let mut iter = module_parts.iter();
 
         while let Some(part) = iter.next() {
-            let joined = path.join(part.as_inner());
+            let joined = path.join(part.as_str());
             if joined.is_dir() {
                 path = joined;
                 continue;

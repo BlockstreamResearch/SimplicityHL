@@ -254,7 +254,7 @@ impl UseDecl {
     }
 
     pub fn str_path(&self) -> String {
-        let path: PathBuf = self.path().iter().map(|iden| iden.as_inner()).collect();
+        let path: PathBuf = self.path().iter().map(Identifier::as_str).collect();
         path.display().to_string()
     }
 
@@ -264,7 +264,7 @@ impl UseDecl {
     ///
     /// Returns a `Diagnostic` if the use declaration path is completely empty.
     pub fn drp_name(&self) -> Result<&str, Diagnostic> {
-        let parts: Vec<&str> = self.path().iter().map(|iden| iden.as_inner()).collect();
+        let parts: Vec<&str> = self.path().iter().map(Identifier::as_str).collect();
         parts.first().copied().ok_or_else(|| {
             Error::CannotParse {
                 msg: "Empty use path".to_string(),
@@ -970,7 +970,7 @@ impl EnumMatchArm {
     pub fn enum_path_string(&self) -> String {
         self.enum_path
             .iter()
-            .map(Identifier::as_inner)
+            .map(Identifier::as_str)
             .collect::<Vec<_>>()
             .join("::")
     }
@@ -1056,7 +1056,7 @@ impl EnumConstruction {
     pub fn enum_path_string(&self) -> String {
         self.enum_path
             .iter()
-            .map(Identifier::as_inner)
+            .map(Identifier::as_str)
             .collect::<Vec<_>>()
             .join("::")
     }
@@ -2477,7 +2477,7 @@ impl ChumskyParse for TypeAlias {
 
         let name = AliasName::parser()
             .validate(|name, e, emit| {
-                let ident = name.as_inner();
+                let ident = name.as_str();
                 let known_type = if ident == "bool" {
                     Some(AliasedType::boolean())
                 } else if let Ok(uint_type) = UIntType::from_str(ident) {
@@ -2529,7 +2529,7 @@ impl ChumskyParse for EnumDeclaration {
             .map(Option::unwrap_or_default);
 
         let name = AliasName::parser().try_map(|name, span| {
-            if RESERVED_PATTERN_NAMES.contains(&name.as_inner()) {
+            if RESERVED_PATTERN_NAMES.contains(&name.as_str()) {
                 return Err(Diagnostic::new(
                     Error::Grammar {
                         msg: format!(
@@ -2545,7 +2545,7 @@ impl ChumskyParse for EnumDeclaration {
             // constructions name the enum while type annotations resolve
             // to the builtin, and the ABI would report the bare name
             // ambiguously.
-            if crate::str::is_reserved_alias_name(name.as_inner()) {
+            if crate::str::is_reserved_alias_name(name.as_str()) {
                 return Err(Diagnostic::new(
                     Error::RedefinedAliasAsBuiltin { name: name.clone() },
                     span,
@@ -3820,10 +3820,10 @@ fn main() {
         let Item::EnumDeclaration(decl) = item else {
             panic!("expected EnumDeclaration, got {item:?}");
         };
-        assert_eq!(decl.name().as_inner(), "Path");
+        assert_eq!(decl.name(), "Path");
         assert_eq!(decl.variants().len(), 3);
-        assert_eq!(decl.variants()[0].name().as_inner(), "Inherit");
-        assert_eq!(decl.variants()[2].name().as_inner(), "RefreshSpend");
+        assert_eq!(decl.variants()[0].name(), "Inherit");
+        assert_eq!(decl.variants()[2].name(), "RefreshSpend");
     }
 
     #[test]
@@ -3833,7 +3833,7 @@ fn main() {
             panic!("expected EnumDeclaration");
         };
         assert_eq!(decl.visibility(), &Visibility::Public);
-        assert_eq!(decl.name().as_inner(), "Color");
+        assert_eq!(decl.name(), "Color");
     }
 
     #[test]
@@ -4177,10 +4177,10 @@ fn main() {
         let Item::EnumDeclaration(decl) = item else {
             panic!("expected EnumDeclaration, got {item:?}");
         };
-        assert_eq!(decl.name().as_inner(), "Path");
+        assert_eq!(decl.name(), "Path");
         assert_eq!(decl.variants().len(), 3);
-        assert_eq!(decl.variants()[0].name().as_inner(), "Inherit");
-        assert_eq!(decl.variants()[2].name().as_inner(), "RefreshSpend");
+        assert_eq!(decl.variants()[0].name(), "Inherit");
+        assert_eq!(decl.variants()[2].name(), "RefreshSpend");
     }
 
     #[test]
@@ -4190,7 +4190,7 @@ fn main() {
             panic!("expected EnumDeclaration");
         };
         assert_eq!(decl.visibility(), &Visibility::Public);
-        assert_eq!(decl.name().as_inner(), "Color");
+        assert_eq!(decl.name(), "Color");
     }
 
     #[test]

@@ -878,7 +878,7 @@ impl Scope {
     /// * May also return errors propagated from item collection and insertion, such as [`Error::PrivateItem`] or [`Error::RedefinedItem`].
     pub fn resolve_use(&mut self, use_decl: &UseDecl) -> Result<(), Error> {
         let path = use_decl.path();
-        if path.first().map(|id| id.as_inner()) != Some(CRATE_STR) {
+        if path.first().map(|id| id.as_str()) != Some(CRATE_STR) {
             return Err(Error::MissingCrateKeyword);
         }
 
@@ -898,13 +898,13 @@ impl Scope {
                 .module_path
                 .iter()
                 .zip(&path[1..])
-                .take_while(|(curr, nav)| curr.as_inner() == nav.as_inner())
+                .take_while(|(curr, nav)| curr.as_str() == nav.as_str())
                 .count();
 
             let mut target_scope = &self.root;
 
             for (ind, segment) in path[1..].iter().enumerate() {
-                let name = ModuleName::from_str_unchecked(segment.as_inner());
+                let name = ModuleName::from_ident(segment);
 
                 let (inner, visibility) = target_scope
                     .submodules
@@ -920,7 +920,7 @@ impl Scope {
 
             let mut collected = Vec::with_capacity(use_decl_items.len());
             for (name, aliased) in use_decl_items {
-                if aliased.as_ref().is_some_and(|a| a.as_inner() == MAIN_STR) {
+                if aliased.as_ref().is_some_and(|a| a == MAIN_STR) {
                     return Err(Error::MainCannotBeAlias);
                 }
 
@@ -1127,7 +1127,7 @@ impl Scope {
     ) -> Result<(), Error> {
         self.check_alias_free(&name)?;
 
-        let info = EnumInfo::new(Arc::from(name.as_inner()), variants);
+        let info = EnumInfo::new(Arc::clone(name.as_inner()), variants);
         let resolved = ResolvedType::enumeration(info);
 
         self.current_module_mut()
@@ -1402,7 +1402,7 @@ impl AbstractSyntaxTree for Function {
             "Variables live only inside the function"
         );
 
-        if from.name().as_inner() != MAIN_STR {
+        if from.name() != MAIN_STR {
             let params = from
                 .params()
                 .iter()
@@ -1554,7 +1554,7 @@ fn analyze_enum_construction(
     let written = construction.enum_path_string();
     let names_expected_enum = match construction.enum_path() {
         [single] => {
-            let alias = AliasName::from_str_unchecked(single.as_inner());
+            let alias = AliasName::from_ident(single);
             match scope.get_alias(&alias) {
                 Ok(resolved) if &resolved == ty => true,
                 Ok(resolved) => {
@@ -1578,7 +1578,7 @@ fn analyze_enum_construction(
 
     let (variant_index, variant) = info
         .variant(construction.variant())
-        .ok_or_else(|| enum_variant_error(construction.variant().as_inner(), info))
+        .ok_or_else(|| enum_variant_error(construction.variant().as_str(), info))
         .with_span(span)?;
     if construction.args().len() != variant.payload().len() {
         return Err(Error::Grammar {
@@ -1904,7 +1904,7 @@ impl AbstractSyntaxTree for EnumMatch {
             })
             .with_span(span);
         };
-        let alias = AliasName::from_str_unchecked(single.as_inner());
+        let alias = AliasName::from_ident(single);
         let enum_ty = scope.get_alias(&alias).with_span(span)?;
         let info = match enum_ty.as_enum() {
             Some(info) => info.clone(),
@@ -2977,9 +2977,9 @@ mod module_tests {
             "main.simf",
             "
                 pub fn global_func() {}
-                mod inner { 
-                    use crate::global_func; 
-                    pub fn call_it() { global_func(); } 
+                mod inner {
+                    use crate::global_func;
+                    pub fn call_it() { global_func(); }
                 }
                 fn main() {}
             ",
@@ -3021,11 +3021,11 @@ mod module_tests {
         let result = analyze_multifile(vec![(
             "main.simf",
             "
-                mod brother { 
+                mod brother {
                     fn secret_toy() {} // Missing 'pub'
                 }
-                mod sister { 
-                    use crate::brother::secret_toy; 
+                mod sister {
+                    use crate::brother::secret_toy;
                 }
                 fn main() {}
             ",
@@ -3041,8 +3041,8 @@ mod module_tests {
         let result = analyze_multifile(vec![(
             "main.simf",
             "
-                mod child { 
-                    fn hidden() {} 
+                mod child {
+                    fn hidden() {}
                 }
                 use crate::child::hidden;
                 fn main() {}

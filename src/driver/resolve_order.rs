@@ -22,7 +22,7 @@ fn enum_declarations(items: &[parse::Item]) -> Vec<&parse::EnumDeclaration> {
 /// Enums by design are nominative, therefore to reason about same named enums in different modules
 /// we have to have a stable ABI with the suport of "qualified name".
 /// Currently, there is no support of "qualified name" concpet, therefore at the time of creating
-/// enums, it is forbidden to decler them in dependencies.    
+/// enums, it is forbidden to decler them in dependencies.
 ///
 /// If we used current ABI we would face following problems:
 /// 1. Adding or removing an unrelated dependency renumbers the files, so the same enum's ABI
@@ -102,9 +102,9 @@ impl DependencyGraph {
                 .collect();
 
             if source_id == MAIN_MODULE {
-                let has_main = local_items.iter().any(|item| {
-                    matches!(item, parse::Item::Function(f) if f.name().as_inner() == MAIN_STR)
-                });
+                let has_main = local_items
+                    .iter()
+                    .any(|item| matches!(item, parse::Item::Function(f) if f.name() == MAIN_STR));
 
                 if !has_main {
                     diagnostics.push(Diagnostic::global(Error::CannotParse {
@@ -121,7 +121,7 @@ impl DependencyGraph {
             // flattening an enum program produces source that no longer
             // re-parses (`TemplateProgram::flatten`). Splice the entry
             // file's items at the root instead of wrapping them.
-            let name = ModuleName::from_str_unchecked(Self::get_module_name(source_id).as_inner());
+            let name = ModuleName::from_ident(&Self::get_module_name(source_id));
             items.push(parse::Item::Module(parse::Module::new(
                 source_id,
                 Visibility::Private,
@@ -233,7 +233,7 @@ mod flattening_tests {
             .iter()
             .find_map(|item| {
                 if let parse::Item::Module(m) = item {
-                    if m.name().as_inner() == expected_mod_name.as_str() {
+                    if *m.name() == *expected_mod_name {
                         return Some(m);
                     }
                 }
@@ -246,9 +246,10 @@ mod flattening_tests {
             "The file wrapper module must be strictly private"
         );
 
-        let has_dep_func = wrapped_module.items().iter().any(
-            |item| matches!(item, parse::Item::Function(f) if f.name().as_inner() == "dep_func"),
-        );
+        let has_dep_func = wrapped_module
+            .items()
+            .iter()
+            .any(|item| matches!(item, parse::Item::Function(f) if f.name() == "dep_func"));
         assert!(
             has_dep_func,
             "The file_N module must contain the dependency's items"
@@ -295,14 +296,10 @@ mod flattening_tests {
             path.len() >= 2,
             "Rewritten path must have at least 2 segments"
         );
+        assert_eq!(path[0], *CRATE_STR, "Path must start with `crate`");
         assert_eq!(
-            path[0].as_inner(),
-            CRATE_STR,
-            "Path must start with `crate`"
-        );
-        assert_eq!(
-            path[1].as_inner(),
-            expected_file_segment.as_str(),
+            path[1],
+            *expected_file_segment.as_str(),
             "Path must route through the canonical `unit_N`"
         );
     }
@@ -367,7 +364,7 @@ mod dependency_map_tests {
             "main.simf",
             "
                 mod brother { pub fn toy() {} }
-                use crate::brother::toy; 
+                use crate::brother::toy;
                 fn main() {}
             ",
         )]);

@@ -282,10 +282,10 @@ impl<'a> Serialize for WitnessMapSerializer<'a> {
             // TODO: Consider serializing every value as a bare string and retiring the { value, type } form.
             // That drops "witness file readable without the program" entirely.
             if value.ty().contains_enum() {
-                map.serialize_entry(name.as_inner(), &value.to_string())?;
+                map.serialize_entry(name.as_str(), &value.to_string())?;
                 continue;
             }
-            map.serialize_entry(name.as_inner(), &ValueMapSerializer(value))?;
+            map.serialize_entry(name.as_str(), &ValueMapSerializer(value))?;
         }
         map.end()
     }

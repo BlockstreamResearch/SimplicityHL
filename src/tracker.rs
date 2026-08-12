@@ -97,7 +97,7 @@ impl<'a> DefaultTracker<'a> {
     ///
     /// This constructor is deprecated in favor of more flexible tracker setup.
     /// The deprecation is necessary to show the direction in which the SimplicityHL is moving
-    /// (i.e. different targets and support for possible custom Jets)  
+    /// (i.e. different targets and support for possible custom Jets)
     #[deprecated(since = "0.6.0", note = "Please use `build` instead")]
     pub fn new(debug_symbols: &'a DebugSymbols) -> Self {
         Self::build(debug_symbols, Box::new(ElementsJetHinter::new()))

@@ -1343,6 +1343,6 @@ mod tests {
             .variant(&Identifier::from_str_unchecked("Pair"))
             .expect("Pair is a declared variant");
         assert_eq!(2, index);
-        assert_eq!("Pair", variant.name().as_inner());
+        assert_eq!("Pair", variant.name());
     }
 }
