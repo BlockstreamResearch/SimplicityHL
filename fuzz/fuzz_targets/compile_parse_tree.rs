@@ -5,7 +5,7 @@ fn do_test(data: &[u8]) {
     use arbitrary::Arbitrary;
     use simplicityhl::ast::ElementsJetHinter;
 
-    use simplicityhl::{ast, named, parse, ArbitraryOfType, Arguments};
+    use simplicityhl::{ast, named, parse, ArbitraryOfType, Arguments, WitnessNameToValueMap as _};
 
     let mut u = arbitrary::Unstructured::new(data);
     let parse_program = match parse::Program::arbitrary(&mut u) {
@@ -22,8 +22,13 @@ fn do_test(data: &[u8]) {
         Err(..) => return,
     };
     let simplicity_named_construct = ast_program
-        .compile(arguments, false, Box::new(ElementsJetHinter::new()))
-        .expect("AST should compile with given arguments");
+        .compile(
+            arguments.shallow_clone(),
+            false,
+            Box::new(ElementsJetHinter::new()),
+        )
+        .expect("AST should compile with given arguments")
+        .instantiate(arguments);
     let _simplicity_commit = named::forget_names(&simplicity_named_construct);
 }
 

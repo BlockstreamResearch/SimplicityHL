@@ -19,7 +19,7 @@ use crate::error::{Diagnostic, Error, Span, WithSpan};
 use crate::named::{self, CoreExt, PairBuilder};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::pattern::{BasePattern, Pattern};
-use crate::template_program::TemplateProgramWitness;
+use crate::template_program::{TemplateProgram, TemplateProgramWitness};
 use crate::types::{StructuralType, TypeDeconstructible};
 use crate::value::{StructuralValue, Value};
 use crate::witness::{Arguments, WitnessNameToValueMap as _};
@@ -265,7 +265,7 @@ impl Program {
         arguments: Arguments,
         include_debug_symbols: bool,
         jet_hinter: Box<dyn JetHinter>,
-    ) -> Result<Arc<named::CommitNode>, Diagnostic> {
+    ) -> Result<TemplateProgram, Diagnostic> {
         types::Context::with_context(|ctx| {
             let mut scope = Scope::new(
                 ctx,
@@ -275,11 +275,8 @@ impl Program {
                 jet_hinter,
             );
 
-            let main = self.main();
-            let construct = main.compile(&mut scope).map(PairBuilder::build)?;
-            // SimplicityHL types should be correct by construction. If not, assign the
-            // whole main function as the span for them, which is as sensible as anything.
-            named::finalize_types(&construct).with_span(main)
+            let construct = self.main().compile(&mut scope).map(PairBuilder::build)?;
+            Ok(TemplateProgram::from_construct_node(&construct))
         })
     }
 }

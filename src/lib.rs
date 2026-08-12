@@ -46,7 +46,7 @@ use crate::error::DiagnosticManager;
 use crate::parse::ParseFromStrWithErrors;
 use crate::resolution::DependencyMap;
 use crate::source::CanonSourceFile;
-pub use crate::template_program::TemplateProgramWitness;
+pub use crate::template_program::{TemplateProgram, TemplateProgramWitness};
 pub use crate::types::ResolvedType;
 pub use crate::unstable::{UnstableFeature, UnstableFeatures};
 pub use crate::value::Value;
@@ -215,14 +215,14 @@ impl TemplateAst {
         }
 
         let commit = self.simfony.compile(
-            arguments,
+            arguments.shallow_clone(),
             include_debug_symbols,
             self.jet_hinter.clone_box(),
         )?;
 
         Ok(CompiledProgram {
             debug_symbols: self.simfony.debug_symbols(self.file.as_ref()),
-            simplicity: commit,
+            simplicity: commit.instantiate(arguments),
             witness_types: self.simfony.witness_types().shallow_clone(),
             parameter_types: self.simfony.parameters().shallow_clone(),
         })
