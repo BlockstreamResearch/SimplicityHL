@@ -55,7 +55,9 @@ impl<'de> Deserialize<'de> for WitnessValues {
         D: Deserializer<'de>,
     {
         deserializer
-            .deserialize_map(NamedMapVisitor::new(TemplateProgramWitness::from_ident))
+            .deserialize_map(NamedMapVisitor::new(
+                TemplateProgramWitness::witness_from_ident,
+            ))
             .map(Self::from_map)
     }
 }
@@ -167,7 +169,9 @@ impl<'de> Deserialize<'de> for Arguments {
         D: Deserializer<'de>,
     {
         deserializer
-            .deserialize_map(NamedMapVisitor::new(TemplateProgramWitness::from_ident))
+            .deserialize_map(NamedMapVisitor::new(
+                TemplateProgramWitness::parameter_from_ident,
+            ))
             .map(Self::from_map)
     }
 }
@@ -359,19 +363,19 @@ mod tests {
         let action_ty = unit_enum("Action", &["Inherit", "ColdSpend"]);
         let witness_types = WitnessTypes::from(HashMap::from([
             (
-                TemplateProgramWitness::from_str_unchecked("ACTION"),
+                TemplateProgramWitness::witness_from_str("ACTION"),
                 action_ty.clone(),
             ),
             (
-                TemplateProgramWitness::from_str_unchecked("MAYBE"),
+                TemplateProgramWitness::witness_from_str("MAYBE"),
                 ResolvedType::option(action_ty.clone()),
             ),
             (
-                TemplateProgramWitness::from_str_unchecked("PAIR"),
+                TemplateProgramWitness::witness_from_str("PAIR"),
                 ResolvedType::tuple([action_ty, unit_enum("Reaction", &["Fast", "Slow"])]),
             ),
             (
-                TemplateProgramWitness::from_str_unchecked("PLAIN"),
+                TemplateProgramWitness::witness_from_str("PLAIN"),
                 crate::parse::ParseFromStr::parse_from_str("u32").unwrap(),
             ),
         ]));
@@ -393,7 +397,7 @@ mod tests {
         )
         .unwrap();
         let witness = WitnessValues::from_map(HashMap::from([(
-            TemplateProgramWitness::from_str_unchecked("ACTION"),
+            TemplateProgramWitness::witness_from_str("ACTION"),
             value,
         )]));
 
@@ -405,7 +409,7 @@ mod tests {
         let text = serde_json::to_string(&witness).unwrap();
         let unresolved: UnresolvedValues = serde_json::from_str(&text).unwrap();
         let witness_types = WitnessTypes::from(HashMap::from([(
-            TemplateProgramWitness::from_str_unchecked("ACTION"),
+            TemplateProgramWitness::witness_from_str("ACTION"),
             action_ty,
         )]));
         let round_tripped: WitnessValues = unresolved.resolve(&witness_types).unwrap();
@@ -442,7 +446,7 @@ mod tests {
         )
         .unwrap();
         let witness = WitnessValues::from_map(HashMap::from([(
-            TemplateProgramWitness::from_str_unchecked("ACTION"),
+            TemplateProgramWitness::witness_from_str("ACTION"),
             value,
         )]));
 
@@ -453,7 +457,7 @@ mod tests {
         let text = serde_json::to_string(&witness).unwrap();
         let unresolved: UnresolvedValues = serde_json::from_str(&text).unwrap();
         let witness_types = WitnessTypes::from(HashMap::from([(
-            TemplateProgramWitness::from_str_unchecked("ACTION"),
+            TemplateProgramWitness::witness_from_str("ACTION"),
             action_ty,
         )]));
         let round_tripped: WitnessValues = unresolved.resolve(&witness_types).unwrap();
@@ -470,7 +474,7 @@ mod tests {
         let cold = Value::enum_variant(&action_ty, &Identifier::from_str_unchecked("Cold"), vec![])
             .unwrap();
         let witness = WitnessValues::from_map(HashMap::from([(
-            TemplateProgramWitness::from_str_unchecked("MAYBE"),
+            TemplateProgramWitness::witness_from_str("MAYBE"),
             Value::some(cold),
         )]));
 
@@ -482,7 +486,7 @@ mod tests {
         let text = serde_json::to_string(&witness).unwrap();
         let unresolved: UnresolvedValues = serde_json::from_str(&text).unwrap();
         let witness_types = WitnessTypes::from(HashMap::from([(
-            TemplateProgramWitness::from_str_unchecked("MAYBE"),
+            TemplateProgramWitness::witness_from_str("MAYBE"),
             option_ty,
         )]));
         let round_tripped: WitnessValues = unresolved.resolve(&witness_types).unwrap();

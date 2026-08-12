@@ -1663,7 +1663,7 @@ fn main() {
             serde_json::from_str(r#"{ "ACT": "Action::Cold" }"#).unwrap();
         let witness: WitnessValues = unresolved.resolve(compiled.witness_types()).unwrap();
         assert!(witness
-            .get(&TemplateProgramWitness::from_str_unchecked("ACT"))
+            .get(&TemplateProgramWitness::witness_from_str("ACT"))
             .is_some());
         TestCase::program_text_with_unstable(Cow::Borrowed(src), UnstableFeatures::all())
             .with_witness_values(witness)
@@ -1694,7 +1694,7 @@ fn main() {
         .unwrap();
         let selector_ty = compiled
             .witness_types()
-            .get(&TemplateProgramWitness::from_str_unchecked("SELECTOR"))
+            .get(&TemplateProgramWitness::witness_from_str("SELECTOR"))
             .unwrap()
             .clone();
 
@@ -1702,14 +1702,11 @@ fn main() {
         // points must reject the omitted witness rather than zero-filling it.
         let mut map: HashMap<TemplateProgramWitness, Value> = HashMap::new();
         map.insert(
-            TemplateProgramWitness::from_str_unchecked("SELECTOR"),
+            TemplateProgramWitness::witness_from_str("SELECTOR"),
             Value::enum_variant(&selector_ty, &Identifier::from_str_unchecked("A"), vec![])
                 .unwrap(),
         );
-        map.insert(
-            TemplateProgramWitness::from_str_unchecked("A"),
-            Value::u32(0),
-        );
+        map.insert(TemplateProgramWitness::witness_from_str("A"), Value::u32(0));
 
         let err = compiled
             .satisfy(WitnessValues::from_map(map))
@@ -1756,7 +1753,7 @@ fn main() {
             .unwrap();
             let action_ty = compiled
                 .witness_types()
-                .get(&TemplateProgramWitness::from_str_unchecked("ACT"))
+                .get(&TemplateProgramWitness::witness_from_str("ACT"))
                 .expect("ACT is declared")
                 .clone();
 
@@ -1766,9 +1763,9 @@ fn main() {
                         .expect("declared variant");
                 let expected = u32::try_from((i + 1) * 10).unwrap();
                 let map = HashMap::from([
-                    (TemplateProgramWitness::from_str_unchecked("ACT"), action),
+                    (TemplateProgramWitness::witness_from_str("ACT"), action),
                     (
-                        TemplateProgramWitness::from_str_unchecked("EXPECTED"),
+                        TemplateProgramWitness::witness_from_str("EXPECTED"),
                         crate::value::ValueConstructible::u32(expected),
                     ),
                 ]);

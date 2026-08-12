@@ -2710,8 +2710,8 @@ impl SingleExpression {
             Token::DecLiteral(s) => SingleExpressionInner::Decimal(s),
             Token::HexLiteral(s) => SingleExpressionInner::Hexadecimal(s),
             Token::BinLiteral(s) => SingleExpressionInner::Binary(s),
-            Token::Witness(s) => SingleExpressionInner::Witness(TemplateProgramWitness::from_str_unchecked(s)),
-            Token::Param(s) => SingleExpressionInner::Parameter(TemplateProgramWitness::from_str_unchecked(s)),
+            Token::Witness(s) => SingleExpressionInner::Witness(TemplateProgramWitness::witness_from_str(s)),
+            Token::Param(s) => SingleExpressionInner::Parameter(TemplateProgramWitness::parameter_from_str(s)),
         };
 
         // Enum variant construction: `Path::To::Enum::Variant(args..)`.
