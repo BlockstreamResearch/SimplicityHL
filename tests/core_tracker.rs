@@ -4,7 +4,7 @@ use std::rc::Rc;
 use simplicityhl::ast::CoreJetHinter;
 use simplicityhl::simplicity::jet::CoreEnv;
 use simplicityhl::tracker::DefaultTracker;
-use simplicityhl::{Arguments, TemplateProgram, WitnessValues};
+use simplicityhl::{Arguments, TemplateAst, WitnessValues};
 
 const CORE_PROGRAM: &str = r#"fn main() {
     let (_, sum): (bool, u32) = jet::add_32(10, 20);
@@ -12,7 +12,7 @@ const CORE_PROGRAM: &str = r#"fn main() {
 }"#;
 
 fn satisfied_core_program() -> simplicityhl::SatisfiedProgram {
-    TemplateProgram::new(CORE_PROGRAM, Box::new(CoreJetHinter::new()))
+    TemplateAst::new(CORE_PROGRAM, Box::new(CoreJetHinter::new()))
         .unwrap()
         .instantiate(Arguments::default(), true)
         .unwrap()

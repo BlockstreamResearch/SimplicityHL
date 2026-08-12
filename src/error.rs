@@ -449,7 +449,7 @@ impl DiagnosticManager {
         //
         // The only caller that hits this branch is the legacy one-file program
         // flow, which bypasses the driver. All modern paths (LSP, `simc`,
-        // Simplex, and the Web build via `TemplateProgram::flatten`) register
+        // Simplex, and the Web build via `TemplateAst::flatten`) register
         // sources with the driver and hit the `RenderCache`-based render below.
         //
         // Legacy callers get message-only output — no source snippets, no

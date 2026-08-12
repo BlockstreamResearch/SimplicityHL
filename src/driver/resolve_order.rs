@@ -119,7 +119,7 @@ impl DependencyGraph {
             // entry file included — in a generated module, but enum
             // declarations are only valid at the top level of a file, so
             // flattening an enum program produces source that no longer
-            // re-parses (`TemplateProgram::flatten`). Splice the entry
+            // re-parses (`TemplateAst::flatten`). Splice the entry
             // file's items at the root instead of wrapping them.
             let name = ModuleName::from_ident(&Self::get_module_name(source_id));
             items.push(parse::Item::Module(parse::Module::new(

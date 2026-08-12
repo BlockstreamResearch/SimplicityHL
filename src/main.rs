@@ -7,7 +7,7 @@ use simplicityhl::error::should_color;
 use simplicityhl::version::SimcDirective;
 use simplicityhl::{
     resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
-    TemplateProgram,
+    TemplateAst,
 };
 use simplicityhl::{UnstableFeature, UnstableFeatures};
 use std::path::Path;
@@ -197,7 +197,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let source = CanonSourceFile::new(main_path.clone(), std::sync::Arc::from(main_text));
-    let template = match TemplateProgram::new_with_dep(
+    let template = match TemplateAst::new_with_dep(
         source,
         &dependencies,
         &unstable_features,

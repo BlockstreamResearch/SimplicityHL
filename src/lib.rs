@@ -56,7 +56,7 @@ pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 ///
 /// A template has parameterized values that need to be supplied with arguments.
 #[derive(Debug)]
-pub struct TemplateProgram {
+pub struct TemplateAst {
     simfony: ast::Program,
     file: Arc<str>,
     jet_hinter: Box<dyn ast::JetHinter>,
@@ -64,7 +64,7 @@ pub struct TemplateProgram {
     resolved_program: parse::Program,
 }
 
-impl TemplateProgram {
+impl TemplateAst {
     /// Parses and flattens a multi-file program into a single enriched [`parse::Program`]
     /// with all imports resolved and each file wrapped in a `unit_N` module.
     ///
@@ -196,7 +196,7 @@ impl TemplateProgram {
     /// ## Errors
     ///
     /// The arguments are not consistent with the parameters of the program.
-    /// Use [`TemplateProgram::parameters`] to see which parameters the program has.
+    /// Use [`TemplateAst::parameters`] to see which parameters the program has.
     pub fn instantiate(
         &self,
         arguments: Arguments,
@@ -259,8 +259,8 @@ impl CompiledProgram {
     ///
     /// ## See
     ///
-    /// - [`TemplateProgram::new_with_dep`]
-    /// - [`TemplateProgram::instantiate`]
+    /// - [`TemplateAst::new_with_dep`]
+    /// - [`TemplateAst::instantiate`]
     pub fn new_with_dep(
         source: CanonSourceFile,
         dependency_map: &DependencyMap,
@@ -269,7 +269,7 @@ impl CompiledProgram {
         include_debug_symbols: bool,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        TemplateProgram::new_with_dep(
+        TemplateAst::new_with_dep(
             source,
             dependency_map,
             unstable_features,
@@ -283,8 +283,8 @@ impl CompiledProgram {
     ///
     /// ## See
     ///
-    /// - [`TemplateProgram::new`]
-    /// - [`TemplateProgram::instantiate`]
+    /// - [`TemplateAst::new`]
+    /// - [`TemplateAst::instantiate`]
     pub fn new<Str: Into<Arc<str>>>(
         s: Str,
         arguments: Arguments,
@@ -309,7 +309,7 @@ impl CompiledProgram {
         include_debug_symbols: bool,
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, String> {
-        TemplateProgram::new_with_unstable(s, unstable_features, jet_hinter.clone_box())
+        TemplateAst::new_with_unstable(s, unstable_features, jet_hinter.clone_box())
             .map_err(|error| error.to_string())
             .and_then(|template| template.instantiate(arguments, include_debug_symbols))
     }
@@ -325,7 +325,7 @@ impl CompiledProgram {
     }
 
     /// The version of the compiler that produced this program — this crate's version.
-    /// See [`TemplateProgram::compiler_version`].
+    /// See [`TemplateAst::compiler_version`].
     pub fn compiler_version(&self) -> &'static str {
         version::SimcDirective::current_version()
     }
@@ -415,8 +415,8 @@ impl SatisfiedProgram {
     ///
     /// ## See
     ///
-    /// - [`TemplateProgram::new`]
-    /// - [`TemplateProgram::instantiate`]
+    /// - [`TemplateAst::new`]
+    /// - [`TemplateAst::instantiate`]
     /// - [`CompiledProgram::satisfy`]
     pub fn new<Str: Into<Arc<str>>>(
         s: Str,
@@ -583,7 +583,7 @@ pub(crate) mod tests {
             Arc::from(program_text),
         );
 
-        match TemplateProgram::flatten(source, dependency_map, &UnstableFeatures::all()) {
+        match TemplateAst::flatten(source, dependency_map, &UnstableFeatures::all()) {
             Ok(single_file) => single_file,
             Err(error) => panic!("{}", &error),
         }
@@ -630,7 +630,7 @@ pub(crate) mod tests {
         include_fee_output: bool,
     }
 
-    impl TestCase<TemplateProgram> {
+    impl TestCase<TemplateAst> {
         pub fn template_file<P: AsRef<Path>>(program_file_path: P) -> Self {
             Self::template_file_with_unstable(program_file_path, UnstableFeatures::none())
         }
@@ -654,7 +654,7 @@ pub(crate) mod tests {
                 Arc::from(program_text),
             );
 
-            let program = match TemplateProgram::new_with_dep(
+            let program = match TemplateAst::new_with_dep(
                 source,
                 dependency_map,
                 &unstable_features,
@@ -680,7 +680,7 @@ pub(crate) mod tests {
             program_text: Cow<str>,
             unstable_features: UnstableFeatures,
         ) -> Self {
-            let program = match TemplateProgram::new_with_unstable(
+            let program = match TemplateAst::new_with_unstable(
                 program_text.as_ref(),
                 &unstable_features,
                 Box::new(ElementsJetHinter::new()),
@@ -729,7 +729,7 @@ pub(crate) mod tests {
 
     impl TestCase<CompiledProgram> {
         pub fn program_file<P: AsRef<Path>>(program_file_path: P) -> Self {
-            TestCase::<TemplateProgram>::template_file(program_file_path)
+            TestCase::<TemplateAst>::template_file(program_file_path)
                 .with_arguments(Arguments::default())
         }
 
@@ -737,7 +737,7 @@ pub(crate) mod tests {
             program_file_path: P,
             unstable_features: UnstableFeatures,
         ) -> Self {
-            TestCase::<TemplateProgram>::template_file_with_unstable(
+            TestCase::<TemplateAst>::template_file_with_unstable(
                 program_file_path,
                 unstable_features,
             )
@@ -745,7 +745,7 @@ pub(crate) mod tests {
         }
 
         pub fn program_text(program_text: Cow<str>) -> Self {
-            TestCase::<TemplateProgram>::template_text(program_text)
+            TestCase::<TemplateAst>::template_text(program_text)
                 .with_arguments(Arguments::default())
         }
 
@@ -753,11 +753,8 @@ pub(crate) mod tests {
             program_text: Cow<str>,
             unstable_features: UnstableFeatures,
         ) -> Self {
-            TestCase::<TemplateProgram>::template_text_with_unstable(
-                program_text,
-                unstable_features,
-            )
-            .with_arguments(Arguments::default())
+            TestCase::<TemplateAst>::template_text_with_unstable(program_text, unstable_features)
+                .with_arguments(Arguments::default())
         }
 
         pub fn program_file_with_deps_and_unstable(
@@ -765,7 +762,7 @@ pub(crate) mod tests {
             dependency_map: &DependencyMap,
             unstable_features: UnstableFeatures,
         ) -> Self {
-            TestCase::<TemplateProgram>::template_deps_with_unstable(
+            TestCase::<TemplateAst>::template_deps_with_unstable(
                 prog_path.as_ref(),
                 dependency_map,
                 unstable_features,
@@ -1077,7 +1074,7 @@ pub(crate) mod tests {
 
         let dependency_map = build_map(&canon_root, &[]).unwrap();
 
-        TestCase::<TemplateProgram>::template_deps_with_unstable(
+        TestCase::<TemplateAst>::template_deps_with_unstable(
             &main_path,
             &dependency_map,
             UnstableFeatures::all(),
@@ -1090,10 +1087,10 @@ pub(crate) mod tests {
     #[test]
     fn test_anonymous_source_compiles_without_dependencies() {
         let code = "fn main() { assert!(true); }";
-        let program = TemplateProgram::new(code, Box::new(ElementsJetHinter::new()));
+        let program = TemplateAst::new(code, Box::new(ElementsJetHinter::new()));
         assert!(
             program.is_ok(),
-            "TemplateProgram::new should successfully compile anonymous source files without requiring canonical paths"
+            "TemplateAst::new should successfully compile anonymous source files without requiring canonical paths"
         );
     }
 
@@ -1368,10 +1365,10 @@ fn main() {
         ];
 
         for hinter in hinters {
-            let program = TemplateProgram::new(code, hinter);
+            let program = TemplateAst::new(code, hinter);
             assert!(
                 program.is_ok(),
-                "TemplateProgram::new should successfully compile the same program with different jet hinters: {:?}",
+                "TemplateAst::new should successfully compile the same program with different jet hinters: {:?}",
                 program.err(),
             );
         }
@@ -1387,14 +1384,14 @@ fn main() {
     assert!(jet::eq_32(idx, idx));
 }"#;
 
-        let elements_result = TemplateProgram::new(code, Box::new(ElementsJetHinter::new()));
+        let elements_result = TemplateAst::new(code, Box::new(ElementsJetHinter::new()));
         assert!(
             elements_result.is_ok(),
             "ElementsJetHinter should compile Elements-specific jets: {:?}",
             elements_result.err(),
         );
 
-        let core_result = TemplateProgram::new(code, Box::new(CoreJetHinter::new()));
+        let core_result = TemplateAst::new(code, Box::new(CoreJetHinter::new()));
         assert!(
             core_result.is_err(),
             "CoreJetHinter should fail to compile Elements-specific jets",
@@ -1556,7 +1553,7 @@ fn main() {
         }
     }
 
-    // Smoke tests that the version check is wired into `TemplateProgram::new`: one
+    // Smoke tests that the version check is wired into `TemplateAst::new`: one
     // compatible directive compiles, one incompatible directive aborts. The semver
     // matching and per-kind messages are covered exhaustively in `version`'s unit
     // tests, so they are not re-asserted through the pipeline here.
@@ -1569,15 +1566,14 @@ fn main() {
             .unwrap();
         let compatible = format!("simc \"{version}\";\nfn main() {{}}");
         assert!(
-            TemplateProgram::new(compatible, Box::new(crate::ast::ElementsJetHinter::new()))
-                .is_ok()
+            TemplateAst::new(compatible, Box::new(crate::ast::ElementsJetHinter::new())).is_ok()
         );
     }
 
     /// The producing compiler's version is readable from the program objects.
     #[test]
     fn compiler_version_accessor() {
-        let template = TemplateProgram::new(
+        let template = TemplateAst::new(
             "fn main() {}",
             Box::new(crate::ast::ElementsJetHinter::new()),
         )
@@ -1590,7 +1586,7 @@ fn main() {
     #[test]
     fn incompatible_directive_aborts() {
         let too_old = "simc \">= 99.99.99\";\nfn main() {}";
-        let err = TemplateProgram::new(too_old, Box::new(crate::ast::ElementsJetHinter::new()))
+        let err = TemplateAst::new(too_old, Box::new(crate::ast::ElementsJetHinter::new()))
             .unwrap_err()
             .to_string();
         assert!(
@@ -1825,7 +1821,7 @@ mod error_tests {
 
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
 
-        let err = TemplateProgram::new_with_dep(
+        let err = TemplateAst::new_with_dep(
             source_file(&main_path),
             &dependencies,
             &UnstableFeatures::all(),
@@ -1857,7 +1853,7 @@ mod error_tests {
         ws.create_file("workspace/lib/base.simf", "pub fn one() -> u32 { 1 }\n");
 
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
-        let _err = TemplateProgram::new_with_dep(
+        let _err = TemplateAst::new_with_dep(
             source_file(&main_path),
             &dependencies,
             &UnstableFeatures::none(),
@@ -1877,7 +1873,7 @@ mod error_tests {
         );
         let dependencies = dependency_map(&root_dir, "lib", &lib_dir);
 
-        let err = TemplateProgram::new_with_dep(
+        let err = TemplateAst::new_with_dep(
             source_file(&main_path),
             &dependencies,
             &UnstableFeatures::all(),

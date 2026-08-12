@@ -3080,10 +3080,10 @@ mod module_tests {
 #[cfg(test)]
 mod enum_tests {
     use crate::ast::ElementsJetHinter;
-    use crate::{TemplateProgram, UnstableFeatures};
+    use crate::{TemplateAst, UnstableFeatures};
 
     fn analyze(src: &str) -> Result<(), String> {
-        TemplateProgram::new_with_unstable(
+        TemplateAst::new_with_unstable(
             src,
             &UnstableFeatures::all(),
             Box::new(ElementsJetHinter::new()),
@@ -3541,7 +3541,7 @@ mod enum_tests {
     fn alias_named_after_pattern_stays_valid_without_enums() {
         // Stable programs may alias pattern names; the enums feature must
         // not retroactively reject them.
-        let result = TemplateProgram::new_with_unstable(
+        let result = TemplateAst::new_with_unstable(
             "type Left = u32;\nfn main() { let _x: Left = 1; }",
             &UnstableFeatures::none(),
             Box::new(ElementsJetHinter::new()),
@@ -3596,7 +3596,7 @@ mod enum_tests {
 
     #[test]
     fn enum_requires_unstable_feature() {
-        let result = TemplateProgram::new_with_unstable(
+        let result = TemplateAst::new_with_unstable(
             "enum Color { Red, Green }\nfn main() {}",
             &UnstableFeatures::none(),
             Box::new(ElementsJetHinter::new()),
