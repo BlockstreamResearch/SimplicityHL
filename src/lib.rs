@@ -52,6 +52,7 @@ pub use crate::unstable::{UnstableFeature, UnstableFeatures};
 pub use crate::value::Value;
 #[cfg(feature = "serde")]
 pub use crate::witness::UnresolvedValues;
+pub use crate::witness::WitnessNameToValueMap;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 
 /// The template of a SimplicityHL program.
@@ -1711,7 +1712,7 @@ fn main() {
         );
 
         let err = compiled
-            .satisfy(WitnessValues::from(map.clone()))
+            .satisfy(WitnessValues::from_map(map))
             .expect_err("satisfy must reject a missing witness");
         assert!(
             err.contains('B'),
@@ -1775,7 +1776,7 @@ fn main() {
                     Cow::Owned(src.clone()),
                     UnstableFeatures::all(),
                 )
-                .with_witness_values(WitnessValues::from(map))
+                .with_witness_values(WitnessValues::from_map(map))
                 .assert_run_success();
             }
         }

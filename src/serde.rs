@@ -7,7 +7,9 @@ use crate::parse::ParseFromStr as _;
 use crate::str::Identifier;
 use crate::types::ResolvedType;
 use crate::value::Value;
-use crate::witness::{Arguments, UnresolvedValue, UnresolvedValues, WitnessValues};
+use crate::witness::{
+    Arguments, UnresolvedValue, UnresolvedValues, WitnessNameToValueMap as _, WitnessValues,
+};
 use crate::{AbiMeta, Parameters, TemplateProgramWitness, WitnessTypes};
 use serde::{de, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 
@@ -54,7 +56,7 @@ impl<'de> Deserialize<'de> for WitnessValues {
     {
         deserializer
             .deserialize_map(NamedMapVisitor::new(TemplateProgramWitness::from_ident))
-            .map(Self::from)
+            .map(Self::from_map)
     }
 }
 
@@ -101,7 +103,7 @@ impl<'de> Deserialize<'de> for UnresolvedValues {
         D: Deserializer<'de>,
     {
         deserializer
-            .deserialize_map(NamedMapVisitor::new(TemplateProgramWitness::from_ident))
+            .deserialize_map(NamedMapVisitor::new(Identifier::shallow_clone))
             .map(Self::from_map)
     }
 }
@@ -166,7 +168,7 @@ impl<'de> Deserialize<'de> for Arguments {
     {
         deserializer
             .deserialize_map(NamedMapVisitor::new(TemplateProgramWitness::from_ident))
-            .map(Self::from)
+            .map(Self::from_map)
     }
 }
 
@@ -390,7 +392,7 @@ mod tests {
             vec![],
         )
         .unwrap();
-        let witness = WitnessValues::from(HashMap::from([(
+        let witness = WitnessValues::from_map(HashMap::from([(
             TemplateProgramWitness::from_str_unchecked("ACTION"),
             value,
         )]));
@@ -439,7 +441,7 @@ mod tests {
             vec![Value::u32(42)],
         )
         .unwrap();
-        let witness = WitnessValues::from(HashMap::from([(
+        let witness = WitnessValues::from_map(HashMap::from([(
             TemplateProgramWitness::from_str_unchecked("ACTION"),
             value,
         )]));
@@ -467,7 +469,7 @@ mod tests {
         let option_ty = ResolvedType::option(action_ty.clone());
         let cold = Value::enum_variant(&action_ty, &Identifier::from_str_unchecked("Cold"), vec![])
             .unwrap();
-        let witness = WitnessValues::from(HashMap::from([(
+        let witness = WitnessValues::from_map(HashMap::from([(
             TemplateProgramWitness::from_str_unchecked("MAYBE"),
             Value::some(cold),
         )]));

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::error::{Diagnostic, DiagnosticManager, Error, WithSpan};
 use crate::parse::ParseFromStr;
+use crate::str::Identifier;
 use crate::types::{AliasedType, ResolvedType};
 use crate::value::Value;
 use crate::TemplateProgramWitness;
@@ -35,34 +36,60 @@ macro_rules! impl_name_type_map {
     };
 }
 
+/// Trait describing a map from template-program "witness names" to values.
+///
+/// In a templated program, witness names may refer to actual witnesses, or to parameters. This
+/// trait allows manipulating such maps.
+pub trait WitnessNameToValueMap {
+    /// Create a map from an `Arc<HashMap>`.
+    fn from_inner(map: Arc<HashMap<TemplateProgramWitness, Value>>) -> Self;
+
+    /// Access the inner map.
+    fn as_inner(&self) -> &Arc<HashMap<TemplateProgramWitness, Value>>;
+
+    /// Convert a bare identifier to a key.
+    fn ident_to_key(ident: &Identifier) -> TemplateProgramWitness;
+
+    /// Create a map from a `HashMap`.
+    fn from_map(map: HashMap<TemplateProgramWitness, Value>) -> Self
+    where
+        Self: Sized,
+    {
+        Self::from_inner(Arc::new(map))
+    }
+
+    /// Make a cheap copy of the map.
+    fn shallow_clone(&self) -> Self
+    where
+        Self: Sized,
+    {
+        Self::from_inner(Arc::clone(self.as_inner()))
+    }
+
+    /// Get the value that is assigned to the given name.
+    fn get(&self, name: &TemplateProgramWitness) -> Option<&Value> {
+        self.as_inner().get(name)
+    }
+
+    /// Create an iterator over all name-value pairs.
+    fn iter(&self) -> impl Iterator<Item = (&TemplateProgramWitness, &Value)> {
+        self.as_inner().iter()
+    }
+}
+
 macro_rules! impl_name_value_map {
     ($wrapper: ident, $module_name: expr) => {
-        impl $wrapper {
-            /// Access the inner map.
-            #[cfg(feature = "serde")]
-            pub(crate) fn as_inner(&self) -> &HashMap<TemplateProgramWitness, Value> {
+        impl WitnessNameToValueMap for $wrapper {
+            fn from_inner(map: Arc<HashMap<TemplateProgramWitness, Value>>) -> Self {
+                Self(map)
+            }
+
+            fn as_inner(&self) -> &Arc<HashMap<TemplateProgramWitness, Value>> {
                 &self.0
             }
 
-            /// Get the value that is assigned to the given name.
-            pub fn get(&self, name: &TemplateProgramWitness) -> Option<&Value> {
-                self.0.get(name)
-            }
-
-            /// Create an iterator over all name-value pairs.
-            pub fn iter(&self) -> impl Iterator<Item = (&TemplateProgramWitness, &Value)> {
-                self.0.iter()
-            }
-
-            /// Make a cheap copy of the map.
-            pub fn shallow_clone(&self) -> Self {
-                Self(Arc::clone(&self.0))
-            }
-        }
-
-        impl From<HashMap<TemplateProgramWitness, Value>> for $wrapper {
-            fn from(value: HashMap<TemplateProgramWitness, Value>) -> Self {
-                Self(Arc::new(value))
+            fn ident_to_key(ident: &Identifier) -> TemplateProgramWitness {
+                TemplateProgramWitness::from_ident(ident)
             }
         }
 
@@ -166,11 +193,11 @@ pub(crate) enum UnresolvedValue {
 /// [`WitnessValues`] or [`Arguments`].
 #[cfg(feature = "serde")]
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
-pub struct UnresolvedValues(HashMap<TemplateProgramWitness, UnresolvedValue>);
+pub struct UnresolvedValues(HashMap<Identifier, UnresolvedValue>);
 
 #[cfg(feature = "serde")]
 impl UnresolvedValues {
-    pub(crate) fn from_map(map: HashMap<TemplateProgramWitness, UnresolvedValue>) -> Self {
+    pub(crate) fn from_map(map: HashMap<Identifier, UnresolvedValue>) -> Self {
         Self(map)
     }
 
@@ -186,12 +213,13 @@ impl UnresolvedValues {
     /// A bare value string does not parse at the declared type.
     pub fn resolve<T, M>(self, declared_types: &M) -> Result<T, String>
     where
-        T: From<HashMap<TemplateProgramWitness, Value>>,
+        T: WitnessNameToValueMap,
         M: AsRef<HashMap<TemplateProgramWitness, ResolvedType>>,
     {
         let declared_types = declared_types.as_ref();
         let mut map = HashMap::with_capacity(self.0.len());
         for (name, unresolved) in self.0 {
+            let name = T::ident_to_key(&name);
             let value = match unresolved {
                 UnresolvedValue::Typed(value) => value,
                 UnresolvedValue::Untyped(s) => {
@@ -205,7 +233,7 @@ impl UnresolvedValues {
             };
             map.insert(name, value);
         }
-        Ok(T::from(map))
+        Ok(T::from_map(map))
     }
 }
 
@@ -297,7 +325,7 @@ impl crate::ArbitraryOfType for Arguments {
                 Value::arbitrary_of_type(u, parameter_ty)?,
             );
         }
-        Ok(Self::from(map))
+        Ok(Self::from_map(map))
     }
 }
 
@@ -334,7 +362,7 @@ mod tests {
     assert!(jet::is_zero_32(witness::A));
 }"#;
 
-        let witness = WitnessValues::from(HashMap::from([(
+        let witness = WitnessValues::from_map(HashMap::from([(
             TemplateProgramWitness::from_str_unchecked("A"),
             Value::u16(42),
         )]));
@@ -392,11 +420,11 @@ fn main() {
 
         let unresolved = UnresolvedValues::from_map(HashMap::from([
             (
-                TemplateProgramWitness::from_str_unchecked("A"),
+                Identifier::from_str_unchecked("A"),
                 UnresolvedValue::Untyped("42".to_string()),
             ),
             (
-                TemplateProgramWitness::from_str_unchecked("B"),
+                Identifier::from_str_unchecked("B"),
                 UnresolvedValue::Typed(Value::u16(7)),
             ),
         ]));
@@ -412,7 +440,7 @@ fn main() {
 
         // Entries the program does not declare are skipped (consistent with `WitnessValues::is_consistent`)
         let extra = UnresolvedValues::from_map(HashMap::from([(
-            TemplateProgramWitness::from_str_unchecked("UNUSED"),
+            Identifier::from_str_unchecked("UNUSED"),
             UnresolvedValue::Untyped("1".to_string()),
         )]));
         let resolved: WitnessValues = extra.resolve(&witness_types).unwrap();
@@ -423,7 +451,7 @@ fn main() {
         );
 
         let bad = UnresolvedValues::from_map(HashMap::from([(
-            TemplateProgramWitness::from_str_unchecked("A"),
+            Identifier::from_str_unchecked("A"),
             UnresolvedValue::Untyped("not-a-number".to_string()),
         )]));
         let err = bad.resolve::<WitnessValues, _>(&witness_types).unwrap_err();
@@ -477,7 +505,7 @@ fn main() {
 
         let resolve_one = |input: &str| -> Result<Value, String> {
             let unresolved = UnresolvedValues::from_map(HashMap::from([(
-                TemplateProgramWitness::from_str_unchecked("ACTION"),
+                Identifier::from_str_unchecked("ACTION"),
                 UnresolvedValue::Untyped(input.to_string()),
             )]));
             let resolved: WitnessValues = unresolved.resolve(&witness_types)?;
@@ -526,11 +554,11 @@ fn main() {
 
         let unresolved = UnresolvedValues::from_map(HashMap::from([
             (
-                TemplateProgramWitness::from_str_unchecked("MAYBE"),
+                Identifier::from_str_unchecked("MAYBE"),
                 UnresolvedValue::Untyped("Some(Action::Cold)".to_string()),
             ),
             (
-                TemplateProgramWitness::from_str_unchecked("PAIR"),
+                Identifier::from_str_unchecked("PAIR"),
                 UnresolvedValue::Untyped("(Action::Hot, 42)".to_string()),
             ),
         ]));
@@ -556,7 +584,7 @@ fn main() {
 
     #[test]
     fn witness_to_string() {
-        let witness = WitnessValues::from(HashMap::from([
+        let witness = WitnessValues::from_map(HashMap::from([
             (
                 TemplateProgramWitness::from_str_unchecked("A"),
                 Value::u32(1),

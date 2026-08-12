@@ -8,7 +8,7 @@ use simplicity::Cmr;
 use simplicity::{types, FailEntropy};
 
 use crate::value::StructuralValue;
-use crate::witness::WitnessValues;
+use crate::witness::{WitnessNameToValueMap as _, WitnessValues};
 use crate::TemplateProgramWitness;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]

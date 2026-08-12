@@ -19,10 +19,10 @@ use crate::error::{Diagnostic, Error, Span, WithSpan};
 use crate::named::{self, CoreExt, PairBuilder};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::pattern::{BasePattern, Pattern};
+use crate::template_program::TemplateProgramWitness;
 use crate::types::{StructuralType, TypeDeconstructible};
-use crate::value::StructuralValue;
-use crate::witness::Arguments;
-use crate::{TemplateProgramWitness, Value};
+use crate::value::{StructuralValue, Value};
+use crate::witness::{Arguments, WitnessNameToValueMap as _};
 
 type ProgNode<'brand> = Arc<named::ConstructNode<'brand>>;
 
