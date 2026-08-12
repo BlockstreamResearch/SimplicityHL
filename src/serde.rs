@@ -1,25 +1,33 @@
+use core::hash::Hash;
 use std::collections::HashMap;
 use std::fmt;
+use std::marker::PhantomData;
 
-use crate::parse::ParseFromStr;
-use crate::str::WitnessName;
+use crate::parse::ParseFromStr as _;
+use crate::str::{Identifier, WitnessName};
 use crate::types::ResolvedType;
 use crate::value::Value;
 use crate::witness::{Arguments, UnresolvedValue, UnresolvedValues, WitnessValues};
 use crate::{AbiMeta, Parameters, WitnessTypes};
 use serde::{de, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 
-/// Visitor for a map from witness names to values of type `V`, rejecting duplicate names.
-struct NamedMapVisitor<V>(std::marker::PhantomData<V>);
+/// Visitor for a map from identifiers to values of type `V`, rejecting duplicate names.
+struct NamedMapVisitor<K, V> {
+    key_map_fn: fn(&Identifier) -> K,
+    phantom: PhantomData<V>,
+}
 
-impl<V> NamedMapVisitor<V> {
-    const fn new() -> Self {
-        Self(std::marker::PhantomData)
+impl<K, V> NamedMapVisitor<K, V> {
+    const fn new(key_map_fn: fn(&Identifier) -> K) -> Self {
+        Self {
+            key_map_fn,
+            phantom: PhantomData,
+        }
     }
 }
 
-impl<'de, V: Deserialize<'de>> de::Visitor<'de> for NamedMapVisitor<V> {
-    type Value = HashMap<WitnessName, V>;
+impl<'de, K: Eq + Hash, V: Deserialize<'de>> de::Visitor<'de> for NamedMapVisitor<K, V> {
+    type Value = HashMap<K, V>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("a map with string keys")
@@ -30,8 +38,8 @@ impl<'de, V: Deserialize<'de>> de::Visitor<'de> for NamedMapVisitor<V> {
         M: de::MapAccess<'de>,
     {
         let mut map = HashMap::new();
-        while let Some((key, value)) = access.next_entry::<WitnessName, V>()? {
-            if map.insert(key.shallow_clone(), value).is_some() {
+        while let Some((key, value)) = access.next_entry::<Identifier, V>()? {
+            if map.insert((self.key_map_fn)(&key), value).is_some() {
                 return Err(de::Error::custom(format!("Name `{key}` is assigned twice")));
             }
         }
@@ -45,7 +53,7 @@ impl<'de> Deserialize<'de> for WitnessValues {
         D: Deserializer<'de>,
     {
         deserializer
-            .deserialize_map(NamedMapVisitor::<Value>::new())
+            .deserialize_map(NamedMapVisitor::new(WitnessName::from_ident))
             .map(Self::from)
     }
 }
@@ -93,7 +101,7 @@ impl<'de> Deserialize<'de> for UnresolvedValues {
         D: Deserializer<'de>,
     {
         deserializer
-            .deserialize_map(NamedMapVisitor::<UnresolvedValue>::new())
+            .deserialize_map(NamedMapVisitor::new(WitnessName::from_ident))
             .map(Self::from_map)
     }
 }
@@ -106,15 +114,6 @@ impl Serialize for ResolvedType {
         // Enum mentions serialize as the enum's declared name, which is opaque.
         // Variants and wire encoding live in the program's declarations.
         serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl Serialize for WitnessName {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_ref())
     }
 }
 
@@ -140,7 +139,7 @@ impl Serialize for Parameters {
         let map_ref = self.as_ref();
         let mut map = serializer.serialize_map(Some(map_ref.len()))?;
         for (key, value) in map_ref {
-            map.serialize_entry(key, value)?;
+            map.serialize_entry(key.as_str(), value)?;
         }
         map.end()
     }
@@ -154,7 +153,7 @@ impl Serialize for WitnessTypes {
         let map_ref = self.as_ref();
         let mut map = serializer.serialize_map(Some(map_ref.len()))?;
         for (key, value) in map_ref {
-            map.serialize_entry(key, value)?;
+            map.serialize_entry(key.as_str(), value)?;
         }
         map.end()
     }
@@ -166,7 +165,7 @@ impl<'de> Deserialize<'de> for Arguments {
         D: Deserializer<'de>,
     {
         deserializer
-            .deserialize_map(NamedMapVisitor::<Value>::new())
+            .deserialize_map(NamedMapVisitor::new(WitnessName::from_ident))
             .map(Self::from)
     }
 }
@@ -239,29 +238,28 @@ impl<'de> Deserialize<'de> for Value {
     }
 }
 
-struct ParserVisitor<A>(std::marker::PhantomData<A>);
-
-impl<'de, A: ParseFromStr> de::Visitor<'de> for ParserVisitor<A> {
-    type Value = A;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a valid string")
-    }
-
-    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        A::parse_from_str(value).map_err(E::custom)
-    }
-}
-
-impl<'de> Deserialize<'de> for WitnessName {
+impl<'de> Deserialize<'de> for Identifier {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_str(ParserVisitor::<Self>(std::marker::PhantomData))
+        struct ParserVisitor;
+        impl<'de> de::Visitor<'de> for ParserVisitor {
+            type Value = Identifier;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a valid string")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                crate::parse::ParseFromStr::parse_from_str(value).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(ParserVisitor)
     }
 }
 
@@ -427,7 +425,7 @@ mod tests {
         use crate::value::ValueConstructible;
         use std::sync::Arc;
 
-        let u32_ty: ResolvedType = ParseFromStr::parse_from_str("u32").unwrap();
+        let u32_ty = ResolvedType::parse_from_str("u32").unwrap();
         let variants: Arc<[EnumVariantInfo]> = Arc::from([
             EnumVariantInfo::new(Identifier::from_str_unchecked("Cold"), Arc::from([])),
             EnumVariantInfo::new(

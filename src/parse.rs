@@ -1658,7 +1658,6 @@ macro_rules! impl_parse_wrapped_string {
 impl_parse_wrapped_string!(SymbolName, "unresolved symbol name");
 impl_parse_wrapped_string!(FunctionName, "function name");
 impl_parse_wrapped_string!(Identifier, "identifier");
-impl_parse_wrapped_string!(WitnessName, "witness name");
 impl_parse_wrapped_string!(AliasName, "alias name");
 impl_parse_wrapped_string!(ModuleName, "module name");
 
