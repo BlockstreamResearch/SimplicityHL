@@ -9,7 +9,7 @@ use crate::array::BTreeSlice;
 use crate::error::Error;
 use crate::named::{CoreExt, PairBuilder, SelectorBuilder};
 use crate::str::Identifier;
-use crate::types::{ResolvedType, TypeInner};
+use crate::types::{ResolvedType, TypeDeconstructible};
 use crate::unstable::impl_require_feature;
 
 /// Pattern for binding values to variables.
@@ -51,25 +51,37 @@ impl Pattern {
         let mut stack = vec![(self, ty)];
         let mut output = HashMap::new();
         while let Some((pattern, ty)) = stack.pop() {
-            match (pattern, ty.as_inner()) {
-                (Pattern::Identifier(i), _) => match output.entry(i.clone()) {
+            let unexpected_err = || Err(Error::ExpressionUnexpectedType { ty: ty.clone() });
+            match pattern {
+                Pattern::Identifier(i) => match output.entry(i.clone()) {
                     Entry::Occupied(..) => {
                         return Err(Error::VariableReuseInPattern {
                             identifier: i.clone(),
-                        })
+                        });
                     }
                     Entry::Vacant(entry) => {
                         entry.insert(ty.clone());
                     }
                 },
-                (Pattern::Ignore, _) => {}
-                (Pattern::Tuple(pats), TypeInner::Tuple(types)) => {
-                    stack.extend(pats.iter().zip(types.iter().map(Arc::as_ref)));
+                Pattern::Ignore => {}
+                Pattern::Tuple(pats) => {
+                    if let Some(types) = ty.as_tuple() {
+                        stack.extend(pats.iter().zip(types.iter().map(Arc::as_ref)));
+                    } else {
+                        return unexpected_err();
+                    }
                 }
-                (Pattern::Array(pats), TypeInner::Array(ty, size)) if pats.len() == *size => {
-                    stack.extend(pats.iter().zip(std::iter::repeat(ty.as_ref())));
+                Pattern::Array(pats) => {
+                    if let Some((ty, size)) = ty.as_array() {
+                        if pats.len() == size {
+                            stack.extend(pats.iter().zip(std::iter::repeat(ty)));
+                        } else {
+                            return unexpected_err();
+                        }
+                    } else {
+                        return unexpected_err();
+                    }
                 }
-                _ => return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }),
             }
         }
         Ok(output)
