@@ -206,14 +206,6 @@ impl crate::ArbitraryRec for ResolvedType {
     }
 }
 
-impl TryFrom<&ResolvedType> for UIntType {
-    type Error = ();
-
-    fn try_from(value: &ResolvedType) -> Result<Self, Self::Error> {
-        UIntType::try_from(&StructuralType::from(value))
-    }
-}
-
 impl From<&ResolvedType> for StructuralType {
     fn from(value: &ResolvedType) -> Self {
         let mut output = vec![];

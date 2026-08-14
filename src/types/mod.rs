@@ -12,28 +12,6 @@ pub use self::inner::{EnumInfo, EnumVariantInfo, TypeInner, UIntType};
 pub use self::resolved::ResolvedType;
 pub use self::structural::StructuralType;
 
-impl TryFrom<&StructuralType> for UIntType {
-    type Error = ();
-
-    fn try_from(value: &StructuralType) -> Result<Self, Self::Error> {
-        let mut current = value.as_ref();
-        let mut n = 0;
-        while let Some((left, right)) = current.as_product() {
-            if left.tmr() != right.tmr() {
-                return Err(());
-            }
-            current = left;
-            n += 1;
-        }
-        if let Some((left, right)) = current.as_sum() {
-            if left.is_unit() && right.is_unit() {
-                return UIntType::two_n(n).ok_or(());
-            }
-        }
-        Err(())
-    }
-}
-
 macro_rules! construct_int {
     ($name: ident, $ty: ident, $text: expr) => {
         #[doc = "Create the type of"]
