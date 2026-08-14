@@ -15,7 +15,6 @@ pub type Tokens<'src> = Vec<(Token<'src>, crate::error::Span)>;
 pub type FmtTokens<'src> = Vec<(FmtToken<'src>, crate::error::Span)>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum Token<'src> {
     // Keywords
     Pub,

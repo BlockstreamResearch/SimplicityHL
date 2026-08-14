@@ -1,3 +1,13 @@
+# 0.7.1 - 2026-08-06
+
+## Added
+
+* Add the `fmt` cargo feature: a lossless lexer producing `FmtTokens` with comments, newlines, and whitespace (via `FmtToken` and `TriviaKind`, both `#[non_exhaustive]`) for formatter tooling. Preserves underscored digit spellings for round-tripping, attaches spans to more AST nodes. Regular lexing/parsing is unchanged and discards trivia. [#372](https://github.com/BlockstreamResearch/SimplicityHL/pull/372)
+
+## Changed
+
+* Lex whitespace in contiguous chunks rather than character-by-character. [#372](https://github.com/BlockstreamResearch/SimplicityHL/pull/372)
+
 # 0.7.0 - 2026-07-27
 
 ## Breaking Changes
