@@ -77,3 +77,16 @@ The language server and VS Code extension are maintained in separate repositorie
 
 * [simplicityhl-lsp](https://github.com/BlockstreamResearch/simplicityhl-lsp)
 * [simplicityhl-vscode](https://github.com/BlockstreamResearch/simplicityhl-vscode)
+
+## License
+
+Licensed under either of
+
+* Apache License, Version 2.0 ([LICENSE-APACHE](./LICENSE-APACHE))
+* MIT license ([LICENSE-MIT](./LICENSE-MIT))
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this project by you, as defined in the Apache-2.0 license,
+shall be dual licensed as above, without any additional terms or conditions.
