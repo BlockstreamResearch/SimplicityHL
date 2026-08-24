@@ -2,8 +2,6 @@ SimplicityHL is a high-level language for writing Bitcoin smart contracts.
 
 SimplicityHL looks and feels like [Rust](https://www.rust-lang.org). Just how Rust compiles down to assembly language, SimplicityHL compiles down to [Simplicity](https://github.com/BlockstreamResearch/simplicity) bytecode. Developers write SimplicityHL, full nodes execute Simplicity.
 
-**SimplicityHL is a work in progress and is not yet ready for production use.**
-
 ```rust
 let a: u32 = 10;
 let b = {
@@ -15,6 +13,8 @@ let b = {
 };
 assert!(jet::eq_32(b, 7));
 ```
+
+Check the [developer documentation](https://docs.simplicity-lang.org/) to learn more about how to use SimplicityHL and its associated tools, including quickstart demos.
 
 Take a look at the [example programs](https://github.com/BlockstreamResearch/SimplicityHL/tree/master/examples).
 
