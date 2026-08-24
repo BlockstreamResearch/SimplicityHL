@@ -70,6 +70,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .help("Link a dependency, optionally scoped to a specific module (e.g., --dep ./libs/merkle:math=./libs/math)"),
             )
             .arg(
+                Arg::new("project_root")
+                    .long("project-root")
+                    .value_name("PROJECT_ROOT")
+                    .action(ArgAction::Set)
+                    .help(
+                        "Project root for resolving `crate::` imports (defaults to the entry file's directory)",
+                    ),
+            )
+            .arg(
                 Arg::new("wit_file")
                     .long("wit")
                     .short('w')
@@ -157,11 +166,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_many::<String>("dependencies")
         .unwrap_or_default();
 
-    let canon_root = main_path
-        .as_path()
-        .parent()
-        .and_then(|p| CanonPath::canonicalize(p).ok())
-        .ok_or("Failed to determine project root directory from entry file")?;
+    let canon_root = match matches.get_one::<String>("project_root") {
+        Some(project_root) => CanonPath::canonicalize(Path::new(project_root))?,
+        None => main_path
+            .as_path()
+            .parent()
+            .and_then(|p| CanonPath::canonicalize(p).ok())
+            .ok_or("Failed to determine project root directory from entry file")?,
+    };
+
+    if !main_path.starts_with(&canon_root) {
+        return Err(format!(
+            "Entry file '{}' is outside project root '{}'",
+            main_path.as_path().display(),
+            canon_root.as_path().display()
+        )
+        .into());
+    }
 
     let mut builder = DependencyMapBuilder::new();
 
