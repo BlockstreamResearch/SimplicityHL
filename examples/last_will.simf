@@ -43,8 +43,9 @@ pub fn enforce_relative_distance(min_distance: Distance) {
 }
 
 fn inherit_spend(inheritor_sig: Signature) {
-    let days_180: Distance = 25920;
-    enforce_relative_distance(days_180);
+    // On Bitcoin, this Distance would be 180 days; on Liquid, it is 18 days.
+    let timelock_distance: Distance = 25920;
+    enforce_relative_distance(timelock_distance);
     let inheritor_pk: Pubkey = 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798; // 1 * G
     checksig(inheritor_pk, inheritor_sig);
 }
