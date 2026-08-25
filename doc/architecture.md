@@ -44,7 +44,9 @@ The `crate` keyword is used to construct absolute paths where the path root is t
 use crate::math::add;
 ```
 
-The compiler driver (`simc`) automatically maps the `crate` keyword to the directory containing the entry-point file. For external libraries linked via `--dep`, the driver also maps `crate` to the library's root, ensuring that `use crate::...` statements inside the library resolve correctly within that library's scope.
+The compiler driver (`simc`) maps the `crate` keyword to the project root. By default, this is the directory containing the entry-point file.
+For projects whose entry point is in a subdirectory, pass `--project-root <PATH>` to set the root explicitly. 
+For external libraries linked via `--dep`, the driver also maps `crate` to the library's root, ensuring that `use crate::...` statements inside the library resolve correctly within that library's scope.
 
 ### Strict Local Imports
 

@@ -55,6 +55,143 @@ fn cli_dependency_can_use_crate_root() {
 }
 
 #[test]
+fn cli_project_root_resolves_crate_from_nested_entry() {
+    let root = setup_project(
+        "nested_entry_project_root",
+        &[
+            (
+                "src/main.simf",
+                "simc \"*\";\nuse crate::utils::helper;\nfn main() { assert!(jet::eq_32(helper(), 42)); }\n",
+            ),
+            (
+                "utils.simf",
+                "simc \"*\";\nuse support::values::answer;\npub fn helper() -> u32 { answer() }\n",
+            ),
+            (
+                "src/utils.simf",
+                "simc \"*\";\npub fn wrong_helper() -> u32 { 0 }\n",
+            ),
+            (
+                "deps/support/values.simf",
+                "simc \"*\";\npub fn answer() -> u32 { 42 }\n",
+            ),
+        ],
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_simc"))
+        .current_dir(&root)
+        .arg("src/main.simf")
+        .arg("--project-root")
+        .arg(".")
+        .arg("-Z")
+        .arg("imports")
+        .arg("--dep")
+        .arg("support=deps/support")
+        .output()
+        .expect("failed to run simc");
+
+    assert!(
+        output.status.success(),
+        "simc failed\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn cli_nested_entry_defaults_project_root_to_entry_parent() {
+    let root = setup_project(
+        "nested_entry_default_root",
+        &[
+            (
+                "src/main.simf",
+                "simc \"*\";\nuse crate::utils::helper;\nfn main() { assert!(jet::eq_32(helper(), 7)); }\n",
+            ),
+            (
+                "src/utils.simf",
+                "simc \"*\";\npub fn helper() -> u32 { 7 }\n",
+            ),
+            (
+                "utils.simf",
+                "simc \"*\";\npub fn wrong_helper() -> u32 { 0 }\n",
+            ),
+        ],
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_simc"))
+        .arg(root.join("src/main.simf"))
+        .arg("-Z")
+        .arg("imports")
+        .output()
+        .expect("failed to run simc");
+
+    assert!(
+        output.status.success(),
+        "entry-parent default failed\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn cli_project_root_must_contain_entry_file() {
+    let root = setup_project(
+        "project_root_containment",
+        &[
+            ("project/main.simf", "simc \"*\";\nfn main() {}\n"),
+            (
+                "other/placeholder.simf",
+                "simc \"*\";\nfn placeholder() {}\n",
+            ),
+        ],
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_simc"))
+        .arg(root.join("project/main.simf"))
+        .arg("--project-root")
+        .arg(root.join("other"))
+        .output()
+        .expect("failed to run simc");
+
+    assert!(
+        !output.status.success(),
+        "simc must reject an entry file outside the project root"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("outside project root"),
+        "expected a project-root containment error, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn cli_root_level_entry_keeps_entry_parent_default() {
+    let root = setup_project(
+        "root_level_entry_default",
+        &[
+            (
+                "main.simf",
+                "simc \"*\";\nuse crate::utils::helper;\nfn main() { helper(); }\n",
+            ),
+            ("utils.simf", "simc \"*\";\npub fn helper() {}\n"),
+        ],
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_simc"))
+        .arg(root.join("main.simf"))
+        .arg("-Z")
+        .arg("imports")
+        .output()
+        .expect("failed to run simc");
+
+    assert!(
+        output.status.success(),
+        "root-level entry failed\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
 fn cli_import_program_rejected_without_unstable_flag() {
     let root = repo_path("functional-tests/valid-test-cases/external-library-uses-crate");
     let main = root.join("main.simf");
