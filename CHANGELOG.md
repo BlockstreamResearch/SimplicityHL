@@ -1,3 +1,15 @@
+# 0.7.2 - 2026-08-25
+
+## Added
+
+* Add `simc --project-root <path>` to anchor `crate::` imports and unscoped `--dep` aliases at an explicit project root while allowing the entry file to live in a nested directory. [#392](https://github.com/BlockstreamResearch/SimplicityHL/pull/392)
+  * The entry file must be contained within the selected root. Omitting the option preserves the existing entry-directory behavior. 
+* Add a security policy with instructions for privately reporting vulnerabilities. [#393](https://github.com/BlockstreamResearch/SimplicityHL/pull/393)
+
+## Changed
+
+* Relicense SimplicityHL from CC0-1.0 to the user's choice of MIT or Apache-2.0. [#389](https://github.com/BlockstreamResearch/SimplicityHL/pull/389)
+
 # 0.7.1 - 2026-08-06
 
 ## Added
