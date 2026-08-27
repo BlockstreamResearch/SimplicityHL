@@ -42,7 +42,7 @@ pub use simplicity::elements;
 use crate::debug::DebugSymbols;
 use crate::driver::{DependencyGraph, SourceMap, MAIN_MODULE};
 use crate::error::DiagnosticManager;
-use crate::parse::ParseFromStrWithErrors;
+use crate::parse::ParseFromContent;
 use crate::resolution::DependencyMap;
 use crate::source::CanonSourceFile;
 pub use crate::types::ResolvedType;
@@ -86,6 +86,10 @@ impl TemplateProgram {
             return Err(diagnostics);
         };
 
+        if diagnostics.has_errors() {
+            return Err(diagnostics);
+        }
+
         Ok(resolved_program.to_string())
     }
 
@@ -111,20 +115,23 @@ impl TemplateProgram {
             return Err(diagnostics);
         };
 
-        // TODO: Add multierror to analyze
-        match ast::Program::analyze(&resolved_program, jet_hinter.clone_box()) {
-            Ok(simfony) => Ok(Self {
-                simfony,
-                file,
-                jet_hinter,
-                diagnostics,
-                resolved_program,
-            }),
-            Err(e) => {
-                diagnostics.push(e);
-                Err(diagnostics)
-            }
+        let Some(simfony) =
+            ast::Program::analyze(&resolved_program, jet_hinter.clone_box(), &mut diagnostics)
+        else {
+            return Err(diagnostics);
+        };
+
+        if diagnostics.has_errors() {
+            return Err(diagnostics);
         }
+
+        Ok(Self {
+            simfony,
+            file,
+            jet_hinter,
+            diagnostics,
+            resolved_program,
+        })
     }
 
     /// Parse the template of a SimplicityHL program.
@@ -149,7 +156,7 @@ impl TemplateProgram {
         let mut diagnostics = DiagnosticManager::default();
         let file = s.into();
 
-        let Some(resolved_program) = parse::Program::parse_from_str_with_errors(
+        let Some(resolved_program) = parse::Program::parse_from_content(
             MAIN_MODULE,
             &file,
             unstable_features,
@@ -158,19 +165,23 @@ impl TemplateProgram {
             return Err(diagnostics);
         };
 
-        match ast::Program::analyze(&resolved_program, jet_hinter.clone_box()) {
-            Ok(simfony) => Ok(Self {
-                simfony,
-                file,
-                jet_hinter,
-                diagnostics,
-                resolved_program,
-            }),
-            Err(e) => {
-                diagnostics.push(e);
-                Err(diagnostics)
-            }
+        let Some(simfony) =
+            ast::Program::analyze(&resolved_program, jet_hinter.clone_box(), &mut diagnostics)
+        else {
+            return Err(diagnostics);
+        };
+
+        if diagnostics.has_errors() {
+            return Err(diagnostics);
         }
+
+        Ok(Self {
+            simfony,
+            file,
+            jet_hinter,
+            diagnostics,
+            resolved_program,
+        })
     }
 
     /// Access the parameters of the program.
@@ -594,7 +605,7 @@ pub(crate) mod tests {
 
         let mut diagnostics = DiagnosticManager::new();
 
-        let parse_program = parse::Program::parse_from_str_with_errors(
+        let parse_program = parse::Program::parse_from_content(
             MAIN_MODULE,
             &file,
             &UnstableFeatures::all(),

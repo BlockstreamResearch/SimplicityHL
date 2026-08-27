@@ -666,6 +666,7 @@ impl Value {
         if s.len() % 2 != 0 || s.len() != expected_byte_len * 2 {
             return Err(Error::ExpressionUnexpectedType { ty: ty.clone() });
         }
+
         let bytes = Vec::<u8>::from_hex(s).expect("valid chars and valid length");
         let ret = match ty.as_inner() {
             TypeInner::UInt(..) => {
@@ -674,6 +675,7 @@ impl Value {
             TypeInner::Array(..) => Self::byte_array(bytes),
             _ => unreachable!(),
         };
+
         Ok(ret)
     }
 }
@@ -714,7 +716,8 @@ impl Value {
                 | S::Variable(..)
                 | S::Call(..)
                 | S::Match(..)
-                | S::EnumMatch(..) => return None, // not const
+                | S::EnumMatch(..)
+                | S::Error => return None, // not const
                 S::Expression(..) => continue, // skip
                 S::Tuple(..) => {
                     let elements = output.split_off(output.len() - size);
@@ -864,6 +867,7 @@ impl Value {
                         }
                     }
                 }
+                TypeInner::Never => unreachable!("poisoned type in value reconstruction; values exist only for error-free programs"),
             }
         }
         debug_assert_eq!(output.len(), 1);
@@ -874,8 +878,9 @@ impl Value {
     pub fn parse_from_str(s: &str, ty: &ResolvedType) -> Result<Self, Diagnostic> {
         let parse_expr = parse::Expression::parse_from_str(s)?;
         let ast_expr = ast::Expression::analyze_const(&parse_expr, ty)?;
+
         Self::from_const_expr(&ast_expr)
-            .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
+            .ok_or_else(|| Error::ExpressionUnexpectedType { ty: ty.clone() })
             .with_span(s)
     }
 }
@@ -937,6 +942,7 @@ impl crate::ArbitraryOfType for Value {
                     .collect::<arbitrary::Result<Vec<Self>>>()?;
                 Ok(Self::list(elements, ty.as_ref().clone(), *bound))
             }
+            TypeInner::Never => unreachable!("cannot generate a value of a poisoned type"),
         }
     }
 }
@@ -1257,7 +1263,7 @@ impl TreeLike for Destructor<'_> {
             Self::WrongType => return Tree::Nullary,
         };
         match ty.as_inner() {
-            TypeInner::Boolean | TypeInner::UInt(..) => Tree::Nullary,
+            TypeInner::Boolean | TypeInner::UInt(..) | TypeInner::Never => Tree::Nullary,
             TypeInner::Enum(info) => match destruct::as_enum_leaf(value, info.variants().len()) {
                 Some((index, leaf)) => {
                     Tree::Unary(Self::new(leaf, info.variants()[index].payload_type()))
@@ -1648,5 +1654,39 @@ mod tests {
             assert_eq!(parsed_value, expected_value);
             assert!(parsed_value.is_of_type(&ty));
         }
+    }
+
+    #[test]
+    fn value_parse_from_str_demo() {
+        use crate::parse::ParseFromStr; // brings ResolvedType::parse_from_str into scope
+        use crate::types::ResolvedType;
+        use crate::value::Value;
+
+        // 1. A plain integer literal, parsed at u32.
+        let u32_ty = ResolvedType::parse_from_str("u32").unwrap();
+        let v = Value::parse_from_str("42", &u32_ty).unwrap();
+        assert_eq!(v, Value::u32(42));
+
+        // 2. A tuple — analyze_const recurses into each element against its expected type.
+        let pair_ty = ResolvedType::parse_from_str("(u32, bool)").unwrap();
+        let v = Value::parse_from_str("(42, true)", &pair_ty).unwrap();
+        assert_eq!("(42, true)", v.to_string());
+
+        // 3. An Option wrapper.
+        let opt_ty = ResolvedType::parse_from_str("Option<u32>").unwrap();
+        let v = Value::parse_from_str("Some(7)", &opt_ty).unwrap();
+        assert_eq!("Some(7)", v.to_string());
+
+        // 4. An array.
+        let arr_ty = ResolvedType::parse_from_str("[u16; 3]").unwrap();
+        let v = Value::parse_from_str("[1, 2, 3]", &arr_ty).unwrap();
+        assert_eq!("[1, 2, 3]", v.to_string());
+
+        // 5. Type mismatch is rejected — `true` is not a u32.
+        //    (This is the path where analyze_const's is_error/mismatch checks live.)
+        assert!(Value::parse_from_str("true", &u32_ty).is_err());
+
+        // 6. A non-constant expression is rejected — no scope, so `witness::A` can't resolve.
+        assert!(Value::parse_from_str("witness::A", &u32_ty).is_err());
     }
 }

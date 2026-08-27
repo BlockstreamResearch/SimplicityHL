@@ -41,6 +41,17 @@ impl Pattern {
         Self::Array(elements.into_iter().collect())
     }
 
+    /// Get an iterator over every identifier the pattern declares.
+    ///
+    /// Unlike [`Self::is_of_type`] this needs no type, so it still lists the
+    /// declared names when the pattern does not match its annotation.
+    pub fn identifiers(&self) -> impl Iterator<Item = &Identifier> {
+        self.pre_order_iter().filter_map(|pattern| match pattern {
+            Pattern::Identifier(identifier) => Some(identifier),
+            Pattern::Ignore | Pattern::Tuple(..) | Pattern::Array(..) => None,
+        })
+    }
+
     /// Check if the pattern matches the given type.
     ///
     /// Return a map of bound variable identifiers to their assigned type.
@@ -48,8 +59,10 @@ impl Pattern {
         &self,
         ty: &ResolvedType,
     ) -> Result<HashMap<Identifier, ResolvedType>, Error> {
+        let err = ResolvedType::never();
         let mut stack = vec![(self, ty)];
         let mut output = HashMap::new();
+
         while let Some((pattern, ty)) = stack.pop() {
             match (pattern, ty.as_inner()) {
                 (Pattern::Identifier(i), _) => match output.entry(i.clone()) {
@@ -69,9 +82,16 @@ impl Pattern {
                 (Pattern::Array(pats), TypeInner::Array(ty, size)) if pats.len() == *size => {
                     stack.extend(pats.iter().zip(std::iter::repeat(ty.as_ref())));
                 }
+                // Poison type absorbs the shape check: recurse binding each sub-pattern
+                // at error() instead of reporting a mismatch.
+                (Pattern::Tuple(pats), TypeInner::Never)
+                | (Pattern::Array(pats), TypeInner::Never) => {
+                    stack.extend(pats.iter().map(|p| (p, &err)));
+                }
                 _ => return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }),
             }
         }
+
         Ok(output)
     }
 }

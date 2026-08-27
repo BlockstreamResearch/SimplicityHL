@@ -31,6 +31,9 @@ pub enum TypeInner<A> {
     /// Nominal enum type, represented as a balanced sum of its variants'
     /// payload types
     Enum(EnumInfo),
+    /// Type of a recovered subtree. Compatible with every type; never re-reported.
+    /// A diagnostic was already emitted for its span.
+    Never,
 }
 
 /// One variant of a nominal enum type: its name and payload types.
@@ -201,6 +204,7 @@ impl<A> TypeInner<A> {
                 }
             },
             TypeInner::Enum(info) => write!(f, "{}", info.name()),
+            TypeInner::Never => write!(f, "<never>"),
         }
     }
 }
@@ -455,9 +459,57 @@ pub trait TypeDeconstructible: Sized {
 pub struct ResolvedType(TypeInner<Arc<Self>>);
 
 impl ResolvedType {
+    /// Diagnostic-facing compatibility: a poisoned type unifies with anything,
+    /// recursively. Use before emitting a type-mismatch error.
+    pub fn compatible(&self, other: &Self) -> bool {
+        use TypeInner::*;
+
+        match (self.as_inner(), other.as_inner()) {
+            (Never, _) | (_, Never) => true,
+            (Either(a, b), Either(c, d)) => a.compatible(c) && b.compatible(d),
+            (Option(a), Option(b)) => a.compatible(b),
+            (Tuple(a), Tuple(b)) => {
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.compatible(y))
+            }
+            (Array(a, m), Array(b, n)) => m == n && a.compatible(b),
+            (List(a, m), List(b, n)) => m == n && a.compatible(b),
+            _ => self == other,
+        }
+    }
+
+    /// Replace this type's poisoned leaves with `other`'s types.
+    ///
+    /// Only meaningful for [`Self::compatible`] types, whose shapes line up. The
+    /// first concrete type to reach a poisoned slot fixes it, so a later
+    /// conflicting use of that slot is still a conflict rather than being
+    /// absorbed by the poison forever.
+    pub fn refine(&self, other: &Self) -> Self {
+        use TypeInner::*;
+
+        match (self.as_inner(), other.as_inner()) {
+            (Never, _) => other.clone(),
+            (Either(a, b), Either(c, d)) => Self::either(a.refine(c), b.refine(d)),
+            (Option(a), Option(b)) => Self::option(a.refine(b)),
+            (Tuple(a), Tuple(b)) if a.len() == b.len() => {
+                Self::tuple(a.iter().zip(b.iter()).map(|(x, y)| x.refine(y)))
+            }
+            (Array(a, m), Array(b, n)) if m == n => Self::array(a.refine(b), *m),
+            (List(a, m), List(b, n)) if m == n => Self::list(a.refine(b), *m),
+            _ => self.clone(),
+        }
+    }
+
     /// Access the inner type primitive.
     pub fn as_inner(&self) -> &TypeInner<Arc<Self>> {
         &self.0
+    }
+
+    pub(crate) const fn never() -> Self {
+        Self(TypeInner::Never)
+    }
+
+    pub(crate) fn is_never(&self) -> bool {
+        matches!(self.0, TypeInner::Never)
     }
 }
 
@@ -489,6 +541,16 @@ impl ResolvedType {
     pub fn contains_enum(&self) -> bool {
         self.post_order_iter()
             .any(|data| data.node.as_enum().is_some())
+    }
+
+    /// Check whether the type is poisoned, at any nesting depth.
+    ///
+    /// [`Self::is_never`] only inspects the outermost constructor, but a
+    /// poisoned leaf anywhere makes the type unrepresentable as a
+    /// [`StructuralType`], so analysis must consult this before any
+    /// structural comparison.
+    pub(crate) fn contains_never(&self) -> bool {
+        self.post_order_iter().any(|data| data.node.is_never())
     }
 }
 
@@ -571,7 +633,9 @@ impl TypeDeconstructible for ResolvedType {
 impl TreeLike for &ResolvedType {
     fn as_node(&self) -> Tree<Self> {
         match &self.0 {
-            TypeInner::Boolean | TypeInner::UInt(..) | TypeInner::Enum(..) => Tree::Nullary,
+            TypeInner::Boolean | TypeInner::UInt(..) | TypeInner::Enum(..) | TypeInner::Never => {
+                Tree::Nullary
+            }
             TypeInner::Option(l) | TypeInner::Array(l, _) | TypeInner::List(l, _) => Tree::Unary(l),
             TypeInner::Either(l, r) => Tree::Binary(l, r),
             TypeInner::Tuple(elements) => Tree::Nary(elements.iter().map(Arc::as_ref).collect()),
@@ -729,6 +793,10 @@ impl AliasedType {
         Self(AliasedInner::Builtin(builtin))
     }
 
+    pub const fn never() -> Self {
+        Self(AliasedInner::Inner(TypeInner::Never))
+    }
+
     /// Resolve all aliases in the type based on the given map of `aliases` to types.
     pub fn resolve<F, E>(&self, mut get_alias: F) -> Result<ResolvedType, E>
     where
@@ -775,6 +843,7 @@ impl AliasedType {
                     TypeInner::Enum(info) => {
                         output.push(ResolvedType::enumeration(info.clone()));
                     }
+                    TypeInner::Never => output.push(ResolvedType::never()),
                 },
             }
         }
@@ -809,6 +878,7 @@ impl_require_feature!(TypeInner<Arc<AliasedType>> {
         Array(element, _),
         List(element, _),
         Enum(_),
+        Never,
 });
 
 impl TypeConstructible for AliasedType {
@@ -901,7 +971,10 @@ impl TreeLike for &AliasedType {
         match &self.0 {
             AliasedInner::Alias(_) | AliasedInner::Builtin(_) => Tree::Nullary,
             AliasedInner::Inner(inner) => match inner {
-                TypeInner::Boolean | TypeInner::UInt(..) | TypeInner::Enum(..) => Tree::Nullary,
+                TypeInner::Boolean
+                | TypeInner::UInt(..)
+                | TypeInner::Enum(..)
+                | TypeInner::Never => Tree::Nullary,
                 TypeInner::Option(l) | TypeInner::Array(l, _) | TypeInner::List(l, _) => {
                     Tree::Unary(l)
                 }
@@ -1205,6 +1278,9 @@ impl From<&ResolvedType> for StructuralType {
                 TypeInner::Enum(info) => {
                     output.push(StructuralType::balanced_sum(info.structural_variants()));
                 }
+                TypeInner::Never => unreachable!(
+                    "poisoned type reached codegen; compilation must be gated on zero errors"
+                ),
             }
         }
         debug_assert_eq!(output.len(), 1);

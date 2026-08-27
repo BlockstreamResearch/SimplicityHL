@@ -37,7 +37,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::error::{Diagnostic, DiagnosticManager, Error, Span};
-use crate::parse::{self, ParseFromStrWithErrors};
+use crate::parse::{self, ParseFromContent};
 use crate::resolution::{DependencyMap, ResolvedUse};
 use crate::source::{CanonPath, CanonSourceFile};
 use crate::unstable::UnstableFeatures;
@@ -221,7 +221,7 @@ impl DependencyGraph {
         let mut diagnostics = DiagnosticManager::default();
         let sources = SourceMap::with_source(root_source.clone());
 
-        let Some(program) = parse::Program::parse_from_str_with_errors(
+        let Some(program) = parse::Program::parse_from_content(
             MAIN_MODULE,
             &root_source.content(),
             unstable_features,
@@ -250,13 +250,7 @@ impl DependencyGraph {
         };
 
         graph.discover_dependencies(&mut diagnostics, unstable_features);
-
-        if diagnostics.has_errors() {
-            diagnostics.with_sources(graph.sources);
-            (None, diagnostics)
-        } else {
-            (Some(graph), diagnostics)
-        }
+        (Some(graph), diagnostics)
     }
 
     /// BFS over `use` declarations, populating `modules`, `dependencies`,
@@ -421,12 +415,8 @@ impl DependencyGraph {
     ) -> Option<parse::Program> {
         let before = diagnostics.error_count();
 
-        let ast = parse::Program::parse_from_str_with_errors(
-            new_id,
-            content,
-            unstable_features,
-            diagnostics,
-        );
+        let ast =
+            parse::Program::parse_from_content(new_id, content, unstable_features, diagnostics);
 
         if diagnostics.error_count() > before {
             return None;
@@ -747,13 +737,8 @@ pub(crate) mod tests {
         // Setup: root imports from "unknown", which is not in our dependency map.
         // We use `setup_graph_raw` because we expect graph generation to fail and
         // emit an error, rather than panicking the standard test helper.
-        let (graph_option, _ids, _ws, diagnostics) =
+        let (_graph, _ids, _ws, diagnostics) =
             setup_graph_raw(vec![("main.simf", "use unknown::library::item;")]);
-
-        assert!(
-            graph_option.is_none(),
-            "Graph unexpectedly succeeded despite having an unknown import!"
-        );
 
         assert!(
             diagnostics.has_errors(),

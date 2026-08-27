@@ -1,5 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use simplicity::jet::{Core, Elements, Jet};
 
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
 use crate::driver::{CRATE_STR, MAIN_STR};
-use crate::error::{Diagnostic, Error, Span, WithSpan};
+use crate::error::{Diagnostic, DiagnosticManager, Error, Span, WithSpan};
 use crate::jet::{source_type, target_type, JetHL};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::parse::{MatchPattern, UseDecl, Visibility};
@@ -83,7 +84,7 @@ pub enum Item {
     Use,
     Module(Vec<Item>),
     /// A placeholder used for error recovery during parsing.
-    Ignored,
+    Error,
 }
 
 /// Definition of a function.
@@ -115,6 +116,8 @@ pub enum Statement {
     Assignment(Assignment),
     /// Expression that returns nothing (the unit value).
     Expression(Expression),
+    /// A placeholder for a statement that failed to parse.
+    Error,
 }
 
 /// Assignment of a value to a variable identifier.
@@ -254,6 +257,10 @@ pub enum SingleExpressionInner {
     ///
     /// The enum's definition lives in the type of the expression.
     EnumConstruction(EnumConstruction),
+    /// Placeholder for subexpression that failed to parse.
+    ///
+    /// Emitted by the parser during error recovery.
+    Error,
 }
 
 /// Call of a user-defined or of a builtin function.
@@ -318,6 +325,18 @@ pub enum CallName {
     ForWhile(CustomFunction, Pow2Usize),
 }
 
+impl CallName {
+    /// Does this call name a function whose signature is unknowable?
+    fn is_never(&self) -> bool {
+        match self {
+            Self::Custom(f) | Self::Fold(f, _) | Self::ArrayFold(f, _) | Self::ForWhile(f, _) => {
+                f.is_never()
+            }
+            _ => false,
+        }
+    }
+}
+
 // Manually implemented because the 1.74 (MSRV) derive expands to a body that
 // moves out of the non-Copy `Box<dyn Jet>` field, later rustc versions are
 // fine.
@@ -348,9 +367,29 @@ pub struct CustomFunction {
     params: Arc<[FunctionParam]>,
     body: Arc<Expression>,
     span: Span,
+    /// Poison: the definition could not be found, so the signature is a
+    /// placeholder rather than the truth.
+    is_never: bool,
 }
 
 impl CustomFunction {
+    /// A function whose signature is unknowable, used when a name is declared
+    /// but its definition cannot be found.
+    fn error(span: Span) -> Self {
+        Self {
+            params: Arc::from([]),
+            body: Arc::new(Expression::error(ResolvedType::never(), span)),
+            span,
+            is_never: true,
+        }
+    }
+
+    /// Is the signature unknowable? Every check against it — arity, argument
+    /// types, output type, foldability, loopability — is then absorbed.
+    pub fn is_never(&self) -> bool {
+        self.is_never
+    }
+
     /// Access the identifiers of the parameters of the function.
     pub fn params(&self) -> &[FunctionParam] {
         &self.params
@@ -595,6 +634,7 @@ impl TreeLike for ExprTree<'_> {
             Self::Statement(statement) => match statement {
                 Statement::Assignment(assignment) => Tree::Unary(Self::Assignment(assignment)),
                 Statement::Expression(expression) => Tree::Unary(Self::Expression(expression)),
+                Statement::Error => Tree::Nullary,
             },
             Self::Assignment(assignment) => Tree::Unary(Self::Expression(assignment.expression())),
             Self::Single(single) => match single.inner() {
@@ -602,7 +642,8 @@ impl TreeLike for ExprTree<'_> {
                 | S::Witness(_)
                 | S::Parameter(_)
                 | S::Variable(_)
-                | S::Option(None) => Tree::Nullary,
+                | S::Option(None)
+                | S::Error => Tree::Nullary,
                 S::Expression(l)
                 | S::Either(Either::Left(l))
                 | S::Either(Either::Right(l))
@@ -706,6 +747,23 @@ struct ModuleScope {
     functions: HashMap<FunctionName, (CustomFunction, Visibility)>,
     /// Nested inling `mod` blocks, each becoming a child scope.
     submodules: HashMap<ModuleName, (ModuleScope, Visibility)>,
+    /// Names a failed `use` was meant to introduce. Kept apart from the maps
+    /// above so poison never takes part in a redefinition check, and consulted
+    /// only on a miss, so a real definition always wins.
+    poisoned_imports: HashSet<SymbolName>,
+}
+
+impl ModuleScope {
+    fn poison_import(&mut self, name: &SymbolName) {
+        self.poisoned_imports.insert(name.shallow_clone());
+    }
+
+    /// A name is poisoned only when the `use` bound it in *no* namespace, so the
+    /// poison applies to every namespace alike.
+    fn is_poisoned_import(&self, name: &str) -> bool {
+        self.poisoned_imports
+            .contains(&SymbolName::from_str_unchecked(name))
+    }
 }
 
 /// Scope for generating the abstract syntax tree.
@@ -734,6 +792,8 @@ struct Scope {
     is_main: bool,
     call_tracker: CallTracker,
     jet_hinter: Box<dyn JetHinter>,
+
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl Default for Scope {
@@ -741,12 +801,13 @@ impl Default for Scope {
         Self::new(
             // TODO: Should be passed in global configuration
             Box::new(ElementsJetHinter),
+            Vec::new(),
         )
     }
 }
 
 impl Scope {
-    pub fn new(jet_hinter: Box<dyn JetHinter>) -> Self {
+    pub fn new(jet_hinter: Box<dyn JetHinter>, diagnostics: Vec<Diagnostic>) -> Self {
         Self {
             module_path: Vec::new(),
             root: ModuleScope::default(),
@@ -757,6 +818,7 @@ impl Scope {
             is_main: false,
             call_tracker: CallTracker::default(),
             jet_hinter,
+            diagnostics,
         }
     }
 
@@ -771,49 +833,6 @@ impl Scope {
 
     pub fn is_outside_function(&self) -> bool {
         self.variables.is_empty()
-    }
-
-    /// Enter a new block inside the current function.
-    pub fn enter_block(&mut self) {
-        self.variables.push(HashMap::new());
-    }
-
-    /// Push the scope of the main function onto the stack.
-    ///
-    /// ## Panics
-    ///
-    /// - Already inside the main function.
-    /// - Already inside a function body.
-    pub fn enter_main(&mut self) {
-        assert!(!self.is_main, "Already inside main function");
-        assert!(self.is_outside_function(), "Already inside a function body");
-        self.enter_block();
-        self.is_main = true;
-    }
-
-    /// Exit the current block inside the curreent function.
-    ///
-    /// ## Panics
-    ///
-    /// - No acive block to exit.
-    pub fn exit_block(&mut self) {
-        self.variables.pop().expect("No active block to exit");
-    }
-
-    /// Pop the scope of the main function from the stack.
-    ///
-    /// ## Panics
-    ///
-    /// - Not inside the main function.
-    /// - Unclosed nested blocks remain.
-    pub fn exit_main(&mut self) {
-        assert!(self.is_main, "Current scope is not inside main function");
-        self.exit_block();
-        self.is_main = false;
-        assert!(
-            self.is_outside_function(),
-            "Current scope is not nested in topmost scope"
-        )
     }
 
     /// Enter a named module, pushing it onto the module path.
@@ -832,6 +851,23 @@ impl Scope {
             .insert(name.clone(), (ModuleScope::default(), visibility));
         self.module_path.push(name);
         Ok(())
+    }
+
+    /// Re-enter a module that is already registered, without registering it again.
+    ///
+    /// Used to keep analyzing the items of a *redefined* module: the collision
+    /// was reported, but the items inside are independent of it, and discarding
+    /// the whole block would hide every error in it.
+    ///
+    /// ## Panics
+    ///
+    /// No module of this name exists in the current scope.
+    fn reenter_module(&mut self, name: ModuleName) {
+        assert!(
+            self.current_module().submodules.contains_key(&name),
+            "module must already exist to be re-entered"
+        );
+        self.module_path.push(name);
     }
 
     /// Exit the current module, popping it from the module path.
@@ -888,10 +924,35 @@ impl Scope {
             parse::UseItems::List(elems) => elems.as_slice(),
         };
 
+        let aliases_main = |(_, aliased): &(SymbolName, Option<SymbolName>)| -> bool {
+            aliased.as_ref().is_some_and(|a| a.as_inner() == MAIN_STR)
+        };
+
+        // The local name each item introduces, in declaration order. `main` is
+        // never one: aliasing to it is rejected below.
+        let local_names: Vec<SymbolName> = use_decl_items
+            .iter()
+            .filter(|item| !aliases_main(item))
+            .map(|(name, aliased)| aliased.as_ref().unwrap_or(name).clone())
+            .collect();
+
+        // Errors from individual items, reported together at the end: one bad
+        // item neither aborts the declaration nor hides the ones beside it.
+        let mut item_errors: Vec<Error> = Vec::new();
+
+        // Aliasing to `main` is a property of the declaration alone, so it is
+        // checked before navigating: a broken path must not hide it.
+        item_errors.extend(
+            use_decl_items
+                .iter()
+                .filter(|item| aliases_main(item))
+                .map(|_| Error::MainCannotBeAlias),
+        );
+
         // Phase 1: navigate to target and collect items. Immutable borrow, dropped at end of block
-        // Vec<(ProcessedAlias, ProcessedFunction, ProcessedModule)>
-        // where each is Result<(Key, (Value, Visibility)), Error>
-        let collected: Vec<_> = {
+        // Vec<(LocalName, ProcessedAlias, ProcessedFunction, ProcessedModule)>
+        // where each result is Result<(Key, (Value, Visibility)), Error>
+        let collected: Result<Vec<_>, Error> = {
             // TODO: Part, that can be optimized
             // How many segments do the caller's path and the target's path have in common?
             let shared_prefix_len = self
@@ -901,51 +962,92 @@ impl Scope {
                 .take_while(|(curr, nav)| curr.as_inner() == nav.as_inner())
                 .count();
 
-            let mut target_scope = &self.root;
+            let mut target_scope = Ok(&self.root);
 
             for (ind, segment) in path[1..].iter().enumerate() {
+                let Ok(scope) = target_scope else { break };
                 let name = ModuleName::from_str_unchecked(segment.as_inner());
 
-                let (inner, visibility) = target_scope
-                    .submodules
-                    .get(&name)
-                    .ok_or_else(|| Error::ModuleNotFound { name: name.clone() })?;
-
-                if matches!(visibility, Visibility::Private) && shared_prefix_len < ind {
-                    return Err(Error::ModuleIsPrivate { name });
-                }
-
-                target_scope = inner;
+                target_scope = match scope.submodules.get(&name) {
+                    None => Err(Error::ModuleNotFound { name }),
+                    Some((_, Visibility::Private)) if shared_prefix_len < ind => {
+                        Err(Error::ModuleIsPrivate { name })
+                    }
+                    Some((inner, _)) => Ok(inner),
+                };
             }
 
-            let mut collected = Vec::with_capacity(use_decl_items.len());
-            for (name, aliased) in use_decl_items {
-                if aliased.as_ref().is_some_and(|a| a.as_inner() == MAIN_STR) {
-                    return Err(Error::MainCannotBeAlias);
+            target_scope.map(|target_scope| {
+                let mut collected = Vec::with_capacity(use_decl_items.len());
+                for item in use_decl_items {
+                    // Already reported above; the rest are still collected,
+                    // because the items of one `use` are independent.
+                    if aliases_main(item) {
+                        continue;
+                    }
+
+                    let (name, aliased) = item;
+                    let local_name = aliased.as_ref().unwrap_or(name);
+
+                    let alias_res =
+                        Self::try_collect_item(name, local_name, &target_scope.aliases, &use_vis);
+                    let func_res =
+                        Self::try_collect_item(name, local_name, &target_scope.functions, &use_vis);
+                    let mod_res = Self::try_collect_item(
+                        name,
+                        local_name,
+                        &target_scope.submodules,
+                        &use_vis,
+                    );
+
+                    collected.push((local_name.clone(), alias_res, func_res, mod_res));
                 }
-
-                let local_name = aliased.as_ref().unwrap_or(name);
-
-                let alias_res =
-                    Self::try_collect_item(name, local_name, &target_scope.aliases, &use_vis);
-                let func_res =
-                    Self::try_collect_item(name, local_name, &target_scope.functions, &use_vis);
-                let mod_res =
-                    Self::try_collect_item(name, local_name, &target_scope.submodules, &use_vis);
-
-                collected.push((alias_res, func_res, mod_res));
-            }
-            collected
+                collected
+            })
         };
 
-        // Phase 2: insert into current scope
-        let current = self.current_module_mut();
-        for (alias_res, func_res, mod_res) in collected {
-            Self::resolve_processing_use_items_error(&[
-                Self::insert_collected(alias_res, &mut current.aliases),
-                Self::insert_collected(func_res, &mut current.functions),
-                Self::insert_collected(mod_res, &mut current.submodules),
-            ])?;
+        let span = *use_decl.span();
+
+        // A broken path binds nothing at all, so every name the declaration
+        // introduces is poisoned before the one real error is returned.
+        let collected = match collected {
+            Ok(collected) => collected,
+            Err(path_err) => {
+                let current = self.current_module_mut();
+                for local_name in &local_names {
+                    current.poison_import(local_name);
+                }
+                for err in item_errors {
+                    self.report(err.with_span(span));
+                }
+                return Err(path_err);
+            }
+        };
+
+        // Phase 2: insert into current scope.
+        //
+        // The items of one `use` are independent — `b` failing says nothing
+        // about `a` — so each is recorded and the loop continues. Only the
+        // path-level failures above abort, because they leave nothing to insert.
+        {
+            let current = self.current_module_mut();
+            for (local_name, alias_res, func_res, mod_res) in collected {
+                let results = [
+                    Self::insert_collected(alias_res, &mut current.aliases),
+                    Self::insert_collected(func_res, &mut current.functions),
+                    Self::insert_collected(mod_res, &mut current.submodules),
+                ];
+
+                if !results.iter().any(Result::is_ok) {
+                    current.poison_import(&local_name);
+                }
+
+                item_errors.extend(Self::resolve_processing_use_items_error(&results));
+            }
+        }
+
+        for err in item_errors {
+            self.report(err.with_span(span));
         }
 
         Ok(())
@@ -1010,33 +1112,44 @@ impl Scope {
         })
     }
 
-    // TODO: Consider to use better error handling
     /// Evaluates the results of attempting to collect an item from multiple namespaces
     /// (aliases, functions, submodules) and resolves the final error state.
     ///
     /// ## Errors
     ///
-    /// * Returns a specific error (e.g., [`Error::PrivateItem`], [`Error::RedefinedItem`]) if one occurred.
+    /// * Returns *every* specific error (e.g., [`Error::PrivateItem`],
+    ///   [`Error::RedefinedItem`]) that occurred.
     /// * Returns a fallback [`Error::UnresolvedItem`] if the item could not be found in any of the checked namespaces.
-    fn resolve_processing_use_items_error(results: &[Result<(), Error>]) -> Result<(), Error> {
-        if results.iter().any(|res| res.is_ok()) {
-            return Ok(());
-        }
-
+    fn resolve_processing_use_items_error(results: &[Result<(), Error>]) -> Vec<Error> {
         let errors: Vec<&Error> = results
             .iter()
             .filter_map(|res| res.as_ref().err())
             .collect();
 
-        if let Some(&specific_err) = errors
+        // A collision or a privacy violation is a real failure of this import
+        // in that namespace. The namespaces are independent, so one such
+        // failure must not mask another: a private alias `foo` and a duplicate
+        // function `foo` are two distinct problems with the same `use`.
+        let specific: Vec<Error> = errors
             .iter()
-            .find(|e| !matches!(e, Error::UnresolvedItem { .. }))
-        {
-            return Err(specific_err.clone());
+            .filter(|err| !matches!(err, Error::UnresolvedItem { .. }))
+            .map(|err| (*err).clone())
+            .collect();
+
+        if !specific.is_empty() {
+            return specific;
         }
 
-        // Fallback to the first `UnresolvedItem` error
-        Err(errors[0].clone())
+        // Only "not found" remains. If the item did land in some namespace, that
+        // is expected noise; otherwise the name exists nowhere, so report it once.
+        if results.iter().any(Result::is_ok) {
+            Vec::new()
+        } else {
+            errors
+                .first()
+                .map(|err| vec![(*err).clone()])
+                .unwrap_or_default()
+        }
     }
 
     /// Insert a variable into the current block.
@@ -1065,20 +1178,37 @@ impl Scope {
     ///
     /// * [`Error::UndefinedAlias`]: The alias is not defined in the current scope.
     fn get_alias(&self, name: &AliasName) -> Result<ResolvedType, Error> {
-        self.current_module()
-            .aliases
-            .get(name)
-            .map(|(ty, _)| ty.clone())
-            .ok_or_else(|| Error::UndefinedAlias { name: name.clone() })
+        let module = self.current_module();
+        if let Some((ty, _)) = module.aliases.get(name) {
+            return Ok(ty.clone());
+        }
+        if module.is_poisoned_import(name.as_inner()) {
+            return Ok(ResolvedType::never());
+        }
+        Err(Error::UndefinedAlias { name: name.clone() })
     }
 
-    /// Resolve a type with aliases to a type without aliases.
+    /// Resolve a type with aliases, substituting a poison type for every alias
+    /// that is not defined and reporting each one.
     ///
-    /// ## Errors
-    ///
-    /// * [`Error::UndefinedAlias`]: The alias is not found in the global registry.
-    pub fn resolve(&self, ty: &AliasedType) -> Result<ResolvedType, Error> {
-        ty.resolve(|name| self.get_alias(name))
+    /// Never fails, so a caller can keep analyzing: a type whose aliases are all
+    /// broken still yields a type, and a type with two broken aliases reports
+    /// both instead of aborting at the first.
+    pub fn resolve_or_poison(&mut self, ty: &AliasedType, span: Span) -> ResolvedType {
+        let mut undefined = Vec::new();
+        let resolved = ty
+            .resolve::<_, Infallible>(|name| {
+                Ok(self.get_alias(name).unwrap_or_else(|_| {
+                    undefined.push(name.clone());
+                    ResolvedType::never()
+                }))
+            })
+            .unwrap_or_else(|never| match never {});
+
+        for name in undefined {
+            self.report(Error::UndefinedAlias { name }.with_span(span));
+        }
+        resolved
     }
 
     /// Error if `name` is already defined as an alias in the current module.
@@ -1092,13 +1222,20 @@ impl Scope {
 
     /// Insert a type alias into the current module scope.
     ///
+    /// An alias whose body does not resolve is still registered, at a poison
+    /// type: the body's error was reported, and a missing registration would
+    /// cascade into "undefined alias" at every use of the name.
+    ///
     /// ## Errors
     ///
     /// * [`Error::RedefinedAlias`]: The alias name is already defined in the current scope.
-    pub fn insert_alias(&mut self, alias: parse::TypeAlias) -> Result<(), Error> {
-        self.check_alias_free(alias.name())?;
+    pub fn insert_alias(&mut self, alias: parse::TypeAlias, span: Span) -> Result<(), Error> {
+        // The body is independent of the name collision, so resolve it either
+        // way for its own diagnostics.
+        let resolved = self.resolve_or_poison(alias.ty(), span);
 
-        let resolved = self.resolve(alias.ty())?;
+        // A redefinition keeps the existing binding, which is the good one.
+        self.check_alias_free(alias.name())?;
 
         self.current_module_mut()
             .aliases
@@ -1137,6 +1274,29 @@ impl Scope {
         Ok(())
     }
 
+    /// Register a type name at a poison type.
+    ///
+    /// Used when a declaration is rejected but its name was still written: the
+    /// cause was reported, and leaving the name unbound would cascade into
+    /// [`Error::UndefinedAlias`] at every use of the type.
+    ///
+    /// ## Errors
+    ///
+    /// * [`Error::RedefinedAlias`]: The name is already defined in the current module.
+    fn insert_poison_alias(
+        &mut self,
+        name: AliasName,
+        visibility: Visibility,
+    ) -> Result<(), Error> {
+        self.check_alias_free(&name)?;
+
+        self.current_module_mut()
+            .aliases
+            .insert(name, (ResolvedType::never(), visibility));
+
+        Ok(())
+    }
+
     /// Insert a parameter into the global map.
     ///
     /// ## Errors
@@ -1144,7 +1304,14 @@ impl Scope {
     /// * [`Error::ExpressionTypeMismatch`] A parameter of the same name has already been defined as a different type.
     pub fn insert_parameter(&mut self, name: WitnessName, ty: ResolvedType) -> Result<(), Error> {
         match self.parameters.entry(name.clone()) {
-            Entry::Occupied(entry) if entry.get() == &ty => Ok(()),
+            // Compatible, so the poisoned slots take this use's concrete types.
+            // Without refining, the first poisoned use would absorb every later
+            // one and a real conflict between two of them would never surface.
+            Entry::Occupied(mut entry) if entry.get().compatible(&ty) => {
+                let refined = entry.get().refine(&ty);
+                entry.insert(refined);
+                Ok(())
+            }
             Entry::Occupied(entry) => Err(Error::ExpressionTypeMismatch {
                 expected: entry.get().clone(),
                 found: ty,
@@ -1216,16 +1383,114 @@ impl Scope {
     ///
     /// * [`Error::FunctionUndefined`]: The function is not found in the global registry.
     pub fn get_function(&self, name: &FunctionName) -> Result<CustomFunction, Error> {
-        self.current_module()
-            .functions
-            .get(name)
-            .map(|(func, _)| func.clone())
-            .ok_or_else(|| Error::FunctionUndefined { name: name.clone() })
+        let module = self.current_module();
+        if let Some((func, _)) = module.functions.get(name) {
+            return Ok(func.clone());
+        }
+        if module.is_poisoned_import(name.as_inner()) {
+            return Ok(CustomFunction::error(Span::DUMMY));
+        }
+        Err(Error::FunctionUndefined { name: name.clone() })
     }
 
     /// Track a call expression with its span.
     pub fn track_call<S: AsRef<Span>>(&mut self, span: &S, name: TrackedCallName) {
         self.call_tracker.track_call(*span.as_ref(), name);
+    }
+
+    fn report(&mut self, diag: Diagnostic) {
+        self.diagnostics.push(diag);
+    }
+
+    fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+}
+
+/// RAII guard that balances a function/block scope.
+///
+/// Multi-error analysis keeps going after an error, so a body can fail
+/// mid-analysis. Pairing enter/exit by hand around a `?` leaks the scope on the
+/// error path, and the next item's balance assertion then panics. This guard
+/// runs the exit on *every* path — normal return, early `?`, or unwind — so the
+/// scope is always balanced. Entering a scope is only possible through
+/// [`Scope::block`] / [`Scope::main_scope`], which always arm the matching exit.
+struct ScopeGuard<'a> {
+    scope: &'a mut Scope,
+    exit: fn(&mut Scope),
+}
+
+impl Drop for ScopeGuard<'_> {
+    fn drop(&mut self) {
+        (self.exit)(self.scope);
+    }
+}
+
+impl Scope {
+    /// Enter a nested block; the guard exits it on drop.
+    pub fn block(&mut self) -> ScopeGuard<'_> {
+        self.enter_block();
+
+        ScopeGuard {
+            scope: self,
+            exit: Scope::exit_block,
+        }
+    }
+
+    /// Enter the main function's scope; the guard exits it on drop.
+    ///
+    /// ## Panics
+    /// - Already inside the main function.
+    /// - Already inside a function body.
+    pub fn main_scope(&mut self) -> ScopeGuard<'_> {
+        self.enter_main();
+        ScopeGuard {
+            scope: self,
+            exit: Scope::exit_main,
+        }
+    }
+
+    /// Enter a new block inside the current function.
+    fn enter_block(&mut self) {
+        self.variables.push(HashMap::new());
+    }
+
+    /// Push the scope of the main function onto the stack.
+    ///
+    /// ## Panics
+    ///
+    /// - Already inside the main function.
+    /// - Already inside a function body.
+    fn enter_main(&mut self) {
+        assert!(!self.is_main, "Already inside main function");
+        assert!(self.is_outside_function(), "Already inside a function body");
+        self.enter_block();
+        self.is_main = true;
+    }
+
+    /// Exit the current block inside the curreent function.
+    ///
+    /// ## Panics
+    ///
+    /// - No acive block to exit.
+    fn exit_block(&mut self) {
+        self.variables.pop().expect("No active block to exit");
+    }
+
+    /// Pop the scope of the main function from the stack.
+    ///
+    /// ## Panics
+    ///
+    /// - Not inside the main function.
+    /// - Unclosed nested blocks remain.
+    fn exit_main(&mut self) {
+        assert!(self.is_main, "Current scope is not inside main function");
+        self.exit_block();
+        self.is_main = false;
+        assert!(
+            self.is_outside_function(),
+            "Current scope is not nested in topmost scope"
+        )
     }
 }
 
@@ -1247,30 +1512,50 @@ impl Program {
     pub fn analyze(
         from: &parse::Program,
         jet_hinter: Box<dyn JetHinter>,
-    ) -> Result<Self, Diagnostic> {
+        diagnostics: &mut DiagnosticManager,
+    ) -> Option<Self> {
+        let before = diagnostics.error_count();
         let unit = ResolvedType::unit();
-        let mut scope = Scope::new(jet_hinter);
+        let mut scope = Scope::new(jet_hinter, Vec::new());
 
-        let items = from
+        let items: Vec<Item> = from
             .items()
             .iter()
-            .map(|s| Item::analyze(s, &unit, &mut scope))
-            .collect::<Result<Vec<Item>, Diagnostic>>()?;
+            .map(|item| match Item::analyze(item, &unit, &mut scope) {
+                Ok(item) => item,
+                Err(diag) => {
+                    scope.report(diag);
+                    Item::Error
+                }
+            })
+            .collect();
+
         debug_assert!(scope.is_outside_function());
         debug_assert!(
             scope.module_path.is_empty(),
             "Unclosed module scopes remain"
         );
 
-        let (parameters, witness_types, call_tracker) = scope.destruct();
-        let main = Self::extract_single_main(&items)
-            // If we find a duplicate of main function
-            .map_err(|err| err.with_span(from.into()))?
-            .ok_or(Error::MainRequired)
-            .with_span(from)?;
+        let main = match Self::extract_single_main(&items) {
+            Ok(Some(main)) => Some(main),
+            Ok(None) => {
+                scope.report(Error::MainRequired.with_span(from.into()));
+                None
+            }
+            Err(err) => {
+                scope.report(err.with_span(from.into()));
+                None
+            }
+        };
 
-        Ok(Self {
-            main,
+        diagnostics.extend(scope.diagnostics().iter().cloned());
+        if diagnostics.error_count() > before {
+            return None;
+        }
+
+        let (parameters, witness_types, call_tracker) = scope.destruct();
+        Some(Self {
+            main: main?,
             parameters,
             witness_types,
             call_tracker: Arc::new(call_tracker),
@@ -1318,7 +1603,8 @@ impl AbstractSyntaxTree for Item {
 
         match from {
             parse::Item::TypeAlias(alias) => {
-                scope.insert_alias(alias.clone()).with_span(alias)?;
+                let span = *alias.as_ref();
+                scope.insert_alias(alias.clone(), span).with_span(alias)?;
                 Ok(Self::TypeAlias)
             }
             parse::Item::Function(function) => {
@@ -1329,42 +1615,68 @@ impl AbstractSyntaxTree for Item {
                 Ok(Self::Use)
             }
             parse::Item::EnumDeclaration(decl) => {
-                if decl.variants().is_empty() {
-                    // A sum of zero types would be uninhabited, which
-                    // Simplicity's type algebra cannot express.
-                    return Err(Error::Grammar {
-                        msg: format!("enum '{}' must have at least one variant", decl.name()),
-                    })
-                    .with_span(decl);
-                }
-
-                let mut seen_names = HashSet::new();
-                for v in decl.variants() {
-                    if !seen_names.insert(v.name()) {
-                        return Err(Error::Grammar {
-                            msg: format!(
+                // A sum of zero types would be uninhabited, which Simplicity's
+                // type algebra cannot express; duplicate variant names leave the
+                // enum's shape ambiguous. Either way the declaration is rejected,
+                // but its *name* must still be registered — see below.
+                let rejected: Vec<String> = if decl.variants().is_empty() {
+                    vec![format!(
+                        "enum '{}' must have at least one variant",
+                        decl.name()
+                    )]
+                } else {
+                    // The variants are independent, so every duplicated name reports.
+                    let mut seen_names = HashSet::new();
+                    let mut reported = HashSet::new();
+                    decl.variants()
+                        .iter()
+                        .filter(|v| !seen_names.insert(v.name()) && reported.insert(v.name()))
+                        .map(|v| {
+                            format!(
                                 "enum '{}' has duplicate variant name '{}'",
                                 decl.name(),
                                 v.name()
-                            ),
+                            )
                         })
-                        .with_span(decl);
+                        .collect()
+                };
+
+                if !rejected.is_empty() {
+                    for msg in rejected {
+                        scope.report(Diagnostic::new(Error::Grammar { msg }, decl.into()));
                     }
+
+                    // The payload types are independent of the rejection, so
+                    // resolve them anyway to surface their own errors.
+                    for v in decl.variants() {
+                        for payload_ty in v.payload() {
+                            scope.resolve_or_poison(payload_ty, v.into());
+                        }
+                    }
+
+                    // Register the name at a poison type instead of the enum, so
+                    // that `let x: E = ..` does not cascade into "E is not
+                    // defined" at every use.
+                    scope
+                        .insert_poison_alias(decl.name().clone(), decl.visibility().clone())
+                        .with_span(decl)?;
+
+                    return Ok(Self::EnumDeclaration);
                 }
 
-                let variants = decl
+                let variants: Arc<[EnumVariantInfo]> = decl
                     .variants()
                     .iter()
                     .map(|v| {
-                        let payload = v
+                        let payload: Arc<[ResolvedType]> = v
                             .payload()
                             .iter()
-                            .map(|ty| scope.resolve(ty))
-                            .collect::<Result<Arc<[ResolvedType]>, Error>>()
-                            .with_span(v)?;
-                        Ok(EnumVariantInfo::new(v.name().clone(), payload))
+                            .map(|ty| scope.resolve_or_poison(ty, v.into()))
+                            .collect();
+                        EnumVariantInfo::new(v.name().clone(), payload)
                     })
-                    .collect::<Result<Arc<[EnumVariantInfo]>, Diagnostic>>()?;
+                    .collect();
+
                 scope
                     .insert_enum(decl.name().clone(), decl.visibility().clone(), variants)
                     .with_span(decl)?;
@@ -1372,18 +1684,32 @@ impl AbstractSyntaxTree for Item {
                 Ok(Self::EnumDeclaration)
             }
             parse::Item::Module(module) => {
-                scope
-                    .enter_module(module.name().clone(), module.visibility().clone())
-                    .with_span(module)?;
+                // A name collision is reported, not returned: the items inside
+                // are independent of it, so they are analyzed in the existing
+                // module of that name rather than discarded wholesale. A genuine
+                // duplicate among them then reports itself, as any item would.
+                if let Err(err) =
+                    scope.enter_module(module.name().clone(), module.visibility().clone())
+                {
+                    scope.report(err.with_span(module.into()));
+                    scope.reenter_module(module.name().clone());
+                }
 
                 let mut analyzed_children = Vec::new();
                 for item in module.items() {
-                    analyzed_children.push(Item::analyze(item, ty, scope)?);
+                    let analyzed = match Item::analyze(item, ty, scope) {
+                        Ok(item) => item,
+                        Err(diag) => {
+                            scope.report(diag);
+                            Item::Error
+                        }
+                    };
+                    analyzed_children.push(analyzed);
                 }
                 scope.exit_module();
                 Ok(Self::Module(analyzed_children))
             }
-            parse::Item::Ignored => Ok(Self::Ignored),
+            parse::Item::Ignored => Ok(Self::Error),
         }
     }
 }
@@ -1403,39 +1729,37 @@ impl AbstractSyntaxTree for Function {
         );
 
         if from.name().as_inner() != MAIN_STR {
-            let params = from
+            let params: Arc<[FunctionParam]> = from
                 .params()
                 .iter()
-                .map(|param| {
-                    let identifier = param.identifier().clone();
-                    let ty = scope.resolve(param.ty())?;
-                    Ok(FunctionParam {
-                        identifier,
-                        ty,
-                        span: *param.span(),
-                    })
+                .map(|param| FunctionParam {
+                    identifier: param.identifier().clone(),
+                    ty: scope.resolve_or_poison(param.ty(), *from.span()),
+                    span: *param.span(),
                 })
-                .collect::<Result<Arc<[FunctionParam]>, Error>>()
-                .with_span(from)?;
-            let ret = from
-                .ret()
-                .as_ref()
-                .map(|aliased| scope.resolve(aliased).with_span(from))
-                .transpose()?
-                .unwrap_or_else(ResolvedType::unit);
+                .collect();
+            let ret = match from.ret() {
+                Some(aliased) => scope.resolve_or_poison(aliased, from.into()),
+                None => ResolvedType::unit(),
+            };
 
-            scope.enter_block();
-            for param in params.iter() {
-                scope.insert_variable(param.identifier().clone(), param.ty().clone());
-            }
-            let body = Expression::analyze(from.body(), &ret, scope).map(Arc::new)?;
-            scope.exit_block();
+            let body = {
+                let guard = scope.block();
+                for param in params.iter() {
+                    guard
+                        .scope
+                        .insert_variable(param.identifier().clone(), param.ty().clone());
+                }
+
+                Arc::new(analyze_child(from.body(), &ret, guard.scope))
+            };
 
             debug_assert!(scope.is_outside_function());
             let function = CustomFunction {
                 params,
                 body,
                 span: *from.span(),
+                is_never: false,
             };
             scope
                 .insert_function(from.name().clone(), from.visibility().clone(), function)
@@ -1444,23 +1768,49 @@ impl AbstractSyntaxTree for Function {
             return Ok(Self::Custom);
         }
 
+        // An invalid signature is reported, not returned. `main` was written, so
+        // erasing it here would invent a spurious `MainRequired`, skip the body,
+        // and hide a second `main`. It survives as a poisoned `Function::Main`,
+        // exactly as a `main` whose body fails already does.
+        let span: Span = from.into();
+
         if !from.params().is_empty() {
-            return Err(Error::MainNoInputs).with_span(from);
+            scope.report(Diagnostic::new(Error::MainNoInputs, span));
         }
         if let Some(aliased) = from.ret() {
-            let resolved = scope.resolve(aliased).with_span(from)?;
-            if !resolved.is_unit() {
-                return Err(Error::MainNoOutput).with_span(from);
+            let resolved = scope.resolve_or_poison(aliased, span);
+            // A poisoned return type absorbs this check: the alias was already
+            // reported, and whether it is unit is unknowable.
+            if !resolved.is_unit() && !resolved.is_never() {
+                scope.report(Diagnostic::new(Error::MainNoOutput, span));
             }
         }
-
         if matches!(from.visibility(), Visibility::Public) {
-            return Err(Error::MainCannotBePublic).with_span(from);
+            scope.report(Diagnostic::new(Error::MainCannotBePublic, span));
         }
 
-        scope.enter_main();
-        let body = Expression::analyze(from.body(), ty, scope)?;
-        scope.exit_main();
+        // The rejected parameters are still declared, so bind them: a body that
+        // uses one must not cascade into "undefined variable".
+        let params: Vec<(Identifier, ResolvedType)> = from
+            .params()
+            .iter()
+            .map(|param| {
+                (
+                    param.identifier().clone(),
+                    scope.resolve_or_poison(param.ty(), span),
+                )
+            })
+            .collect();
+
+        let guard = scope.main_scope();
+        for (identifier, param_ty) in params {
+            guard.scope.insert_variable(identifier, param_ty);
+        }
+
+        // The body is checked against unit whatever the declared return type:
+        // `Function::Main` always carries a unit-typed body, so a rejected
+        // return type must not change what the body is held to.
+        let body = analyze_child(from.body(), ty, guard.scope);
         Ok(Self::Main(body))
     }
 }
@@ -1481,6 +1831,7 @@ impl AbstractSyntaxTree for Statement {
             parse::Statement::Expression(expression) => {
                 Expression::analyze(expression, ty, scope).map(Self::Expression)
             }
+            parse::Statement::Error(_) => Ok(Self::Error),
         }
     }
 }
@@ -1488,6 +1839,7 @@ impl AbstractSyntaxTree for Statement {
 impl AbstractSyntaxTree for Assignment {
     type From = parse::Assignment;
 
+    // TODO: So, currently we do not need a `Diagnostic` for this
     fn analyze(
         from: &Self::From,
         ty: &ResolvedType,
@@ -1498,9 +1850,10 @@ impl AbstractSyntaxTree for Assignment {
         //
         // However, the expression evaluated in the assignment does have a type,
         // namely the type specified in the assignment.
-        let ty_expr = scope.resolve(from.ty()).with_span(from)?;
-        let expression = Expression::analyze(from.expression(), &ty_expr, scope)?;
-        let typed_variables = from.pattern().is_of_type(&ty_expr).with_span(from)?;
+        let ty_expr = scope.resolve_or_poison(from.ty(), from.into());
+
+        let expression = analyze_child(from.expression(), &ty_expr, scope);
+        let typed_variables = bind_pattern(from.pattern(), &ty_expr, scope, from.into());
         for (identifier, ty) in typed_variables {
             scope.insert_variable(identifier, ty);
         }
@@ -1528,6 +1881,102 @@ impl Expression {
         let mut empty_scope = Scope::for_value_parsing();
         Self::analyze(from, ty, &mut empty_scope)
     }
+
+    fn error(ty: ResolvedType, span: Span) -> Self {
+        let inner = ExpressionInner::Single(SingleExpression {
+            inner: SingleExpressionInner::Error,
+            ty: ty.clone(),
+            span,
+        });
+
+        Expression { inner, ty, span }
+    }
+}
+
+/// Bind a pattern's identifiers, recovering from a failed shape check.
+///
+/// The shape error is reported and the identifiers are bound at poison, so later
+/// uses do not cascade into "undefined variable".
+fn bind_pattern(
+    pattern: &Pattern,
+    ty: &ResolvedType,
+    scope: &mut Scope,
+    span: Span,
+) -> HashMap<Identifier, ResolvedType> {
+    match pattern.is_of_type(ty) {
+        Ok(variables) => variables,
+        Err(err) => {
+            let reuse_reported = matches!(err, Error::VariableReuseInPattern { .. });
+            scope.report(err.with_span(span));
+            poison_bindings(pattern, reuse_reported, scope, span)
+        }
+    }
+}
+
+/// Bind every identifier a pattern declares at a poison type.
+///
+/// Used when the pattern does not match its annotation: the shape error was
+/// already reported, and dropping the identifiers would cascade into
+/// "undefined variable" at every use of them.
+///
+/// A duplicate binding is reported here, because [`Pattern::is_of_type`] returns
+/// only its first error and a shape mismatch would otherwise hide it. Set
+/// `reuse_reported` when the caller's error already was the reuse itself.
+fn poison_bindings(
+    pattern: &Pattern,
+    reuse_reported: bool,
+    scope: &mut Scope,
+    span: Span,
+) -> HashMap<Identifier, ResolvedType> {
+    let mut bindings = HashMap::new();
+    for identifier in pattern.identifiers() {
+        let duplicate = bindings
+            .insert(identifier.clone(), ResolvedType::never())
+            .is_some();
+        if duplicate && !reuse_reported {
+            scope.report(
+                Error::VariableReuseInPattern {
+                    identifier: identifier.clone(),
+                }
+                .with_span(span),
+            );
+        }
+    }
+    bindings
+}
+
+/// Analyze one child expression, substituting a poison node if it fails.
+///
+/// Catches the error instead of propagating it, so the caller keeps analyzing
+/// whatever comes after the child: a sibling, a registration, or an artifact.
+fn analyze_child(child: &parse::Expression, ty: &ResolvedType, scope: &mut Scope) -> Expression {
+    match Expression::analyze(child, ty, scope) {
+        Ok(expr) => expr,
+        Err(diag) => {
+            scope.report(diag);
+            Expression::error(ty.clone(), *child.span())
+        }
+    }
+}
+
+/// Analyze a container's children, each against its own expected type.
+///
+/// Missing expected types are padded with poison, so a count mismatch between
+/// children and types never hides a child's own errors. Catches every child, so
+/// it cannot fail.
+fn analyze_children(
+    children: &[parse::Expression],
+    expected: &[ResolvedType],
+    scope: &mut Scope,
+) -> Arc<[Expression]> {
+    children
+        .iter()
+        .enumerate()
+        .map(|(i, child)| {
+            let ty = expected.get(i).cloned().unwrap_or_else(ResolvedType::never);
+            analyze_child(child, &ty, scope)
+        })
+        .collect()
 }
 
 /// Analyze the construction of an enum variant, e.g. `Action::Refresh(sig, 3)`.
@@ -1543,7 +1992,11 @@ fn analyze_enum_construction(
     scope: &mut Scope,
 ) -> Result<EnumConstruction, Diagnostic> {
     let span = *construction.span();
+
+    // A construction we cannot analyze structurally still has arguments whose
+    // own errors must surface, so drain them at a poison type before bailing.
     let Some(info) = ty.as_enum() else {
+        analyze_children(construction.args(), &[], scope);
         return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }).with_span(span);
     };
 
@@ -1558,6 +2011,7 @@ fn analyze_enum_construction(
             match scope.get_alias(&alias) {
                 Ok(resolved) if &resolved == ty => true,
                 Ok(resolved) => {
+                    analyze_children(construction.args(), &[], scope);
                     return Err(Error::ExpressionTypeMismatch {
                         expected: ty.clone(),
                         found: resolved,
@@ -1570,35 +2024,41 @@ fn analyze_enum_construction(
         _ => false,
     };
     if !names_expected_enum {
+        analyze_children(construction.args(), &[], scope);
         return Err(Error::Grammar {
             msg: format!("`{written}` does not name enum `{}`", info.name()),
         })
         .with_span(span);
     }
 
-    let (variant_index, variant) = info
-        .variant(construction.variant())
-        .ok_or_else(|| enum_variant_error(construction.variant().as_inner(), info))
-        .with_span(span)?;
+    let Some((variant_index, variant)) = info.variant(construction.variant()) else {
+        analyze_children(construction.args(), &[], scope);
+        return Err(enum_variant_error(construction.variant().as_inner(), info)).with_span(span);
+    };
+
+    // The variant is known, so the payload types are the best expected types
+    // available even when the count disagrees: report the count and keep going.
     if construction.args().len() != variant.payload().len() {
-        return Err(Error::Grammar {
-            msg: format!(
-                "variant `{}` of enum `{}` carries {} payload value(s), found {}",
-                construction.variant(),
-                info.name(),
-                variant.payload().len(),
-                construction.args().len()
-            ),
-        })
-        .with_span(span);
+        scope.report(
+            Error::Grammar {
+                msg: format!(
+                    "variant `{}` of enum `{}` carries {} payload value(s), found {}",
+                    construction.variant(),
+                    info.name(),
+                    variant.payload().len(),
+                    construction.args().len()
+                ),
+            }
+            .with_span(span),
+        );
     }
 
-    let payload = construction
-        .args()
-        .iter()
-        .zip(variant.payload())
-        .map(|(arg, payload_ty)| Expression::analyze(arg, payload_ty, scope).map(Arc::new))
-        .collect::<Result<Arc<[Arc<Expression>]>, Diagnostic>>()?;
+    let payload: Arc<[Arc<Expression>]> =
+        analyze_children(construction.args(), variant.payload(), scope)
+            .iter()
+            .cloned()
+            .map(Arc::new)
+            .collect();
 
     Ok(EnumConstruction {
         variant_index,
@@ -1686,23 +2146,35 @@ impl AbstractSyntaxTree for Expression {
                 })
             }
             parse::ExpressionInner::Block(statements, expression) => {
-                scope.enter_block();
+                let guard = scope.block();
                 let ast_statements = statements
                     .iter()
-                    .map(|s| Statement::analyze(s, &ResolvedType::unit(), scope))
-                    .collect::<Result<Arc<[Statement]>, Diagnostic>>()?;
+                    .map(
+                        |s| match Statement::analyze(s, &ResolvedType::unit(), guard.scope) {
+                            Ok(stmt) => stmt,
+                            Err(diag) => {
+                                guard.scope.report(diag);
+                                Statement::Error
+                            }
+                        },
+                    )
+                    .collect();
+
                 let ast_expression = match expression {
-                    Some(expression) => Expression::analyze(expression, ty, scope)
+                    Some(expression) => Expression::analyze(expression, ty, guard.scope)
                         .map(Arc::new)
                         .map(Some),
-                    None if ty.is_unit() => Ok(None),
+
+                    // A poisoned expected type absorbs the missing-tail check: the
+                    // annotation was already reported, so demanding unit here would
+                    // cascade.
+                    None if ty.is_unit() || ty.is_never() => Ok(None),
                     None => Err(Error::ExpressionTypeMismatch {
                         expected: ty.clone(),
                         found: ResolvedType::unit(),
                     })
                     .with_span(from),
                 }?;
-                scope.exit_block();
 
                 Ok(Self {
                     ty: ty.clone(),
@@ -1724,36 +2196,53 @@ impl AbstractSyntaxTree for SingleExpression {
     ) -> Result<Self, Diagnostic> {
         let inner = match from.inner() {
             parse::SingleExpressionInner::Boolean(bit) => {
-                if !ty.is_boolean() {
+                if ty.is_never() {
+                    SingleExpressionInner::Error
+                } else if !ty.is_boolean() {
                     return Err(Error::ExpressionTypeMismatch {
                         expected: ty.clone(),
                         found: ResolvedType::boolean(),
                     })
                     .with_span(from);
+                } else {
+                    SingleExpressionInner::Constant(Value::from(*bit))
                 }
-                SingleExpressionInner::Constant(Value::from(*bit))
             }
             parse::SingleExpressionInner::Decimal(decimal) => {
-                let ty = ty
-                    .as_integer()
-                    .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
-                    .with_span(from)?;
-                UIntValue::parse_decimal(decimal, ty)
-                    .with_span(from)
-                    .map(Value::from)
-                    .map(SingleExpressionInner::Constant)?
+                if ty.is_never() {
+                    SingleExpressionInner::Error
+                } else {
+                    let ty = ty
+                        .as_integer()
+                        .ok_or_else(|| Error::ExpressionUnexpectedType { ty: ty.clone() })
+                        .with_span(from)?;
+
+                    UIntValue::parse_decimal(decimal, ty)
+                        .with_span(from)
+                        .map(Value::from)
+                        .map(SingleExpressionInner::Constant)?
+                }
             }
             parse::SingleExpressionInner::Binary(bits) => {
-                let ty = ty
-                    .as_integer()
-                    .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
-                    .with_span(from)?;
-                let value = UIntValue::parse_binary(bits, ty).with_span(from)?;
-                SingleExpressionInner::Constant(Value::from(value))
+                if ty.is_never() {
+                    SingleExpressionInner::Error
+                } else {
+                    let ty = ty
+                        .as_integer()
+                        .ok_or_else(|| Error::ExpressionUnexpectedType { ty: ty.clone() })
+                        .with_span(from)?;
+
+                    let value = UIntValue::parse_binary(bits, ty).with_span(from)?;
+                    SingleExpressionInner::Constant(Value::from(value))
+                }
             }
             parse::SingleExpressionInner::Hexadecimal(bytes) => {
-                let value = Value::parse_hexadecimal(bytes, ty).with_span(from)?;
-                SingleExpressionInner::Constant(value)
+                if ty.is_never() {
+                    SingleExpressionInner::Error
+                } else {
+                    let value = Value::parse_hexadecimal(bytes, ty).with_span(from)?;
+                    SingleExpressionInner::Constant(value)
+                }
             }
             parse::SingleExpressionInner::Witness(name) => {
                 scope
@@ -1770,18 +2259,22 @@ impl AbstractSyntaxTree for SingleExpression {
             parse::SingleExpressionInner::Variable(identifier) => {
                 let bound_ty = scope
                     .get_variable(identifier)
-                    .ok_or(Error::UndefinedVariable {
+                    .ok_or_else(|| Error::UndefinedVariable {
                         identifier: identifier.clone(),
                     })
                     .with_span(from)?;
-                if ty != bound_ty {
+
+                if !ty.compatible(bound_ty) {
                     return Err(Error::ExpressionTypeMismatch {
                         expected: ty.clone(),
                         found: bound_ty.clone(),
                     })
                     .with_span(from);
                 }
-                scope.insert_variable(identifier.clone(), ty.clone());
+
+                // Reading a variable does not rebind it. `insert_variable` writes
+                // into the innermost scope, so binding the *expected* type here
+                // shadows the declaration.
                 SingleExpressionInner::Variable(identifier.clone())
             }
             parse::SingleExpressionInner::Expression(parse) => {
@@ -1790,74 +2283,103 @@ impl AbstractSyntaxTree for SingleExpression {
                     .map(SingleExpressionInner::Expression)?
             }
             parse::SingleExpressionInner::Tuple(tuple) => {
-                let types = ty
-                    .as_tuple()
-                    .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
-                    .with_span(from)?;
-                if tuple.len() != types.len() {
-                    return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }).with_span(from);
-                }
-                tuple
-                    .iter()
-                    .zip(types.iter())
-                    .map(|(el_parse, el_ty)| Expression::analyze(el_parse, el_ty, scope))
-                    .collect::<Result<Arc<[Expression]>, Diagnostic>>()
-                    .map(SingleExpressionInner::Tuple)?
+                // A shape or arity failure is reported, not returned: the
+                // elements are independent, so each must still be analyzed.
+                let types: Vec<ResolvedType> = match ty.as_tuple() {
+                    Some(types) => {
+                        if types.len() != tuple.len() {
+                            report_shape_mismatch(ty, *from.as_ref(), scope);
+                        }
+                        // The slots that do line up keep their known types, so a
+                        // wrongly typed element still reports.
+                        types.iter().map(|a| a.as_ref().clone()).collect()
+                    }
+                    // Not a tuple at all: no slot types to keep.
+                    None => {
+                        report_shape_mismatch(ty, *from.as_ref(), scope);
+                        vec![ResolvedType::never(); tuple.len()]
+                    }
+                };
+
+                SingleExpressionInner::Tuple(analyze_children(tuple, &types, scope))
             }
             parse::SingleExpressionInner::Array(array) => {
-                let (el_ty, size) = ty
-                    .as_array()
-                    .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
-                    .with_span(from)?;
-                if array.len() != size {
-                    return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }).with_span(from);
-                }
-                array
-                    .iter()
-                    .map(|el_parse| Expression::analyze(el_parse, el_ty, scope))
-                    .collect::<Result<Arc<[Expression]>, Diagnostic>>()
-                    .map(SingleExpressionInner::Array)?
+                // A size mismatch leaves the element type intact, so it stays
+                // the expected type; only a non-array annotation poisons it.
+                let el_ty: ResolvedType = match ty.as_array() {
+                    Some((el_ty, size)) => {
+                        if array.len() != size {
+                            scope.report(
+                                Error::ExpressionUnexpectedType { ty: ty.clone() }
+                                    .with_span(from.into()),
+                            );
+                        }
+                        el_ty.clone()
+                    }
+                    None => {
+                        report_shape_mismatch(ty, *from.as_ref(), scope);
+                        ResolvedType::never()
+                    }
+                };
+
+                let types = vec![el_ty; array.len()];
+                SingleExpressionInner::Array(analyze_children(array, &types, scope))
             }
             parse::SingleExpressionInner::List(list) => {
-                let (el_ty, bound) = ty
-                    .as_list()
-                    .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
-                    .with_span(from)?;
-                if bound.get() <= list.len() {
-                    return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }).with_span(from);
-                }
-                list.iter()
-                    .map(|e| Expression::analyze(e, el_ty, scope))
-                    .collect::<Result<Arc<[Expression]>, Diagnostic>>()
-                    .map(SingleExpressionInner::List)?
+                let el_ty: ResolvedType = match ty.as_list() {
+                    Some((el_ty, bound)) => {
+                        if bound.get() <= list.len() {
+                            scope.report(
+                                Error::ExpressionUnexpectedType { ty: ty.clone() }
+                                    .with_span(from.into()),
+                            );
+                        }
+                        el_ty.clone()
+                    }
+                    None => {
+                        report_shape_mismatch(ty, *from.as_ref(), scope);
+                        ResolvedType::never()
+                    }
+                };
+
+                let types = vec![el_ty; list.len()];
+                SingleExpressionInner::List(analyze_children(list, &types, scope))
             }
             parse::SingleExpressionInner::Either(either) => {
-                let (ty_l, ty_r) = ty
-                    .as_either()
-                    .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
-                    .with_span(from)?;
-                match either {
-                    Either::Left(parse_l) => Expression::analyze(parse_l, ty_l, scope)
-                        .map(Arc::new)
-                        .map(Either::Left),
-                    Either::Right(parse_r) => Expression::analyze(parse_r, ty_r, scope)
-                        .map(Arc::new)
-                        .map(Either::Right),
-                }
-                .map(SingleExpressionInner::Either)?
+                // A shape mismatch is reported, not returned: the wrapped child
+                // has its own errors either way, so it is analyzed against
+                // poison, the only expected type left.
+                let (ty_l, ty_r) = match ty.as_either() {
+                    Some((ty_l, ty_r)) => (ty_l.clone(), ty_r.clone()),
+                    None => {
+                        report_shape_mismatch(ty, *from.as_ref(), scope);
+                        (ResolvedType::never(), ResolvedType::never())
+                    }
+                };
+
+                let inner = match either {
+                    Either::Left(parse_l) => {
+                        Either::Left(Arc::new(analyze_child(parse_l, &ty_l, scope)))
+                    }
+                    Either::Right(parse_r) => {
+                        Either::Right(Arc::new(analyze_child(parse_r, &ty_r, scope)))
+                    }
+                };
+                SingleExpressionInner::Either(inner)
             }
             parse::SingleExpressionInner::Option(maybe_parse) => {
-                let ty = ty
-                    .as_option()
-                    .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
-                    .with_span(from)?;
-                match maybe_parse {
-                    Some(parse) => {
-                        Some(Expression::analyze(parse, ty, scope).map(Arc::new)).transpose()
+                let inner_ty: ResolvedType = match ty.as_option() {
+                    Some(inner_ty) => inner_ty.clone(),
+                    None => {
+                        report_shape_mismatch(ty, *from.as_ref(), scope);
+                        ResolvedType::never()
                     }
-                    None => Ok(None),
-                }
-                .map(SingleExpressionInner::Option)?
+                };
+
+                let inner = maybe_parse
+                    .as_ref()
+                    .map(|parse| Arc::new(analyze_child(parse, &inner_ty, scope)));
+                SingleExpressionInner::Option(inner)
             }
             parse::SingleExpressionInner::Call(call) => {
                 Call::analyze(call, ty, scope).map(SingleExpressionInner::Call)?
@@ -1866,12 +2388,21 @@ impl AbstractSyntaxTree for SingleExpression {
                 Match::analyze(match_, ty, scope).map(SingleExpressionInner::Match)?
             }
             parse::SingleExpressionInner::EnumConstruction(construction) => {
-                analyze_enum_construction(construction, ty, scope)
-                    .map(SingleExpressionInner::EnumConstruction)?
+                if ty.is_never() {
+                    // The variant is unknowable, but the payload arguments are
+                    // independent of it: drain them at poison so their own
+                    // errors still surface.
+                    analyze_children(construction.args(), &[], scope);
+                    SingleExpressionInner::Error
+                } else {
+                    analyze_enum_construction(construction, ty, scope)
+                        .map(SingleExpressionInner::EnumConstruction)?
+                }
             }
             parse::SingleExpressionInner::EnumMatch(enum_match) => {
-                EnumMatch::analyze(enum_match, ty, scope).map(SingleExpressionInner::EnumMatch)?
+                analyze_enum_match(enum_match, ty, scope)?
             }
+            parse::SingleExpressionInner::Error => SingleExpressionInner::Error,
         };
 
         Ok(Self {
@@ -1882,130 +2413,252 @@ impl AbstractSyntaxTree for SingleExpression {
     }
 }
 
-impl AbstractSyntaxTree for EnumMatch {
-    type From = parse::EnumMatch;
+/// Report a shape mismatch, unless the expected type is poison.
+fn report_shape_mismatch(ty: &ResolvedType, span: Span, scope: &mut Scope) {
+    if !ty.is_never() {
+        scope.report(Error::ExpressionUnexpectedType { ty: ty.clone() }.with_span(span));
+    }
+}
 
-    fn analyze(
-        from: &Self::From,
-        ty: &ResolvedType,
-        scope: &mut Scope,
-    ) -> Result<Self, Diagnostic> {
-        let arms = from.arms();
-        let span = *from.span();
-        debug_assert!(!arms.is_empty(), "the parser rejects empty enum matches");
+/// Surface the errors inside an enum match that cannot be analyzed structurally.
+///
+/// The scrutinee and the arm bodies are independent of the variant bookkeeping
+/// that failed — an unknown enum, an unknown or duplicated variant, a missing
+/// one — so they are analyzed anyway. Without a known variant the declared
+/// bindings cannot be trusted, so their identifiers are bound at poison, which
+/// keeps the bodies from cascading into "undefined variable".
+fn drain_enum_match(from: &parse::EnumMatch, ty: &ResolvedType, scope: &mut Scope) {
+    let span = *from.span();
+    analyze_child(from.scrutinee(), &ResolvedType::never(), scope);
 
-        let enum_name = arms[0].enum_path_string();
-        let [single] = arms[0].enum_path() else {
+    for arm in from.arms() {
+        let guard = scope.block();
+        for (pattern, declared) in arm.bindings() {
+            // Resolve to surface the declared type's own errors, but discard it.
+            guard.scope.resolve_or_poison(declared, span);
+            // Nothing was reported for this pattern, so a duplicate still counts.
+            for (identifier, binding_ty) in poison_bindings(pattern, false, guard.scope, span) {
+                guard.scope.insert_variable(identifier, binding_ty);
+            }
+        }
+        analyze_child(arm.expression(), ty, guard.scope);
+    }
+}
+
+/// Surface the errors inside an enum match whose enum is known, but whose arms
+/// do not form a usable match.
+///
+/// The enum resolved, so every check independent of the broken bookkeeping still
+/// runs: the scrutinee is checked against the real enum type, and an arm naming a
+/// known variant has its payload bindings validated. Only the arms that failed
+/// fall back to poison.
+fn drain_known_enum_match(
+    from: &parse::EnumMatch,
+    ty: &ResolvedType,
+    enum_ty: &ResolvedType,
+    info: &EnumInfo,
+    scope: &mut Scope,
+) {
+    // Matching a `u32` against `E::..` is an error whether or not the arms name
+    // real variants of `E`.
+    analyze_child(from.scrutinee(), enum_ty, scope);
+
+    let expected_path = from.arms()[0].enum_path();
+    for arm in from.arms() {
+        let variant = if arm.enum_path() == expected_path {
+            info.variant(arm.variant()).map(|(_, variant)| variant)
+        } else {
+            None
+        };
+        analyze_enum_match_arm(arm, variant, ty, scope);
+    }
+}
+
+/// Analyze an enum match into the expression node it yields.
+///
+/// Returns the node rather than an [`EnumMatch`], because a match whose enum is
+/// poisoned yields [`SingleExpressionInner::Error`] instead: there is no match
+/// to build and nothing further to report. `Err` carries the one diagnostic the
+/// caller should report; any others are reported here.
+fn analyze_enum_match(
+    from: &parse::EnumMatch,
+    ty: &ResolvedType,
+    scope: &mut Scope,
+) -> Result<SingleExpressionInner, Diagnostic> {
+    let arms = from.arms();
+    let span = *from.span();
+    debug_assert!(!arms.is_empty(), "the parser rejects empty enum matches");
+
+    let enum_name = arms[0].enum_path_string();
+    let [single] = arms[0].enum_path() else {
+        drain_enum_match(from, ty, scope);
+        return Err(Error::Grammar {
+            msg: format!(
+                "`{enum_name}` does not name an enum; enums are declared at the \
+                     top level, so match arms name them by a single identifier"
+            ),
+        })
+        .with_span(span);
+    };
+    let alias = AliasName::from_str_unchecked(single.as_inner());
+    let enum_ty = match scope.get_alias(&alias) {
+        Ok(enum_ty) => enum_ty,
+        Err(err) => {
+            drain_enum_match(from, ty, scope);
+            return Err(err).with_span(span);
+        }
+    };
+    // A poisoned alias absorbs the check: whether it names an enum is
+    // unknowable, and its own error was already reported at the declaration.
+    if enum_ty.is_never() {
+        drain_enum_match(from, ty, scope);
+        return Ok(SingleExpressionInner::Error);
+    }
+
+    let info = match enum_ty.as_enum() {
+        Some(info) => info.clone(),
+        None => {
+            drain_enum_match(from, ty, scope);
             return Err(Error::Grammar {
                 msg: format!(
-                    "`{enum_name}` does not name an enum; enums are declared at the \
-                     top level, so match arms name them by a single identifier"
+                    "`{enum_name}` is not an enum, so match arms of the form \
+                         `{enum_name}::Variant` cannot apply to it"
                 ),
             })
             .with_span(span);
-        };
-        let alias = AliasName::from_str_unchecked(single.as_inner());
-        let enum_ty = scope.get_alias(&alias).with_span(span)?;
-        let info = match enum_ty.as_enum() {
-            Some(info) => info.clone(),
-            None => {
-                return Err(Error::Grammar {
-                    msg: format!(
-                        "`{enum_name}` is not an enum, so match arms of the form \
-                         `{enum_name}::Variant` cannot apply to it"
-                    ),
-                })
-                .with_span(span)
-            }
-        };
+        }
+    };
 
-        // One slot per variant, in declaration order.
-        // the order of the leaves of the enum's balanced sum.
-        let mut arms_by_index: Vec<Option<&parse::EnumMatchArm>> =
-            vec![None; info.variants().len()];
-        for arm in arms {
-            if arm.enum_path() != arms[0].enum_path() {
-                return Err(Error::Grammar {
+    // One slot per variant, in declaration order.
+    // the order of the leaves of the enum's balanced sum.
+    let mut arms_by_index: Vec<Option<&parse::EnumMatchArm>> = vec![None; info.variants().len()];
+    // The arms are independent: a wrong enum path, an unknown variant or a
+    // duplicate says nothing about the arm beside it, so the loop records
+    // each and keeps going.
+    let mut arm_errors: Vec<Diagnostic> = Vec::new();
+    for arm in arms {
+        if arm.enum_path() != arms[0].enum_path() {
+            arm_errors.push(
+                Error::Grammar {
                     msg: format!(
                         "all match arms must use the same enum; expected '{}', found '{}'",
                         enum_name,
                         arm.enum_path_string()
                     ),
-                })
-                .with_span(span);
-            }
-            let (index, _) = info
-                .variant(arm.variant())
-                .ok_or_else(|| Error::Grammar {
+                }
+                .with_span(span),
+            );
+            continue;
+        }
+        let Some((index, _)) = info.variant(arm.variant()) else {
+            arm_errors.push(
+                Error::Grammar {
                     msg: format!(
                         "variant '{}' is not defined in enum '{}'",
                         arm.variant(),
                         enum_name
                     ),
-                })
-                .with_span(span)?;
-            let slot = &mut arms_by_index[index];
-            if slot.is_some() {
-                return Err(Error::Grammar {
-                    msg: format!("duplicate arm for variant '{}'", arm.variant()),
-                })
-                .with_span(span);
-            }
-            *slot = Some(arm);
-        }
-
-        // One collect: Some(arms) iff every variant is covered.
-        let covered: Option<Vec<&parse::EnumMatchArm>> = arms_by_index.iter().copied().collect();
-        let Some(covered) = covered else {
-            let missing: Vec<String> = arms_by_index
-                .iter()
-                .zip(info.variants())
-                .filter(|(slot, _)| slot.is_none())
-                .map(|(_, variant)| format!("'{}'", variant.name()))
-                .collect();
-            return Err(Error::Grammar {
-                msg: format!(
-                    "enum match on '{}' must cover all {} variants; missing: {}",
-                    enum_name,
-                    info.variants().len(),
-                    missing.join(", ")
-                ),
-            })
-            .with_span(span);
-        };
-
-        // Analyze the scrutinee against the nominal enum type, so that
-        // matching a value of a different enum (or any other type) against
-        // this enum's variants is a type error.
-        let scrutinee = Expression::analyze(from.scrutinee(), &enum_ty, scope).map(Arc::new)?;
-
-        let arm_asts = covered
-            .into_iter()
-            .zip(info.variants())
-            .map(|(arm, variant)| {
-                let arm_span = *arm.span();
-                let pattern = analyze_enum_arm_bindings(arm, variant, scope, arm_span)?;
-                scope.enter_block();
-                let payload_ty = variant.payload_type();
-                let typed_variables = pattern.is_of_type(payload_ty).with_span(arm_span)?;
-                for (identifier, variable_ty) in typed_variables {
-                    scope.insert_variable(identifier, variable_ty);
                 }
-                let body = Expression::analyze(arm.expression(), ty, scope).map(Arc::new);
-                scope.exit_block();
-                Ok(EnumMatchArm {
-                    pattern,
-                    body: body?,
-                    span: arm_span,
-                })
-            })
-            .collect::<Result<Arc<[EnumMatchArm]>, Diagnostic>>()?;
+                .with_span(span),
+            );
+            continue;
+        };
+        let slot = &mut arms_by_index[index];
+        if slot.is_some() {
+            arm_errors.push(
+                Error::Grammar {
+                    msg: format!("duplicate arm for variant '{}'", arm.variant()),
+                }
+                .with_span(span),
+            );
+            continue;
+        }
+        *slot = Some(arm);
+    }
 
-        Ok(Self {
-            scrutinee,
-            arms: arm_asts,
-            span,
+    if !arm_errors.is_empty() {
+        drain_known_enum_match(from, ty, &enum_ty, &info, scope);
+        // The caller reports the one we return, so the rest go in here.
+        let first = arm_errors.remove(0);
+        for diag in arm_errors {
+            scope.report(diag);
+        }
+        return Err(first);
+    }
+
+    // One collect: Some(arms) iff every variant is covered.
+    let covered: Option<Vec<&parse::EnumMatchArm>> = arms_by_index.iter().copied().collect();
+    let Some(covered) = covered else {
+        let missing: Vec<String> = arms_by_index
+            .iter()
+            .zip(info.variants())
+            .filter(|(slot, _)| slot.is_none())
+            .map(|(_, variant)| format!("'{}'", variant.name()))
+            .collect();
+        drain_known_enum_match(from, ty, &enum_ty, &info, scope);
+        return Err(Error::Grammar {
+            msg: format!(
+                "enum match on '{}' must cover all {} variants; missing: {}",
+                enum_name,
+                info.variants().len(),
+                missing.join(", ")
+            ),
         })
+        .with_span(span);
+    };
+
+    // Analyze the scrutinee against the nominal enum type, so that
+    // matching a value of a different enum (or any other type) against
+    // this enum's variants is a type error.
+    // A poisoned scrutinee must not suppress the arm-body errors.
+    let scrutinee = Arc::new(analyze_child(from.scrutinee(), &enum_ty, scope));
+
+    let arm_asts = covered
+        .into_iter()
+        .zip(info.variants())
+        .map(|(arm, variant)| analyze_enum_match_arm(arm, Some(variant), ty, scope))
+        .collect::<Arc<[EnumMatchArm]>>();
+
+    Ok(SingleExpressionInner::EnumMatch(EnumMatch {
+        scrutinee,
+        arms: arm_asts,
+        span,
+    }))
+}
+
+/// Analyze one match arm: its bindings, then its body.
+///
+/// `variant` is `None` when the arm names no known variant, which leaves no
+/// payload to check the bindings against.
+fn analyze_enum_match_arm(
+    arm: &parse::EnumMatchArm,
+    variant: Option<&EnumVariantInfo>,
+    ty: &ResolvedType,
+    scope: &mut Scope,
+) -> EnumMatchArm {
+    let arm_span = *arm.span();
+    // A failed binding poisons only this arm; later arms still run.
+    let (pattern, fits) = analyze_enum_arm_bindings(arm, variant, scope, arm_span);
+
+    let guard = scope.block();
+
+    // When the arity is wrong the combined pattern cannot match the payload,
+    // and saying so again would only restate the arity error. Check it against
+    // poison instead of skipping the check.
+    let expected = match variant {
+        Some(variant) if fits => variant.payload_type().clone(),
+        _ => ResolvedType::never(),
+    };
+    let typed_variables = bind_pattern(&pattern, &expected, guard.scope, arm_span);
+    for (identifier, variable_ty) in typed_variables {
+        guard.scope.insert_variable(identifier, variable_ty);
+    }
+    let body = Arc::new(analyze_child(arm.expression(), ty, guard.scope));
+
+    EnumMatchArm {
+        pattern,
+        body,
+        span: arm_span,
     }
 }
 
@@ -2015,35 +2668,58 @@ impl AbstractSyntaxTree for EnumMatch {
 /// Unit variants bind nothing ([`Pattern::Ignore`]); a single binding stands
 /// alone; multiple bindings form a tuple pattern, matching the tuple that a
 /// multi-payload variant carries at its leaf.
+/// Reports rather than returns: an arm whose bindings do not fit the variant
+/// still declares its identifiers, and every binding is checked, so one bad
+/// declared type neither hides the next nor drops the arm's names.
+///
+/// Also returns whether the pattern *fits* the variant's payload. When it does
+/// not, the arity error was already reported here, and the caller must bind the
+/// identifiers at poison rather than check the combined pattern against the
+/// payload type.
+///
+/// `variant` is `None` when the arm names no known variant; the caller reported
+/// that, and there is no payload to check, but the declared types are still
+/// resolved so their own errors surface.
 fn analyze_enum_arm_bindings(
     arm: &parse::EnumMatchArm,
-    variant: &EnumVariantInfo,
-    scope: &Scope,
+    variant: Option<&EnumVariantInfo>,
+    scope: &mut Scope,
     span: Span,
-) -> Result<Pattern, Diagnostic> {
-    if arm.bindings().len() != variant.payload().len() {
-        return Err(Error::Grammar {
-            msg: format!(
-                "variant '{}' of enum '{}' carries {} payload value(s), \
-                 but the arm binds {}",
-                arm.variant(),
-                arm.enum_path_string(),
-                variant.payload().len(),
-                arm.bindings().len()
-            ),
-        })
-        .with_span(span);
+) -> (Pattern, bool) {
+    let payload: &[ResolvedType] = variant.map_or(&[], EnumVariantInfo::payload);
+    let fits = variant.is_some() && arm.bindings().len() == payload.len();
+    if variant.is_some() && !fits {
+        scope.report(
+            Error::Grammar {
+                msg: format!(
+                    "variant '{}' of enum '{}' carries {} payload value(s), \
+                     but the arm binds {}",
+                    arm.variant(),
+                    arm.enum_path_string(),
+                    payload.len(),
+                    arm.bindings().len()
+                ),
+            }
+            .with_span(span),
+        );
     }
 
     let mut patterns = Vec::with_capacity(arm.bindings().len());
-    for ((pattern, declared), payload_ty) in arm.bindings().iter().zip(variant.payload()) {
-        let declared = scope.resolve(declared).with_span(span)?;
-        if &declared != payload_ty {
-            return Err(Error::ExpressionTypeMismatch {
-                expected: payload_ty.clone(),
-                found: declared,
-            })
-            .with_span(span);
+    for (i, (pattern, declared)) in arm.bindings().iter().enumerate() {
+        let declared = scope.resolve_or_poison(declared, span);
+
+        // Compare only against a payload slot that exists; a count mismatch
+        // was already reported above, and an unknown variant has no payload.
+        if let Some(payload_ty) = payload.get(i) {
+            if !declared.compatible(payload_ty) {
+                scope.report(
+                    Error::ExpressionTypeMismatch {
+                        expected: payload_ty.clone(),
+                        found: declared,
+                    }
+                    .with_span(span),
+                );
+            }
         }
         patterns.push(pattern.clone());
     }
@@ -2053,7 +2729,7 @@ fn analyze_enum_arm_bindings(
         1 => patterns[0].clone(),
         _ => Pattern::tuple(patterns),
     };
-    Ok(pattern)
+    (pattern, fits)
 }
 
 impl AbstractSyntaxTree for Call {
@@ -2082,7 +2758,7 @@ impl AbstractSyntaxTree for Call {
             observed_ty: &ResolvedType,
             expected_ty: &ResolvedType,
         ) -> Result<(), Error> {
-            if observed_ty == expected_ty {
+            if observed_ty.compatible(expected_ty) {
                 Ok(())
             } else {
                 Err(Error::ExpressionTypeMismatch {
@@ -2092,20 +2768,38 @@ impl AbstractSyntaxTree for Call {
             }
         }
 
-        fn analyze_arguments(
-            parse_args: &[parse::Expression],
-            args_tys: &[ResolvedType],
-            scope: &mut Scope,
-        ) -> Result<Arc<[Expression]>, Diagnostic> {
-            let args = parse_args
-                .iter()
-                .zip(args_tys.iter())
-                .map(|(arg_parse, arg_ty)| Expression::analyze(arg_parse, arg_ty, scope))
-                .collect::<Result<Arc<[Expression]>, Diagnostic>>()?;
-            Ok(args)
+        /// Report a callee-level failure without returning.
+        ///
+        /// The arguments are analyzed independently of the arity and of the
+        /// output type, so a failure here must not stop them from surfacing
+        /// their own errors.
+        fn report_check(result: Result<(), Error>, scope: &mut Scope, span: Span) {
+            if let Err(err) = result {
+                scope.report(err.with_span(span));
+            }
         }
 
-        let name = CallName::analyze(from, ty, scope)?;
+        let span = *from.as_ref();
+
+        let name = match CallName::analyze(from, ty, scope) {
+            Ok(n) => n,
+            Err(name_err) => {
+                // callee unknown: analyze args against error() to surface their errors,
+                // then propagate the name error (do not double-report, because container reports it)
+                analyze_children(from.args(), &[], scope);
+                return Err(name_err);
+            }
+        };
+
+        if name.is_never() {
+            let args = analyze_children(from.args(), &[], scope);
+            return Ok(Self {
+                name,
+                args,
+                span: *from.as_ref(),
+            });
+        }
+
         let args = match name.clone() {
             CallName::Jet(jet) => {
                 let args_tys = source_type(&*jet)
@@ -2114,64 +2808,76 @@ impl AbstractSyntaxTree for Call {
                     .collect::<Result<Vec<ResolvedType>, AliasName>>()
                     .map_err(|alias| Error::UndefinedAlias { name: alias })
                     .with_span(from)?;
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
+                report_check(check_argument_types(from.args(), &args_tys), scope, span);
+
                 let out_ty = target_type(&*jet)
                     .resolve_builtin()
                     .map_err(|alias| Error::UndefinedAlias { name: alias })
                     .with_span(from)?;
-                check_output_type(&out_ty, ty).with_span(from)?;
+                report_check(check_output_type(&out_ty, ty), scope, span);
+
                 scope.track_call(from, TrackedCallName::Jet);
-                analyze_arguments(from.args(), &args_tys, scope)?
+                analyze_children(from.args(), &args_tys, scope)
             }
             CallName::UnwrapLeft(right_ty) => {
                 let args_tys = [ResolvedType::either(ty.clone(), right_ty)];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
-                let args = analyze_arguments(from.args(), &args_tys, scope)?;
+                report_check(check_argument_types(from.args(), &args_tys), scope, span);
+
+                let args = analyze_children(from.args(), &args_tys, scope);
                 let [arg_ty] = args_tys;
+
                 scope.track_call(from, TrackedCallName::UnwrapLeft(arg_ty));
                 args
             }
             CallName::UnwrapRight(left_ty) => {
                 let args_tys = [ResolvedType::either(left_ty, ty.clone())];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
-                let args = analyze_arguments(from.args(), &args_tys, scope)?;
+                report_check(check_argument_types(from.args(), &args_tys), scope, span);
+
+                let args = analyze_children(from.args(), &args_tys, scope);
                 let [arg_ty] = args_tys;
                 scope.track_call(from, TrackedCallName::UnwrapRight(arg_ty));
                 args
             }
             CallName::IsNone(some_ty) => {
                 let args_tys = [ResolvedType::option(some_ty)];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
+                report_check(check_argument_types(from.args(), &args_tys), scope, span);
+
                 let out_ty = ResolvedType::boolean();
-                check_output_type(&out_ty, ty).with_span(from)?;
-                analyze_arguments(from.args(), &args_tys, scope)?
+                report_check(check_output_type(&out_ty, ty), scope, span);
+                analyze_children(from.args(), &args_tys, scope)
             }
             CallName::Unwrap => {
                 let args_tys = [ResolvedType::option(ty.clone())];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
+                report_check(check_argument_types(from.args(), &args_tys), scope, span);
+
                 scope.track_call(from, TrackedCallName::Unwrap);
-                analyze_arguments(from.args(), &args_tys, scope)?
+                analyze_children(from.args(), &args_tys, scope)
             }
             CallName::Assert => {
                 let args_tys = [ResolvedType::boolean()];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
+                report_check(check_argument_types(from.args(), &args_tys), scope, span);
+
                 let out_ty = ResolvedType::unit();
-                check_output_type(&out_ty, ty).with_span(from)?;
+                report_check(check_output_type(&out_ty, ty), scope, span);
+
                 scope.track_call(from, TrackedCallName::Assert);
-                analyze_arguments(from.args(), &args_tys, scope)?
+                analyze_children(from.args(), &args_tys, scope)
             }
             CallName::Panic => {
                 let args_tys = [];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
+                report_check(check_argument_types(from.args(), &args_tys), scope, span);
+
                 // panic! allows every output type because it will never return anything
                 scope.track_call(from, TrackedCallName::Panic);
-                analyze_arguments(from.args(), &args_tys, scope)?
+                analyze_children(from.args(), &args_tys, scope)
             }
             CallName::Debug => {
                 let args_tys = [ty.clone()];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
-                let args = analyze_arguments(from.args(), &args_tys, scope)?;
+                report_check(check_argument_types(from.args(), &args_tys), scope, span);
+
+                let args = analyze_children(from.args(), &args_tys, scope);
                 let [arg_ty] = args_tys;
+
                 scope.track_call(from, TrackedCallName::Debug(arg_ty));
                 args
             }
@@ -2180,19 +2886,26 @@ impl AbstractSyntaxTree for Call {
                 // every enum must map to itself at its structural position
                 // (see `cast_preserves_enum_identity`), else same-shaped
                 // enums would convert variants by ordinal position.
-                if !cast_preserves_enum_identity(&source, ty)
-                    || StructuralType::from(&source) != StructuralType::from(ty)
+                // A poisoned type on either side absorbs the check: the cause was
+                // already reported, and `StructuralType` cannot represent poison
+                // (converting one panics, by design — see the gate).
+                let comparable = !source.contains_never() && !ty.contains_never();
+                if comparable
+                    && (!cast_preserves_enum_identity(&source, ty)
+                        || StructuralType::from(&source) != StructuralType::from(ty))
                 {
-                    return Err(Error::InvalidCast {
-                        source,
-                        target: ty.clone(),
-                    })
-                    .with_span(from);
+                    scope.report(
+                        Error::InvalidCast {
+                            source: source.clone(),
+                            target: ty.clone(),
+                        }
+                        .with_span(span),
+                    );
                 }
 
                 let args_tys = [source];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
-                analyze_arguments(from.args(), &args_tys, scope)?
+                report_check(check_argument_types(from.args(), &args_tys), scope, span);
+                analyze_children(from.args(), &args_tys, scope)
             }
             CallName::Custom(function) => {
                 let args_ty = function
@@ -2201,10 +2914,11 @@ impl AbstractSyntaxTree for Call {
                     .map(FunctionParam::ty)
                     .cloned()
                     .collect::<Vec<ResolvedType>>();
-                check_argument_types(from.args(), &args_ty).with_span(from)?;
+                report_check(check_argument_types(from.args(), &args_ty), scope, span);
+
                 let out_ty = function.body().ty();
-                check_output_type(out_ty, ty).with_span(from)?;
-                analyze_arguments(from.args(), &args_ty, scope)?
+                report_check(check_output_type(out_ty, ty), scope, span);
+                analyze_children(from.args(), &args_ty, scope)
             }
             CallName::Fold(function, bound) => {
                 // A list fold has the signature:
@@ -2220,11 +2934,12 @@ impl AbstractSyntaxTree for Call {
                     .ty()
                     .clone();
                 let args_ty = [list_ty, accumulator_ty];
+                report_check(check_argument_types(from.args(), &args_ty), scope, span);
 
-                check_argument_types(from.args(), &args_ty).with_span(from)?;
                 let out_ty = function.body().ty();
-                check_output_type(out_ty, ty).with_span(from)?;
-                analyze_arguments(from.args(), &args_ty, scope)?
+                report_check(check_output_type(out_ty, ty), scope, span);
+
+                analyze_children(from.args(), &args_ty, scope)
             }
             CallName::ArrayFold(function, size) => {
                 // An array fold has the signature:
@@ -2240,11 +2955,12 @@ impl AbstractSyntaxTree for Call {
                     .ty()
                     .clone();
                 let args_ty = [array_ty, accumulator_ty];
+                report_check(check_argument_types(from.args(), &args_ty), scope, span);
 
-                check_argument_types(from.args(), &args_ty).with_span(from)?;
                 let out_ty = function.body().ty();
-                check_output_type(out_ty, ty).with_span(from)?;
-                analyze_arguments(from.args(), &args_ty, scope)?
+                report_check(check_output_type(out_ty, ty), scope, span);
+
+                analyze_children(from.args(), &args_ty, scope)
             }
             CallName::ForWhile(function, _bit_width) => {
                 // A for-while loop has the signature:
@@ -2265,11 +2981,12 @@ impl AbstractSyntaxTree for Call {
                     .ty()
                     .clone();
                 let args_ty = [accumulator_ty, context_ty];
+                report_check(check_argument_types(from.args(), &args_ty), scope, span);
 
-                check_argument_types(from.args(), &args_ty).with_span(from)?;
                 let out_ty = function.body().ty();
-                check_output_type(out_ty, ty).with_span(from)?;
-                analyze_arguments(from.args(), &args_ty, scope)?
+                report_check(check_output_type(out_ty, ty), scope, span);
+
+                analyze_children(from.args(), &args_ty, scope)
             }
         };
 
@@ -2279,6 +2996,18 @@ impl AbstractSyntaxTree for Call {
             span: *from.as_ref(),
         })
     }
+}
+
+/// Does the function have a foldable signature, `fn f(element: E, acc: A) -> A`?
+///
+/// Compares with [`ResolvedType::compatible`] rather than `==`: while any type
+/// in the signature is poisoned the answer is unknowable, so the check is
+/// absorbed rather than failed, which would cascade on top of the type's own
+/// error.
+fn is_foldable(function: &CustomFunction) -> bool {
+    function.is_never()
+        || (function.params().len() == 2
+            && function.params()[1].ty().compatible(function.body().ty()))
 }
 
 impl AbstractSyntaxTree for CallName {
@@ -2295,24 +3024,27 @@ impl AbstractSyntaxTree for CallName {
                 Some(jet) if !jet.is_disabled() => Ok(Self::Jet(jet)),
                 _ => Err(Error::JetDoesNotExist { name: name.clone() }).with_span(from),
             },
-            parse::CallName::UnwrapLeft(right_ty) => scope
-                .resolve(right_ty)
-                .map(Self::UnwrapLeft)
-                .with_span(from),
-            parse::CallName::UnwrapRight(left_ty) => scope
-                .resolve(left_ty)
-                .map(Self::UnwrapRight)
-                .with_span(from),
-            parse::CallName::IsNone(some_ty) => {
-                scope.resolve(some_ty).map(Self::IsNone).with_span(from)
-            }
+            // A builtin's type argument resolves like any other type: every
+            // undefined alias in it is independent, so all of them are reported
+            // and the call proceeds against a poisoned type argument.
+            parse::CallName::UnwrapLeft(right_ty) => Ok(Self::UnwrapLeft(
+                scope.resolve_or_poison(right_ty, *from.as_ref()),
+            )),
+            parse::CallName::UnwrapRight(left_ty) => Ok(Self::UnwrapRight(
+                scope.resolve_or_poison(left_ty, *from.as_ref()),
+            )),
+            parse::CallName::IsNone(some_ty) => Ok(Self::IsNone(
+                scope.resolve_or_poison(some_ty, *from.as_ref()),
+            )),
             parse::CallName::Unwrap => Ok(Self::Unwrap),
             parse::CallName::Assert => Ok(Self::Assert),
             parse::CallName::Panic => Ok(Self::Panic),
             parse::CallName::Debug => Ok(Self::Debug),
-            parse::CallName::TypeCast(target) => {
-                scope.resolve(target).map(Self::TypeCast).with_span(from)
-            }
+            // Safe to poison: the cast's structural check already skips a
+            // poisoned side, which `StructuralType` cannot represent.
+            parse::CallName::TypeCast(target) => Ok(Self::TypeCast(
+                scope.resolve_or_poison(target, *from.as_ref()),
+            )),
             parse::CallName::Custom(name) => {
                 scope.get_function(name).map(Self::Custom).with_span(from)
             }
@@ -2320,26 +3052,32 @@ impl AbstractSyntaxTree for CallName {
                 let function = scope.get_function(name).with_span(from)?;
                 // A function that is used in a array fold has the signature:
                 //   fn f(element: E, accumulator: A) -> A
-                if function.params().len() != 2 || function.params()[1].ty() != function.body().ty()
-                {
-                    Err(Error::FunctionNotFoldable { name: name.clone() }).with_span(from)
-                } else {
+                //
+                // `compatible` rather than `==`: while the signature holds a
+                // poisoned type, foldability is unknowable, so the check is
+                // absorbed instead of failed.
+                if is_foldable(&function) {
                     Ok(Self::ArrayFold(function, *size))
+                } else {
+                    Err(Error::FunctionNotFoldable { name: name.clone() }).with_span(from)
                 }
             }
             parse::CallName::Fold(name, bound) => {
                 let function = scope.get_function(name).with_span(from)?;
                 // A function that is used in a list fold has the signature:
                 //   fn f(element: E, accumulator: A) -> A
-                if function.params().len() != 2 || function.params()[1].ty() != function.body().ty()
-                {
-                    Err(Error::FunctionNotFoldable { name: name.clone() }).with_span(from)
-                } else {
+                if is_foldable(&function) {
                     Ok(Self::Fold(function, *bound))
+                } else {
+                    Err(Error::FunctionNotFoldable { name: name.clone() }).with_span(from)
                 }
             }
             parse::CallName::ForWhile(name) => {
                 let function = scope.get_function(name).with_span(from)?;
+                // A poisoned signature has no shape to check against.
+                if function.is_never() {
+                    return Ok(Self::ForWhile(function, Pow2Usize::ONE));
+                }
                 // A function that is used in a for-while loop has the signature:
                 //   fn f(accumulator: A, readonly_context: C, counter: u{N}) -> Either<B, A>
                 // where
@@ -2348,7 +3086,11 @@ impl AbstractSyntaxTree for CallName {
                     return Err(Error::FunctionNotLoopable { name: name.clone() }).with_span(from);
                 }
                 match function.body().ty().as_either() {
-                    Some((_, out_r)) if out_r == function.params().first().unwrap().ty() => {}
+                    Some((_, out_r))
+                        if out_r.compatible(function.params().first().unwrap().ty()) => {}
+                    // A poisoned body type absorbs the shape check: whether it
+                    // is the required `Either` is unknowable.
+                    _ if function.body().ty().is_never() => {}
                     _ => {
                         return Err(Error::FunctionNotLoopable { name: name.clone() })
                             .with_span(from);
@@ -2357,7 +3099,9 @@ impl AbstractSyntaxTree for CallName {
                 // Disable loops for u32 or higher since no one will want to run
                 // 2^32 = 4294967296 ≈ 4 billion iterations.
                 // The resulting Simplicity program will not fit into a Bitcoin block.
-                match function.params().get(2).unwrap().ty().as_integer() {
+                let counter_ty = function.params().get(2).unwrap().ty();
+
+                match counter_ty.as_integer() {
                     Some(
                         int_ty @ (UIntType::U1
                         | UIntType::U2
@@ -2365,6 +3109,14 @@ impl AbstractSyntaxTree for CallName {
                         | UIntType::U8
                         | UIntType::U16),
                     ) => Ok(Self::ForWhile(function, int_ty.bit_width())),
+
+                    // A poisoned counter has no knowable width, so whether the
+                    // function loops is unknowable too: absorb the check rather
+                    // than cascade on top of the type's own error. The width is
+                    // a placeholder, like every other poison substitution — the
+                    // program has an error, so the gate stops it before codegen
+                    // can read it.
+                    None if counter_ty.is_never() => Ok(Self::ForWhile(function, Pow2Usize::ONE)),
                     _ => Err(Error::FunctionNotLoopable { name: name.clone() }).with_span(from),
                 }
             }
@@ -2380,31 +3132,61 @@ impl AbstractSyntaxTree for Match {
         ty: &ResolvedType,
         scope: &mut Scope,
     ) -> Result<Self, Diagnostic> {
-        let scrutinee_ty = from.scrutinee_type();
-        let scrutinee_ty = scope.resolve(&scrutinee_ty).with_span(from)?;
-        let scrutinee =
-            Expression::analyze(from.scrutinee(), &scrutinee_ty, scope).map(Arc::new)?;
+        //let span = *from.as_ref();
 
-        scope.enter_block();
-        if let Some((pat_l, ty_l)) = from.left().pattern().as_typed_pattern() {
-            let ty_l = scope.resolve(ty_l).with_span(from.left())?;
-            let typed_variables = pat_l.is_of_type(&ty_l).with_span(from.left())?;
+        // Resolve each arm's declared type exactly once, poison-tolerantly. A
+        // broken type in one arm must neither abort the match nor be reported
+        // twice — once for the scrutinee's composite type and once for the arm.
+        let left = from
+            .left()
+            .pattern()
+            .as_typed_pattern()
+            .map(|(pat, aliased)| (pat, scope.resolve_or_poison(aliased, *from.left().span())));
+        let right = from
+            .right()
+            .pattern()
+            .as_typed_pattern()
+            .map(|(pat, aliased)| (pat, scope.resolve_or_poison(aliased, *from.right().span())));
+
+        // Rebuild the scrutinee's type from the arms, mirroring
+        // `parse::Match::scrutinee_type` but over the resolved parts.
+        let scrutinee_ty = match (from.left().pattern(), from.right().pattern()) {
+            (MatchPattern::Left(..), MatchPattern::Right(..)) => {
+                let (_, ty_l) = left.as_ref().expect("left arm binds a type");
+                let (_, ty_r) = right.as_ref().expect("right arm binds a type");
+                ResolvedType::either(ty_l.clone(), ty_r.clone())
+            }
+            (MatchPattern::None, MatchPattern::Some(..)) => {
+                let (_, ty_r) = right.as_ref().expect("some arm binds a type");
+                ResolvedType::option(ty_r.clone())
+            }
+            (MatchPattern::False, MatchPattern::True) => ResolvedType::boolean(),
+            _ => unreachable!("Match expressions have valid left and right arms"),
+        };
+
+        // A poisoned scrutinee must not suppress the arm-body errors.
+        let scrutinee = Arc::new(analyze_child(from.scrutinee(), &scrutinee_ty, scope));
+
+        let guard = scope.block();
+        if let Some((pat_l, ty_l)) = &left {
+            let typed_variables = bind_pattern(pat_l, ty_l, guard.scope, *from.left().span());
             for (identifier, ty) in typed_variables {
-                scope.insert_variable(identifier, ty);
+                guard.scope.insert_variable(identifier, ty);
             }
         }
-        let ast_l = Expression::analyze(from.left().expression(), ty, scope).map(Arc::new)?;
-        scope.exit_block();
-        scope.enter_block();
-        if let Some((pat_r, ty_r)) = from.right().pattern().as_typed_pattern() {
-            let ty_r = scope.resolve(ty_r).with_span(from.right())?;
-            let typed_variables = pat_r.is_of_type(&ty_r).with_span(from.right())?;
+
+        let ast_l = Arc::new(analyze_child(from.left().expression(), ty, guard.scope));
+        drop(guard);
+
+        let guard = scope.block();
+        if let Some((pat_r, ty_r)) = &right {
+            let typed_variables = bind_pattern(pat_r, ty_r, guard.scope, *from.right().span());
+
             for (identifier, ty) in typed_variables {
-                scope.insert_variable(identifier, ty);
+                guard.scope.insert_variable(identifier, ty);
             }
         }
-        let ast_r = Expression::analyze(from.right().expression(), ty, scope).map(Arc::new)?;
-        scope.exit_block();
+        let ast_r = Arc::new(analyze_child(from.right().expression(), ty, guard.scope));
 
         Ok(Self {
             scrutinee,
@@ -2487,7 +3269,7 @@ mod span_tests {
     fn analyzed_custom_function_preserves_declaration_and_parameter_spans() {
         let source = "fn helper(value: u8) -> u8 { value }";
         let parsed = parse::Function::parse_from_str(source).expect("function parses");
-        let mut scope = Scope::new(Box::new(ElementsJetHinter));
+        let mut scope = Scope::new(Box::new(ElementsJetHinter), Vec::new());
 
         Function::analyze(&parsed, &ResolvedType::unit(), &mut scope).expect("function analyzes");
         let function = scope
@@ -2510,9 +3292,7 @@ mod span_tests {
         Right(right: u8) => {},
     }
 }"#;
-        let parsed = parse::Program::parse_from_str(source).expect("program parses");
-        let program =
-            Program::analyze(&parsed, Box::new(ElementsJetHinter)).expect("program analyzes");
+        let program = analyzed(source);
 
         let ExpressionInner::Block(_, Some(last)) = program.main().inner() else {
             panic!("main body should end in a match");
@@ -2544,9 +3324,7 @@ fn main() {
         Choice::Second => {},
     }
 }"#;
-        let parsed = parse::Program::parse_from_str(source).expect("program parses");
-        let program =
-            Program::analyze(&parsed, Box::new(ElementsJetHinter)).expect("program analyzes");
+        let program = analyzed(source);
 
         let ExpressionInner::Block(_, Some(last)) = program.main().inner() else {
             panic!("main body should end in an enum match");
@@ -2570,21 +3348,71 @@ fn main() {
 }
 
 #[cfg(test)]
-mod scope_resolution_tests {
-    use super::{ElementsJetHinter, Program};
+pub(super) fn analyze_multifile(files: Vec<(&str, &str)>) -> Result<(), DiagnosticManager> {
     use crate::driver::tests::setup_graph;
 
-    pub(super) fn analyze_multifile(files: Vec<(&str, &str)>) -> Result<(), String> {
-        let (graph, _ids, _dir, mut diagnostics) = setup_graph(files);
+    let (graph, _ids, _dir, mut diagnostics) = setup_graph(files);
 
-        let Some(driver_program) = graph.linearize_and_assemble(&mut diagnostics) else {
-            return Err(diagnostics.render_to_string());
-        };
+    let Some(driver_program) = graph.linearize_and_assemble(&mut diagnostics) else {
+        return Err(diagnostics);
+    };
 
-        Program::analyze(&driver_program, Box::new(ElementsJetHinter))
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+    if diagnostics.has_errors() {
+        return Err(diagnostics);
     }
+
+    if Program::analyze(
+        &driver_program,
+        Box::new(ElementsJetHinter),
+        &mut diagnostics,
+    )
+    .is_none()
+    {
+        return Err(diagnostics);
+    }
+
+    Ok(())
+}
+
+/// All diagnostics for a multi-file program, empty if it compiled.
+///
+/// The sink is the source of truth for whether a program is correct, so tests
+/// assert on it directly rather than on a `Result`: no `expect_err` to reach
+/// the diagnostics, and a passing program is simply an empty manager.
+#[cfg(test)]
+pub(super) fn errors_multifile(files: Vec<(&str, &str)>) -> DiagnosticManager {
+    analyze_multifile(files).err().unwrap_or_default()
+}
+
+/// All diagnostics for a single-file program, empty if it compiled.
+#[cfg(test)]
+pub(super) fn errors(src: &str) -> DiagnosticManager {
+    errors_multifile(vec![("main.simf", src)])
+}
+
+/// The analyzed AST of a single-file program that is expected to compile.
+///
+/// Goes through the in-memory parse/analyze path rather than the driver, so
+/// spans stay relative to `src`: the driver flattens each file into a
+/// `mod unit_N` block, which shifts every offset.
+#[cfg(test)]
+pub(super) fn analyzed(src: &str) -> Program {
+    use crate::parse::ParseFromStr;
+
+    let parsed = parse::Program::parse_from_str(src).expect("program parses");
+    let mut diagnostics = DiagnosticManager::new();
+    let program = Program::analyze(&parsed, Box::new(ElementsJetHinter), &mut diagnostics);
+
+    assert!(
+        !diagnostics.has_errors(),
+        "program must analyze:\n{diagnostics}"
+    );
+    program.expect("analysis yields a program when it reports no errors")
+}
+
+#[cfg(test)]
+mod scope_resolution_tests {
+    use super::analyze_multifile;
 
     #[test]
     fn private_type_alias_from_dependency_does_not_leak() {
@@ -2671,7 +3499,9 @@ mod scope_resolution_tests {
             ("main.simf", "use lib::B::foo; fn main() {}"),
         ]);
 
-        let err = result.expect_err("Private imports should not be accessible");
+        let err = result
+            .expect_err("Private imports should not be accessible")
+            .to_string();
         assert!(err.contains("private") || err.contains("foo"));
     }
 
@@ -2695,7 +3525,9 @@ mod scope_resolution_tests {
     fn test_public_main_is_forbidden() {
         let result = analyze_multifile(vec![("main.simf", "pub fn main() {}")]);
 
-        let err = result.expect_err("Public main should be rejected");
+        let err = result
+            .expect_err("Public main should be rejected")
+            .to_string();
         assert!(err.contains("Main") && err.contains("public"));
     }
 
@@ -2706,7 +3538,9 @@ mod scope_resolution_tests {
             ("main.simf", "use lib::A::bar as main; fn main() {}"),
         ]);
 
-        let err = result.expect_err("Aliasing to main should be rejected");
+        let err = result
+            .expect_err("Aliasing to main should be rejected")
+            .to_string();
         assert!(err.contains("Main") && err.contains("alias"));
     }
 
@@ -2721,7 +3555,9 @@ mod scope_resolution_tests {
             ),
         ]);
 
-        let err = result.expect_err("Using the original unaliased name 'foo' should fail");
+        let err = result
+            .expect_err("Using the original unaliased name 'foo' should fail")
+            .to_string();
         assert!(err.contains("foo") && (err.contains("not defined") || err.contains("unresolved")));
     }
 
@@ -2748,7 +3584,9 @@ mod scope_resolution_tests {
             ("main.simf", "use lib::A::secret as my_secret; fn main() {}"),
         ]);
 
-        let err = result.expect_err("Aliasing a private item should fail");
+        let err = result
+            .expect_err("Aliasing a private item should fail")
+            .to_string();
         assert!(err.contains("secret") && err.contains("private"));
     }
 
@@ -2777,7 +3615,9 @@ mod scope_resolution_tests {
             ("main.simf", "use lib::B::hidden_alias; fn main() {}"),
         ]);
 
-        let err = result.expect_err("Private intermediate aliases should block resolution");
+        let err = result
+            .expect_err("Private intermediate aliases should block resolution")
+            .to_string();
         assert!(err.contains("hidden_alias") && err.contains("private"));
     }
 
@@ -2792,7 +3632,9 @@ mod scope_resolution_tests {
             ),
         ]);
 
-        let err = result.expect_err("Duplicate names in scope should fail");
+        let err = result
+            .expect_err("Duplicate names in scope should fail")
+            .to_string();
         assert!(err.contains("foo") && err.contains("multiple times"));
     }
 
@@ -2806,12 +3648,13 @@ mod scope_resolution_tests {
             ),
         ]);
 
-        let err = result.expect_err("Alias reusing a local name should fail");
+        let err = result
+            .expect_err("Alias reusing a local name should fail")
+            .to_string();
         assert!(err.contains("foo") && err.contains("multiple times"));
     }
 
     #[test]
-    #[ignore = "Pending better error handler:private item errors currently mask duplicate imports"]
     fn test_private_alias_error_does_not_mask_duplicate_function_import() {
         // Scenario: Loading a private item fails, but we must STILL catch if a
         // secondary import tries to bind to the same name.
@@ -2824,7 +3667,9 @@ mod scope_resolution_tests {
             ),
         ]);
 
-        let err = result.expect_err("Duplicate function import should fail");
+        let err = result
+            .expect_err("Duplicate function import should fail")
+            .to_string();
 
         // It shouldn't just complain about the private type `foo`; it must also
         // complain that `foo` was imported twice!
@@ -2842,7 +3687,9 @@ mod scope_resolution_tests {
             ),
         ]);
 
-        let err = result.expect_err("Build should fail on the unresolved import");
+        let err = result
+            .expect_err("Build should fail on the unresolved import")
+            .to_string();
 
         // It should complain about `missing`, but NOT about `foo` being duplicated,
         // because the first import failed and never actually reserved the name `foo`.
@@ -2860,8 +3707,9 @@ mod scope_resolution_tests {
             ),
         ]);
 
-        let err =
-            result.expect_err("Build should fail when a local definition reuses an alias name");
+        let err = result
+            .expect_err("Build should fail when a local definition reuses an alias name")
+            .to_string();
         assert!(err.contains("foo") && err.contains("multiple times"));
     }
 
@@ -2875,15 +3723,16 @@ mod scope_resolution_tests {
             ),
         ]);
 
-        let err =
-            result.expect_err("Build should fail when a local definition reuses an alias name");
+        let err = result
+            .expect_err("Build should fail when a local definition reuses an alias name")
+            .to_string();
         assert!(err.contains("foo") && err.contains("multiple times"));
     }
 }
 
 #[cfg(test)]
 mod module_tests {
-    use crate::ast::scope_resolution_tests::analyze_multifile;
+    use super::analyze_multifile;
 
     #[test]
     fn test_public_nested_modules_are_accessible() {
@@ -2919,7 +3768,9 @@ mod module_tests {
             ),
         ]);
 
-        let err = result.expect_err("Private inner module must block access");
+        let err = result
+            .expect_err("Private inner module must block access")
+            .to_string();
         assert!(err.contains("inner") && err.contains("private"));
     }
 
@@ -2946,7 +3797,9 @@ mod module_tests {
             "mod inner {} mod inner {} fn main() {}",
         )]);
 
-        let err = result.expect_err("Duplicate mod blocks must fail");
+        let err = result
+            .expect_err("Duplicate mod blocks must fail")
+            .to_string();
         assert!(err.contains("inner") && err.contains("multiple times"));
     }
 
@@ -3031,7 +3884,9 @@ mod module_tests {
             ",
         )]);
 
-        let err = result.expect_err("Private inline items must remain hidden from siblings");
+        let err = result
+            .expect_err("Private inline items must remain hidden from siblings")
+            .to_string();
         assert!(err.contains("secret_toy") && err.contains("private"));
     }
 
@@ -3049,7 +3904,9 @@ mod module_tests {
             ",
         )]);
 
-        let err = result.expect_err("The root file scope must respect inline module privacy");
+        let err = result
+            .expect_err("The root file scope must respect inline module privacy")
+            .to_string();
         assert!(err.contains("hidden") && err.contains("private"));
     }
 
@@ -3089,14 +3946,14 @@ mod enum_tests {
             Box::new(ElementsJetHinter::new()),
         )
         .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|diag| diag.to_string())
     }
 
     #[test]
     fn enum_declaration_registers_type_alias() {
         let result = analyze(
             "enum Color { Red, Green }
-             fn main() { let _x: Color = witness::C; }",
+            fn main() { let _x: Color = witness::C; }",
         );
         assert!(
             result.is_ok(),
@@ -3118,13 +3975,13 @@ mod enum_tests {
         // unrestricted.
         let result = analyze(
             "enum Action { None, Some, Other, }
-             fn main() {
-                 match witness::W {
-                     Action::None => {},
-                     Action::Some => {},
-                     Action::Other => {},
-                 }
-             }",
+            fn main() {
+                match witness::W {
+                    Action::None => {},
+                    Action::Some => {},
+                    Action::Other => {},
+                }
+            }",
         );
         assert!(
             result.is_ok(),
@@ -3143,8 +4000,8 @@ mod enum_tests {
     fn enum_duplicate_name_is_error() {
         let result = analyze(
             "enum Color { Red, Green }
-             enum Color { Blue, Cyan }
-             fn main() {}",
+            enum Color { Blue, Cyan }
+            fn main() {}",
         );
         assert!(result.is_err(), "redefined enum name should error");
     }
@@ -3154,9 +4011,9 @@ mod enum_tests {
         // FIXME: Enums may only be declared at the top level of a file.
         let result = analyze(
             "mod m {
-                 pub enum Choice { X, Y, }
-             }
-             fn main() {}",
+                pub enum Choice { X, Y, }
+            }
+            fn main() {}",
         );
         let err = result.expect_err("enum inside `mod` must be rejected");
         assert!(
@@ -3167,21 +4024,24 @@ mod enum_tests {
 
     #[test]
     fn enum_declaration_in_dependency_errors() {
-        use crate::ast::scope_resolution_tests::analyze_multifile;
+        use super::analyze_multifile;
 
         // FIXME: An enum's declared name is its identity in the ABI, so enums may only be declared in the program's own files.
         let result = analyze_multifile(vec![
             (
                 "main.simf",
                 "use lib::A::helper;
-                 fn main() { helper(); }",
+                fn main() { helper(); }",
             ),
             (
                 "libs/lib/A.simf",
                 "pub enum Status { On, Off, } pub fn helper() {}",
             ),
         ]);
-        let err = result.expect_err("enums in dependency files must be rejected");
+
+        let err = result
+            .expect_err("enums in dependency files must be rejected")
+            .to_string();
         assert!(
             err.contains("dependency"),
             "error should say enums cannot live in dependency files: {err}"
@@ -3192,15 +4052,15 @@ mod enum_tests {
     fn enum_payload_match_binds_payload() {
         let result = analyze(
             "enum Action { Refresh(u32, bool), Cold, }
-             fn main() {
-                 match witness::W {
-                     Action::Refresh(n: u32, b: bool) => {
-                         assert!(jet::is_zero_32(n));
-                         assert!(b);
-                     },
-                     Action::Cold => {},
-                 }
-             }",
+            fn main() {
+                match witness::W {
+                    Action::Refresh(n: u32, b: bool) => {
+                        assert!(jet::is_zero_32(n));
+                        assert!(b);
+                    },
+                    Action::Cold => {},
+                }
+            }",
         );
         assert!(
             result.is_ok(),
@@ -3212,12 +4072,12 @@ mod enum_tests {
     fn enum_payload_binding_type_mismatch_is_error() {
         let result = analyze(
             "enum Action { Refresh(u32), Cold, }
-             fn main() {
-                 match witness::W {
-                     Action::Refresh(n: u16) => { assert!(jet::is_zero_16(n)); },
-                     Action::Cold => {},
-                 }
-             }",
+            fn main() {
+                match witness::W {
+                    Action::Refresh(n: u16) => { assert!(jet::is_zero_16(n)); },
+                    Action::Cold => {},
+                }
+            }",
         );
         assert!(
             result.is_err(),
@@ -3229,12 +4089,12 @@ mod enum_tests {
     fn enum_payload_binding_arity_mismatch_is_error() {
         let result = analyze(
             "enum Action { Refresh(u32, bool), Cold, }
-             fn main() {
-                 match witness::W {
-                     Action::Refresh(n: u32) => { assert!(jet::is_zero_32(n)); },
-                     Action::Cold => {},
-                 }
-             }",
+            fn main() {
+                match witness::W {
+                    Action::Refresh(n: u32) => { assert!(jet::is_zero_32(n)); },
+                    Action::Cold => {},
+                }
+            }",
         );
         assert!(result.is_err());
         assert!(
@@ -3248,11 +4108,11 @@ mod enum_tests {
         // A single-variant enum is a named unit type; its match has one arm.
         let result = analyze(
             "enum Marker { Only }
-             fn main() {
-                 match witness::M {
-                     Marker::Only => {},
-                 }
-             }",
+            fn main() {
+                match witness::M {
+                    Marker::Only => {},
+                }
+            }",
         );
         assert!(
             result.is_ok(),
@@ -3264,11 +4124,11 @@ mod enum_tests {
     fn enum_match_undefined_enum_is_error() {
         let result = analyze(
             "fn main() {
-                 match witness::P {
-                     Unknown::A => {},
-                     Unknown::B => {},
-                 }
-             }",
+                match witness::P {
+                    Unknown::A => {},
+                    Unknown::B => {},
+                }
+            }",
         );
         assert!(result.is_err(), "undefined enum should error");
     }
@@ -3277,13 +4137,13 @@ mod enum_tests {
     fn enum_match_mixed_enum_names_is_error() {
         let result = analyze(
             "enum A { X, Y }
-             enum B { P, Q }
-             fn main() {
-                 match witness::W {
-                     A::X => {},
-                     B::Q => {},
-                 }
-             }",
+            enum B { P, Q }
+            fn main() {
+                match witness::W {
+                    A::X => {},
+                    B::Q => {},
+                }
+            }",
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("same enum"));
@@ -3293,12 +4153,12 @@ mod enum_tests {
     fn enum_match_unknown_variant_is_error() {
         let result = analyze(
             "enum A { X, Y }
-             fn main() {
-                 match witness::W {
-                     A::X => {},
-                     A::Z => {},
-                 }
-             }",
+            fn main() {
+                match witness::W {
+                    A::X => {},
+                    A::Z => {},
+                }
+            }",
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not defined"));
@@ -3308,13 +4168,13 @@ mod enum_tests {
     fn enum_match_duplicate_arm_is_error() {
         let result = analyze(
             "enum A { X, Y }
-             fn main() {
-                 match witness::W {
-                     A::X => {},
-                     A::X => {},
-                     A::Y => {},
-                 }
-             }",
+            fn main() {
+                match witness::W {
+                    A::X => {},
+                    A::X => {},
+                    A::Y => {},
+                }
+            }",
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("duplicate arm"));
@@ -3324,12 +4184,12 @@ mod enum_tests {
     fn enum_match_missing_arm_is_error() {
         let result = analyze(
             "enum A { X, Y, Z }
-             fn main() {
-                 match witness::W {
-                     A::X => {},
-                     A::Y => {},
-                 }
-             }",
+            fn main() {
+                match witness::W {
+                    A::X => {},
+                    A::Y => {},
+                }
+            }",
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must cover all 3 variants"));
@@ -3339,14 +4199,14 @@ mod enum_tests {
     fn enum_match_rejects_scrutinee_of_different_enum() {
         let result = analyze(
             "enum A { X, Y, }
-             enum B { P, Q, }
-             fn main() {
-                 let v: A = witness::V;
-                 match v {
-                     B::P => {},
-                     B::Q => {},
-                 }
-             }",
+            enum B { P, Q, }
+            fn main() {
+                let v: A = witness::V;
+                match v {
+                    B::P => {},
+                    B::Q => {},
+                }
+            }",
         );
         assert!(
             result.is_err(),
@@ -3358,13 +4218,13 @@ mod enum_tests {
     fn enum_match_rejects_plain_u8_scrutinee() {
         let result = analyze(
             "enum Action { A, B, }
-             fn main() {
-                 let v: u8 = witness::V;
-                 match v {
-                     Action::A => {},
-                     Action::B => {},
-                 }
-             }",
+            fn main() {
+                let v: u8 = witness::V;
+                match v {
+                    Action::A => {},
+                    Action::B => {},
+                }
+            }",
         );
         assert!(
             result.is_err(),
@@ -3378,14 +4238,14 @@ mod enum_tests {
         // are distinct types, so their values are not interchangeable.
         let result = analyze(
             "enum AChoice { X, Y, }
-             enum BChoice { X, Y, }
-             fn main() {
-                 let v: AChoice = witness::V;
-                 match v {
-                     BChoice::X => {},
-                     BChoice::Y => {},
-                 }
-             }",
+            enum BChoice { X, Y, }
+            fn main() {
+                let v: AChoice = witness::V;
+                match v {
+                    BChoice::X => {},
+                    BChoice::Y => {},
+                }
+            }",
         );
         assert!(
             result.is_err(),
@@ -3397,12 +4257,12 @@ mod enum_tests {
     fn enum_match_on_non_enum_alias_is_error() {
         let result = analyze(
             "type Foo = u32;
-             fn main() {
-                 match witness::W {
-                     Foo::A => {},
-                     Foo::B => {},
-                 }
-             }",
+            fn main() {
+                match witness::W {
+                    Foo::A => {},
+                    Foo::B => {},
+                }
+            }",
         );
         assert!(result.is_err());
         assert!(
@@ -3418,11 +4278,11 @@ mod enum_tests {
         // (Source::Allow -> Target::Deny), silently reversing semantics.
         let result = analyze(
             "enum Source { Allow, Deny, }
-             enum Target { Deny, Allow, }
-             fn main() {
-                 let s: Source = Source::Allow;
-                 let _t: Target = <Source>::into(s);
-             }",
+            enum Target { Deny, Allow, }
+            fn main() {
+                let s: Source = Source::Allow;
+                let _t: Target = <Source>::into(s);
+            }",
         );
         assert!(
             result.is_err(),
@@ -3434,10 +4294,10 @@ mod enum_tests {
     fn enum_cast_to_structural_sum_is_rejected() {
         let result = analyze(
             "enum Source { Allow, Deny, }
-             fn main() {
-                 let s: Source = Source::Allow;
-                 let _e: Either<(), ()> = <Source>::into(s);
-             }",
+            fn main() {
+                let s: Source = Source::Allow;
+                let _e: Either<(), ()> = <Source>::into(s);
+            }",
         );
         assert!(
             result.is_err(),
@@ -3446,10 +4306,10 @@ mod enum_tests {
 
         let result = analyze(
             "enum Source { Allow, Deny, }
-             fn main() {
-                 let e: Either<(), ()> = Left(());
-                 let _s: Source = <Either<(), ()>>::into(e);
-             }",
+            fn main() {
+                let e: Either<(), ()> = Left(());
+                let _s: Source = <Either<(), ()>>::into(e);
+            }",
         );
         assert!(result.is_err(), "a structural sum must not cast to an enum");
     }
@@ -3460,10 +4320,10 @@ mod enum_tests {
         // at its position.
         let result = analyze(
             "enum E { A, B, }
-             fn main() {
-                 let x: (E, (u16, u16)) = (E::A, (1, 2));
-                 let _y: (E, u32) = <(E, (u16, u16))>::into(x);
-             }",
+            fn main() {
+                let x: (E, (u16, u16)) = (E::A, (1, 2));
+                let _y: (E, u32) = <(E, (u16, u16))>::into(x);
+            }",
         );
         assert!(
             result.is_ok(),
@@ -3475,10 +4335,10 @@ mod enum_tests {
     fn enum_cast_to_itself_is_ok() {
         let result = analyze(
             "enum Source { Allow, Deny, }
-             fn main() {
-                 let s: Source = Source::Allow;
-                 let _t: Source = <Source>::into(s);
-             }",
+            fn main() {
+                let s: Source = Source::Allow;
+                let _t: Source = <Source>::into(s);
+            }",
         );
         assert!(
             result.is_ok(),
@@ -3504,14 +4364,14 @@ mod enum_tests {
         // (built-in pattern) by the `::` that follows.
         let result = analyze(
             "enum Action { A, B, }
-             type Left = Action;
-             fn main() {
-                 let v: Left = Action::A;
-                 match v {
-                     Left::A => {},
-                     Left::B => {},
-                 }
-             }",
+            type Left = Action;
+            fn main() {
+                let v: Left = Action::A;
+                match v {
+                    Left::A => {},
+                    Left::B => {},
+                }
+            }",
         );
         assert!(
             result.is_ok(),
@@ -3526,10 +4386,10 @@ mod enum_tests {
         // follows, like the arm parser does.
         let result = analyze(
             "enum Action { A, B, }
-             type None = Action;
-             fn main() {
-                 let _x: None = None::A;
-             }",
+            type None = Action;
+            fn main() {
+                let _x: None = None::A;
+            }",
         );
         assert!(
             result.is_ok(),
@@ -3559,16 +4419,16 @@ mod enum_tests {
         // declared-name fallback applies only to witness/argument files.
         let result = analyze(
             "pub enum E { A, B, }
-             mod m {
-                 use crate::E as Choice;
-                 pub fn make() -> Choice {
-                     E::A
-                 }
-             }
-             use crate::m::make;
-             fn main() {
-                 let _x: E = make();
-             }",
+            mod m {
+                use crate::E as Choice;
+                pub fn make() -> Choice {
+                    E::A
+                }
+            }
+            use crate::m::make;
+            fn main() {
+                let _x: E = make();
+            }",
         );
         assert!(
             result.is_err(),
@@ -3577,16 +4437,16 @@ mod enum_tests {
 
         let result = analyze(
             "pub enum E { A, B, }
-             mod m {
-                 use crate::E as Choice;
-                 pub fn make() -> Choice {
-                     Choice::A
-                 }
-             }
-             use crate::m::make;
-             fn main() {
-                 let _x: E = make();
-             }",
+            mod m {
+                use crate::E as Choice;
+                pub fn make() -> Choice {
+                    Choice::A
+                }
+            }
+            use crate::m::make;
+            fn main() {
+                let _x: E = make();
+            }",
         );
         assert!(
             result.is_ok(),
@@ -3602,6 +4462,1189 @@ mod enum_tests {
             Box::new(ElementsJetHinter::new()),
         );
         assert!(result.is_err(), "enum syntax is gated behind -Z enums");
+    }
+}
+
+#[cfg(test)]
+mod multi_error_tests {
+    use super::*;
+
+    use crate::parse::{self, ParseFromStr};
+    use crate::types::{ResolvedType, TypeConstructible};
+
+    /// Analyze a syntactically valid expression against `ty` as a constant.
+    fn analyze_at(src: &str, ty: &ResolvedType) -> bool {
+        let expr = parse::Expression::parse_from_str(src).expect("valid syntax");
+        Expression::analyze_const(&expr, ty).is_ok()
+    }
+
+    #[test]
+    fn two_undefined_vars_in_separate_statements_both_report() {
+        let src = "fn main() {
+            let p: u32 = missing_a;
+            let q: u32 = missing_b;
+        }";
+
+        let diags = errors(src);
+        assert_eq!(2, diags.error_count());
+
+        let r = diags.to_string();
+        assert!(r.contains("missing_a") && r.contains("missing_b"), "{r}");
+    }
+
+    #[test]
+    fn later_statements_analyzed_after_an_earlier_failure() {
+        // The bool/u32 mismatch after the undefined var proves analysis continued.
+        let src = "fn main() {
+            let p: u32 = missing_a;
+            assert!(jet::eq_32(true, 28));
+        }";
+        assert!(errors(src).error_count() >= 2);
+    }
+
+    #[test]
+    fn two_broken_functions_both_report() {
+        let src = "fn f() -> u32 { missing_a }
+                   fn g() -> u32 { missing_b }
+                   fn main() { }";
+        assert_eq!(2, errors(src).error_count());
+    }
+
+    #[test]
+    fn broken_function_does_not_hide_error_in_main() {
+        let src = "fn f() -> u32 { missing_a }
+                   fn main() { let q: u32 = missing_b; }";
+        assert_eq!(2, errors(src).error_count());
+    }
+
+    #[test]
+    fn broken_items_inside_module_all_surface() {
+        let src = "mod m {
+                       pub fn f() -> u32 { missing_a }
+                       pub fn g() -> u32 { missing_b }
+                   }
+                   fn main() { }";
+        assert_eq!(2, errors(src).error_count());
+    }
+
+    #[test]
+    fn broken_items_inside_tuple_all_surface() {
+        let src = "fn main() {
+    let pair: (u32, u32) = (missing_a, missing_b);
+}";
+        assert_eq!(2, errors(src).error_count());
+    }
+
+    #[test]
+    fn cascading_error_with_function() {
+        let src = "fn f() -> u32 { missing }
+fn main() {
+    let x: u32 = f();
+}";
+        assert_eq!(1, errors(src).error_count());
+    }
+
+    #[test]
+    fn duplicate_main_detected_when_first_body_failed() {
+        // Even though the first main's body fails, it stays a Function::Main (poison
+        // body), so the duplicate is still caught.
+        let src = "fn main() { missing_tail } fn main() {}";
+        let diags = errors(src);
+        assert_eq!(2, diags.error_count());
+        assert!(
+            diags
+                .diagnostics()
+                .iter()
+                .any(|d| matches!(d.error(), Error::FunctionRedefined { .. })),
+            "duplicate main must be reported despite the first main's broken body"
+        );
+    }
+
+    #[test]
+    fn failed_main_body_does_not_trigger_main_required() {
+        // Broken main body must report ONLY the body error, not also "Main required":
+        // main is preserved with a poison body, so extract_single_main still finds it.
+        let src = "fn main() { missing_tail }";
+        assert_eq!(1, errors(src).error_count());
+    }
+
+    #[test]
+    fn failed_assigment_does_not_trigger_undefined_variable() {
+        let src = "fn main() {
+    let x: u32 = missing_value;
+    let y: u32 = x;
+}";
+        assert_eq!(1, errors(src).error_count());
+    }
+
+    #[test]
+    fn failed_return_type_registers_poison_function() {
+        // `Missing` (undefined return type) + `missing_body` = 2 errors.
+        // `f` still registers with a poison return type, so `f()` in main does
+        // NOT cascade into "function f is not defined".
+        let src = "fn f() -> Missing { missing_body }
+                fn main() { let x: u32 = f(); }";
+        assert_eq!(2, errors(src).error_count());
+    }
+
+    #[test]
+    fn bad_annotation_still_analyzes_rhs() {
+        // The annotation resolves to ResolvedType::never(); the RHS is still
+        // analyzed, so both the bad type and the undefined value are reported.
+        let src = "fn main() { let x: Missing = missing_value; }";
+        assert_eq!(2, errors(src).error_count());
+    }
+
+    #[test]
+    fn undefined_function_still_reports_arg() {
+        // The unknown callee must not suppress the argument error: the supplied
+        // arg is analyzed against a poison type, so `missing_arg` still surfaces.
+        let src = "fn main() { missing_fn(missing_arg); }";
+        assert_eq!(2, errors(src).error_count());
+    }
+
+    #[test]
+    fn both_match_arms_report_independent_errors() {
+        // An error in the left arm must not suppress the right arm.
+        let src = "fn main() {
+            let r: u32 = match false {
+                false => missing_a,
+                true => missing_b,
+            };
+        }";
+        assert_eq!(2, errors(src).error_count());
+    }
+
+    #[test]
+    fn undefined_scrutinee_still_analyzes_both_arms() {
+        // A poisoned scrutinee must not hide the arm-body errors.
+        let src = "fn main() {
+            let r: u32 = match missing_scrutinee {
+                false => missing_a,
+                true => missing_b,
+            };
+        }";
+        assert_eq!(3, errors(src).error_count());
+    }
+
+    #[test]
+    fn poison_expected_type_absorbs_literals_and_containers() {
+        // Without the is_error() guards each of these emits ExpressionUnexpectedType.
+        let err = ResolvedType::never();
+        for src in ["5", "0x00", "(1, 2)", "[1, 2, 3]", "Some(1)"] {
+            assert!(analyze_at(src, &err), "poison type should absorb `{src}`");
+        }
+    }
+
+    #[test]
+    fn poison_type_absorbs_the_cast_validity_check() {
+        // `StructuralType` has no representation for poison and panics on it by
+        // design, so a cast must not compare structures when either side is
+        // poisoned at any depth — each of these used to abort the compiler.
+        for src in [
+            "fn main() { let x: Missing = <u16>::into(5); }",
+            "type Broken = Missing;
+             fn main() { let x: u32 = <Broken>::into(5); }",
+            "type Broken = Missing;
+             fn main() { let x: Broken = <Broken>::into(5); }",
+        ] {
+            // One root cause: the undefined alias, with no cast error piled on.
+            assert_eq!(1, errors(src).error_count(), "{src}");
+        }
+    }
+
+    #[test]
+    fn error_unifies_with_anything_but_reals_stay_structural() {
+        let err = ResolvedType::never();
+        let u32 = ResolvedType::parse_from_str("u32").unwrap();
+        let u16 = ResolvedType::parse_from_str("u16").unwrap();
+
+        // poison unifies both directions
+        assert!(err.compatible(&u32) && u32.compatible(&err) && err.compatible(&err));
+        // reals stay structural
+        assert!(u32.compatible(&u32));
+        assert!(!u32.compatible(&u16));
+
+        // nested: (u32, error) ~ (u32, u32), but (u32, u32) !~ (u32, u16)
+        let t_err = ResolvedType::tuple([u32.clone(), err]);
+        let t_u32 = ResolvedType::tuple([u32.clone(), u32.clone()]);
+        let t_u16 = ResolvedType::tuple([u32.clone(), u16]);
+        assert!(t_err.compatible(&t_u32));
+        assert!(!t_u32.compatible(&t_u16));
+
+        // arity still enforced under compatibility
+        let t3 = ResolvedType::tuple([u32.clone(), u32.clone(), u32]);
+        assert!(!t_u32.compatible(&t3));
+    }
+}
+
+#[cfg(test)]
+mod known_collection_gaps {
+    use super::*;
+    // The gaps fall into three families:
+    //
+    // * P1/P4 — a failed *registration* removes a name from scope (or an
+    //   artifact from the program), so every later use cascades.
+    // * P2/P3 — a *container-level* check (arity, output type, shape)
+    //   returns before its children are analyzed, so their independent
+    //   errors never surface.
+    // * P5 — *binding recovery* discards the declared identifiers, so every
+    //   later use of them cascades.
+
+    /// Is any diagnostic of the kind matched by `pred`?
+    fn reports(diags: &DiagnosticManager, pred: impl Fn(&Error) -> bool) -> bool {
+        diags.diagnostics().iter().any(|d| pred(d.error()))
+    }
+
+    /// The undefined variables reported, in report order.
+    fn undefined_vars(diags: &DiagnosticManager) -> Vec<String> {
+        diags
+            .diagnostics()
+            .iter()
+            .filter_map(|d| match d.error() {
+                Error::UndefinedVariable { identifier } => Some(identifier.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The undefined type aliases reported, in report order.
+    fn undefined_aliases(diags: &DiagnosticManager) -> Vec<String> {
+        diags
+            .diagnostics()
+            .iter()
+            .filter_map(|d| match d.error() {
+                Error::UndefinedAlias { name } => Some(name.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // P1: an invalid `main` signature must not erase the declaration
+
+    #[test]
+    fn public_main_reports_only_the_visibility_error() {
+        let diags = errors("pub fn main() {}");
+        assert!(
+            !reports(&diags, |e| matches!(e, Error::MainRequired)),
+            "main exists, it is merely public: {diags}"
+        );
+        assert_eq!(1, diags.error_count());
+    }
+
+    #[test]
+    fn main_with_inputs_reports_only_the_signature_error() {
+        let diags = errors("fn main(x: u32) {}");
+        assert!(
+            !reports(&diags, |e| matches!(e, Error::MainRequired)),
+            "{diags}"
+        );
+        assert_eq!(1, diags.error_count());
+    }
+
+    #[test]
+    fn main_with_output_reports_only_the_signature_error() {
+        // The body is still checked against unit, so a second error is fine
+        // here — but it must not be "main required".
+        let diags = errors("fn main() -> u32 { 1 }");
+        assert!(
+            reports(&diags, |e| matches!(e, Error::MainNoOutput)),
+            "{diags}"
+        );
+        assert!(
+            !reports(&diags, |e| matches!(e, Error::MainRequired)),
+            "{diags}"
+        );
+    }
+
+    #[test]
+    fn public_main_still_analyzes_its_body() {
+        // A poisoned Function::Main keeps the body reachable, exactly as a
+        // failed body already does (see failed_main_body_does_not_trigger_main_required).
+        let diags = errors("pub fn main() { missing_body }");
+        assert!(
+            reports(&diags, |e| matches!(e, Error::MainCannotBePublic)),
+            "{diags}"
+        );
+        assert_eq!(["missing_body"][..], undefined_vars(&diags)[..]);
+        assert!(
+            !reports(&diags, |e| matches!(e, Error::MainRequired)),
+            "{diags}"
+        );
+    }
+
+    #[test]
+    fn public_main_does_not_hide_a_duplicate_main() {
+        let diags = errors("pub fn main() {}\nfn main() {}");
+        assert!(
+            reports(&diags, |e| matches!(e, Error::MainCannotBePublic)),
+            "{diags}"
+        );
+        assert!(
+            reports(&diags, |e| matches!(e, Error::FunctionRedefined { .. })),
+            "the second main must still be caught: {diags}"
+        );
+    }
+
+    // P2: a known callee's checks must not suppress argument errors
+
+    #[test]
+    fn call_output_mismatch_still_reports_argument_errors() {
+        let diags = errors(
+            "fn f(x: u32) -> u32 { x }
+             fn main() { let y: u16 = f(missing_arg); }",
+        );
+        assert_eq!(["missing_arg"][..], undefined_vars(&diags)[..]);
+        assert_eq!(2, diags.error_count());
+    }
+
+    #[test]
+    fn call_arity_mismatch_still_reports_every_argument_error() {
+        // Surplus arguments have no expected type, so they must be analyzed
+        // against error() — dropping them loses missing_b.
+        let diags = errors(
+            "fn f(x: u32) -> u32 { x }
+             fn main() { let y: u32 = f(missing_a, missing_b); }",
+        );
+        assert_eq!(["missing_a", "missing_b"][..], undefined_vars(&diags)[..]);
+        assert_eq!(3, diags.error_count());
+    }
+
+    #[test]
+    fn jet_arity_mismatch_still_reports_argument_errors() {
+        let diags = errors("fn main() { assert!(jet::eq_32(missing_a)); }");
+        assert_eq!(["missing_a"][..], undefined_vars(&diags)[..]);
+        assert_eq!(2, diags.error_count());
+    }
+
+    #[test]
+    fn invalid_cast_still_reports_argument_errors() {
+        let diags = errors("fn main() { let x: u32 = <u16>::into(missing_a); }");
+        assert_eq!(["missing_a"][..], undefined_vars(&diags)[..]);
+        assert_eq!(2, diags.error_count());
+    }
+
+    #[test]
+    fn tuple_arity_mismatch_still_reports_element_errors() {
+        let diags = errors("fn main() { let t: (u32, u32) = (missing_a, missing_b, missing_c); }");
+        assert_eq!(
+            ["missing_a", "missing_b", "missing_c"][..],
+            undefined_vars(&diags)[..]
+        );
+    }
+
+    #[test]
+    fn tuple_against_non_tuple_type_still_reports_element_errors() {
+        // The elements have no expected type, so they must be analyzed
+        // against error() rather than skipped.
+        let diags = errors("fn main() { let t: u32 = (missing_a, missing_b); }");
+        assert_eq!(["missing_a", "missing_b"][..], undefined_vars(&diags)[..]);
+    }
+
+    #[test]
+    fn array_size_mismatch_still_reports_element_errors() {
+        let diags = errors("fn main() { let a: [u32; 2] = [missing_a, missing_b, missing_c]; }");
+        assert_eq!(
+            ["missing_a", "missing_b", "missing_c"][..],
+            undefined_vars(&diags)[..]
+        );
+    }
+
+    #[test]
+    fn list_bound_mismatch_still_reports_element_errors() {
+        let diags =
+            errors("fn main() { let a: List<u32, 2> = list![missing_a, missing_b, missing_c]; }");
+        assert_eq!(
+            ["missing_a", "missing_b", "missing_c"][..],
+            undefined_vars(&diags)[..]
+        );
+    }
+
+    #[test]
+    fn enum_construction_arity_mismatch_still_reports_payload_errors() {
+        let diags = errors(
+            "enum E { V(u32) }
+             fn main() { let x: E = E::V(missing_a, missing_b); }",
+        );
+        assert_eq!(["missing_a", "missing_b"][..], undefined_vars(&diags)[..]);
+    }
+
+    #[test]
+    fn non_exhaustive_enum_match_still_reports_arm_body_errors() {
+        let diags = errors(
+            "enum E { A, B }
+             fn main() { let r: u32 = match witness::W { E::A => missing_a, }; }",
+        );
+        assert_eq!(["missing_a"][..], undefined_vars(&diags)[..]);
+        assert_eq!(2, diags.error_count());
+    }
+
+    #[test]
+    fn duplicate_enum_match_arm_still_reports_arm_body_errors() {
+        let diags = errors(
+            "enum E { A, B }
+             fn main() {
+                 let r: u32 = match witness::W {
+                     E::A => missing_a,
+                     E::A => missing_b,
+                     E::B => missing_c,
+                 };
+             }",
+        );
+        assert_eq!(
+            ["missing_a", "missing_b", "missing_c"][..],
+            undefined_vars(&diags)[..]
+        );
+    }
+
+    #[test]
+    fn unknown_enum_match_variant_still_reports_arm_body_errors() {
+        let diags = errors(
+            "enum E { A, B }
+             fn main() {
+                 let r: u32 = match witness::W { E::A => missing_a, E::Zzz => missing_b, };
+             }",
+        );
+        assert_eq!(["missing_a", "missing_b"][..], undefined_vars(&diags)[..]);
+    }
+
+    // P3: type resolution must not abort a whole match
+
+    #[test]
+    fn broken_arm_types_do_not_abort_the_match() {
+        let diags = errors(
+            "fn main() {
+                 let r: u32 = match witness::W {
+                     Left(a: Missing) => missing_a,
+                     Right(b: MissingTwo) => missing_b,
+                 };
+             }",
+        );
+        assert_eq!(["Missing", "MissingTwo"][..], undefined_aliases(&diags)[..]);
+        assert_eq!(["missing_a", "missing_b"][..], undefined_vars(&diags)[..]);
+        assert_eq!(4, diags.error_count());
+    }
+
+    #[test]
+    fn broken_right_arm_type_does_not_hide_the_left_arm_body() {
+        let diags = errors(
+            "fn main() {
+                 let r: u32 = match witness::W {
+                     Left(a: u32) => missing_a,
+                     Right(b: MissingTwo) => missing_b,
+                 };
+             }",
+        );
+        assert_eq!(["missing_a", "missing_b"][..], undefined_vars(&diags)[..]);
+        assert_eq!(3, diags.error_count());
+    }
+
+    #[test]
+    fn arm_pattern_shape_mismatch_does_not_abort_the_match() {
+        let diags = errors(
+            "fn main() {
+                 let r: u32 = match witness::W {
+                     Left((a, b): u32) => missing_a,
+                     Right(c: u32) => missing_b,
+                 };
+             }",
+        );
+        assert_eq!(["missing_a", "missing_b"][..], undefined_vars(&diags)[..]);
+    }
+
+    #[test]
+    fn every_broken_enum_arm_binding_type_reports() {
+        let diags = errors(
+            "enum E { V(u32, u32) }
+             fn main() { let r: u32 = match witness::W { E::V(x: Missing, y: MissingTwo) => 1, }; }",
+        );
+        assert_eq!(["Missing", "MissingTwo"][..], undefined_aliases(&diags)[..]);
+    }
+
+    // P4: a failed registration must still leave a poisoned name
+
+    #[test]
+    fn broken_type_alias_does_not_cascade() {
+        let diags = errors(
+            "type Broken = Missing;
+             fn main() { let x: Broken = 5; }",
+        );
+        assert_eq!(["Missing"][..], undefined_aliases(&diags)[..]);
+        assert_eq!(1, diags.error_count());
+    }
+
+    #[test]
+    fn broken_type_alias_does_not_cascade_per_use_site() {
+        let diags = errors(
+            "type Broken = Missing;
+             fn f() -> Broken { 5 }
+             fn main() { let x: Broken = 5; }",
+        );
+        assert_eq!(1, diags.error_count(), "{diags}");
+    }
+
+    #[test]
+    fn enum_with_duplicate_variant_still_registers_its_name() {
+        let diags = errors(
+            "enum E { A, A }
+             fn main() { let x: E = witness::W; }",
+        );
+        assert!(undefined_aliases(&diags).is_empty(), "{diags}");
+        assert_eq!(1, diags.error_count());
+    }
+
+    #[test]
+    fn empty_enum_still_registers_its_name() {
+        let diags = errors(
+            "enum E { }
+             fn main() { let x: E = witness::W; }",
+        );
+        assert!(undefined_aliases(&diags).is_empty(), "{diags}");
+        assert_eq!(1, diags.error_count());
+    }
+
+    #[test]
+    fn redefined_module_still_analyzes_its_items() {
+        let diags = errors(
+            "mod m { pub fn a() -> u32 { missing_a } }
+             mod m { pub fn b() -> u32 { missing_b } }
+             fn main() {}",
+        );
+        assert_eq!(["missing_a", "missing_b"][..], undefined_vars(&diags)[..]);
+        assert_eq!(3, diags.error_count());
+    }
+
+    // P5: binding recovery must retain the declared identifiers
+
+    #[test]
+    fn failed_assignment_pattern_keeps_its_bindings() {
+        // The pattern does not fit the annotation; `a` and `b` are still
+        // declared, so using them must not cascade.
+        let diags = errors("fn main() { let (a, b): u32 = 5; assert!(jet::eq_32(a, b)); }");
+        assert!(undefined_vars(&diags).is_empty(), "{diags}");
+        assert_eq!(1, diags.error_count());
+    }
+
+    #[test]
+    fn failed_enum_arm_binding_keeps_its_bindings() {
+        let diags = errors(
+            "enum E { V(u32) }
+             fn main() { let r: u32 = match witness::W { E::V(x: u16) => x, }; }",
+        );
+        assert!(undefined_vars(&diags).is_empty(), "{diags}");
+        assert_eq!(1, diags.error_count());
+    }
+
+    /// The unresolved import names reported, in report order.
+    fn unresolved_items(diags: &DiagnosticManager) -> Vec<String> {
+        diags
+            .diagnostics()
+            .iter()
+            .filter_map(|d| match d.error() {
+                Error::UnresolvedItem { name } => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn single_child_shape_mismatch_still_reports_the_child() {
+        // `Left`, `Right` and `Some` wrap exactly one child. The child has its
+        // own errors whether or not the annotation is the right shape, so the
+        // mismatch must be reported and the child analyzed against poison.
+        for src in [
+            "fn main() { let x: u32 = Left(missing_child); }",
+            "fn main() { let x: u32 = Right(missing_child); }",
+            "fn main() { let x: u32 = Some(missing_child); }",
+        ] {
+            let diags = errors(src);
+            assert_eq!(["missing_child"][..], undefined_vars(&diags)[..], "{src}");
+            assert_eq!(2, diags.error_count(), "{src}");
+        }
+    }
+
+    #[test]
+    fn poison_expected_type_still_reports_enum_payload_errors() {
+        // The payload is analyzed at poison, like every other container's
+        // children, rather than skipped wholesale.
+        let diags = errors(
+            "enum E { V(u32) }
+            fn main() { let x: Missing = E::V(missing_child); }",
+        );
+        assert_eq!(["missing_child"][..], undefined_vars(&diags)[..]);
+        assert_eq!(2, diags.error_count());
+    }
+
+    #[test]
+    fn multi_item_import_reports_every_unresolved_item() {
+        // The items of one `use` are independent: `b` failing tells you nothing
+        // about `a`, so both must be reported.
+        let diags = errors(
+            "mod m {}
+            use crate::m::{a, b};
+            fn main() {}",
+        );
+        assert_eq!(["a", "b"][..], unresolved_items(&diags)[..]);
+    }
+
+    #[test]
+    fn generic_call_type_reports_every_undefined_alias() {
+        // The type argument of a builtin resolves like any other type, so two
+        // broken aliases in it report twice, not once.
+        for src in [
+            "fn main() { let x: bool = is_none::<Either<Missing, MissingTwo>>(missing_arg); }",
+            "fn main() { let x: u32 = unwrap_left::<Either<Missing, MissingTwo>>(missing_arg); }",
+            "fn main() { let x: u32 = <(Missing, MissingTwo)>::into(missing_arg); }",
+        ] {
+            let diags = errors(src);
+            assert_eq!(
+                ["Missing", "MissingTwo"][..],
+                undefined_aliases(&diags)[..],
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn poisoned_fold_signature_does_not_cascade_into_not_foldable() {
+        // Whether the signature folds is unknowable until its types resolve, so
+        // a poisoned one must absorb the check rather than fail it.
+        for src in [
+            "fn step(e: u32, acc: Missing) -> u32 { 0 }
+            fn main() { let r: u32 = array_fold::<step, 2>([1, 2], 0); }",
+            "fn step(e: u32, acc: u32) -> Missing { 0 }
+            fn main() { let r: u32 = array_fold::<step, 2>([1, 2], 0); }",
+        ] {
+            let diags = errors(src);
+            assert!(
+                !reports(&diags, |e| matches!(e, Error::FunctionNotFoldable { .. })),
+                "the undefined alias is the only root cause: {diags}"
+            );
+            assert_eq!(["Missing"][..], undefined_aliases(&diags)[..], "{src}");
+        }
+    }
+
+    #[test]
+    fn redefined_alias_still_reports_errors_in_the_rejected_body() {
+        // The rejected body is independent of the name collision: resolve it for
+        // its own diagnostics, without replacing the existing binding.
+        let diags = errors(
+            "type A = u32;
+            type A = Missing;
+            fn main() {}",
+        );
+        assert!(reports(&diags, |e| matches!(
+            e,
+            Error::RedefinedAlias { .. }
+        )));
+        assert_eq!(["Missing"][..], undefined_aliases(&diags)[..]);
+        assert_eq!(2, diags.error_count());
+    }
+
+    #[test]
+    fn every_rejected_registration_still_reports_its_own_errors() {
+        // `insert_alias` is the only registration that resolves anything itself,
+        // so it is the only one whose collision check could swallow an inner
+        // error (see the test above). The rest take values their caller already
+        // analyzed and reported on, which is what keeps these cases honest —
+        // moving that work inside a registration would silently regress them.
+        for (src, inner) in [
+            // enum: the payload types are resolved before `insert_enum`
+            (
+                "enum E { A }\nenum E { B(Missing) }\nfn main() {}",
+                "Missing",
+            ),
+            // ...including when the collision is with a plain alias
+            (
+                "type E = u32;\nenum E { B(Missing) }\nfn main() {}",
+                "Missing",
+            ),
+            // function: params, return type and body precede `insert_function`
+            ("fn f() {}\nfn f(x: Missing) {}\nfn main() {}", "Missing"),
+            (
+                "fn f() {}\nfn f() -> Missing { 1 }\nfn main() {}",
+                "Missing",
+            ),
+        ] {
+            let diags = errors(src);
+            assert_eq!([inner][..], undefined_aliases(&diags)[..], "{src}");
+            assert_eq!(2, diags.error_count(), "{src}");
+        }
+    }
+
+    #[test]
+    fn rejected_function_body_errors_still_report() {
+        // The body case, which has no alias to count: the duplicate must not
+        // swallow the undefined variable inside the rejected definition.
+        let diags = errors(
+            "fn f() {}
+            fn f() -> u32 { missing_body }
+            fn main() {}",
+        );
+        assert!(reports(&diags, |e| matches!(
+            e,
+            Error::FunctionRedefined { .. }
+        )));
+        assert_eq!(["missing_body"][..], undefined_vars(&diags)[..]);
+    }
+
+    #[test]
+    fn surplus_enum_arm_bindings_do_not_cascade_into_a_shape_error() {
+        // Binding two names to a one-value payload is one mistake. The arity
+        // diagnostic says so; re-checking the combined pattern against the
+        // payload type only restates it.
+        let diags = errors(
+            "enum E { V(u32) }
+            fn main() { let r: u32 = match witness::W { E::V(x: u32, y: u32) => 1, }; }",
+        );
+        assert!(
+            !reports(&diags, |e| matches!(
+                e,
+                Error::ExpressionUnexpectedType { .. }
+            )),
+            "the arity error already says it: {diags}"
+        );
+        assert_eq!(1, diags.error_count());
+    }
+
+    /// How many diagnostics carry a [`Error::Grammar`] message?
+    ///
+    /// Grammar errors are distinguished only by their text, so counting them is
+    /// the robust way to assert that several independent ones surfaced.
+    fn grammar_count(diags: &DiagnosticManager) -> usize {
+        diags
+            .diagnostics()
+            .iter()
+            .filter(|d| matches!(d.error(), Error::Grammar { .. }))
+            .count()
+    }
+
+    #[test]
+    fn aliasing_an_item_to_main_does_not_abort_its_siblings() {
+        // A: the items of one `use` are independent, so a rejected alias must
+        // not swallow the item beside it.
+        let diags = errors(
+            "mod m { pub fn a() {} }
+            use crate::m::{a as main, missing};
+            fn main() {}",
+        );
+        assert!(
+            reports(&diags, |e| matches!(e, Error::MainCannotBeAlias)),
+            "{diags}"
+        );
+        assert_eq!(["missing"][..], unresolved_items(&diags)[..]);
+    }
+
+    #[test]
+    fn every_malformed_enum_match_arm_reports() {
+        // A: the arm loop must not stop at the first unknown variant; `Y` is a
+        // separate mistake from `X`.
+        let diags = errors(
+            "enum E { A, B }
+            fn main() { let r: u32 = match witness::W { E::X => 1, E::Y => 2, }; }",
+        );
+        assert_eq!(
+            2,
+            grammar_count(&diags),
+            "both unknown variants must report: {diags}"
+        );
+    }
+
+    #[test]
+    fn unknown_arm_does_not_suppress_the_scrutinee_type_error() {
+        // The enum resolved, so the scrutinee's type is knowable and its
+        // mismatch is independent of the arm naming a variant that does not exist.
+        let diags = errors(
+            "enum E { A, B }
+            fn main() {
+                let v: u32 = witness::V;
+                let r: u32 = match v { E::X => 1, E::A => 2, E::B => 3, };
+            }",
+        );
+        assert_eq!(1, grammar_count(&diags), "unknown variant `X`: {diags}");
+        assert!(
+            reports(&diags, |e| matches!(
+                e,
+                Error::ExpressionTypeMismatch { .. } | Error::ExpressionUnexpectedType { .. }
+            )),
+            "matching a u32 against E is a type error of its own: {diags}"
+        );
+    }
+
+    #[test]
+    fn missing_arm_does_not_suppress_the_scrutinee_type_error() {
+        let diags = errors(
+            "enum E { A, B }
+            fn main() {
+                let v: u32 = witness::V;
+                let r: u32 = match v { E::A => 1, };
+            }",
+        );
+        assert_eq!(1, grammar_count(&diags), "missing variant `B`: {diags}");
+        assert!(
+            reports(&diags, |e| matches!(
+                e,
+                Error::ExpressionTypeMismatch { .. } | Error::ExpressionUnexpectedType { .. }
+            )),
+            "matching a u32 against E is a type error of its own: {diags}"
+        );
+    }
+
+    #[test]
+    fn unknown_arm_does_not_suppress_payload_checks_on_the_valid_arms() {
+        // `E::A`'s binding is declared u16 against a u32 payload; the unknown
+        // `E::Zzz` beside it says nothing about that.
+        let diags = errors(
+            "enum E { A(u32), B }
+            fn main() { let r: u32 = match witness::W { E::A(x: u16) => 1, E::Zzz => 2, }; }",
+        );
+        assert_eq!(1, grammar_count(&diags), "unknown variant `Zzz`: {diags}");
+        assert!(
+            reports(&diags, |e| matches!(
+                e,
+                Error::ExpressionTypeMismatch { .. }
+            )),
+            "the u16/u32 payload mismatch must still report: {diags}"
+        );
+    }
+
+    #[test]
+    fn poisoned_enum_alias_does_not_cascade_into_not_an_enum() {
+        // B: `E` resolves to poison, so whether it names an enum is unknowable.
+        // Treating poison as a concrete non-enum invents a second error.
+        let diags = errors(
+            "type E = Missing;
+            fn main() { let r: u32 = match witness::W { E::A => 1, }; }",
+        );
+        assert_eq!(["Missing"][..], undefined_aliases(&diags)[..]);
+        assert_eq!(1, diags.error_count(), "{diags}");
+    }
+
+    #[test]
+    fn poisoned_loop_counter_does_not_cascade_into_not_loopable() {
+        // B: the counter's width is unknowable while its type is poisoned, so
+        // loopability is unknowable too — absorb the check rather than fail it.
+        let diags = errors(
+            "fn step(acc: u32, ctx: (), i: Missing) -> Either<u32, u32> { Left(acc) }
+            fn main() { let r: Either<u32, u32> = for_while::<step>(0, ()); }",
+        );
+        assert!(
+            !reports(&diags, |e| matches!(e, Error::FunctionNotLoopable { .. })),
+            "the undefined alias is the only root cause: {diags}"
+        );
+        assert_eq!(["Missing"][..], undefined_aliases(&diags)[..]);
+    }
+
+    #[test]
+    fn reading_a_variable_does_not_rebind_it() {
+        // C: reading `x` at a poisoned expected type must not replace the
+        // declared `x: u32`. The second read is an independent mistake and has
+        // to be caught against the *declaration*, not against the first read.
+        let diags = errors(
+            "fn f(x: u32) { let a: Missing = x; let b: u16 = x; }
+            fn main() {}",
+        );
+        assert_eq!(["Missing"][..], undefined_aliases(&diags)[..]);
+        assert!(
+            reports(&diags, |e| matches!(
+                e,
+                Error::ExpressionTypeMismatch { .. }
+            )),
+            "the u32/u16 mismatch is independent of the bad annotation: {diags}"
+        );
+        assert_eq!(2, diags.error_count());
+    }
+
+    #[test]
+    fn arity_recovery_still_validates_the_binding_pattern() {
+        // D: the arity error explains the count, and nothing else. Skipping the
+        // pattern check to suppress the shape cascade also drops the reuse of
+        // `x`, which is an independent mistake.
+        let diags = errors(
+            "enum E { V(u32) }
+            fn main() { let r: u32 = match witness::W { E::V(x: u32, x: u32) => 1, }; }",
+        );
+        assert!(
+            reports(&diags, |e| matches!(
+                e,
+                Error::VariableReuseInPattern { .. }
+            )),
+            "reusing `x` is independent of the arity: {diags}"
+        );
+        assert_eq!(2, diags.error_count());
+    }
+
+    #[test]
+    fn import_collision_in_one_namespace_is_not_masked_by_another() {
+        // E: the alias `foo` imports cleanly, the function `foo` collides with a
+        // local definition. Succeeding in one namespace must not report success
+        // for all of them.
+        let diags = errors(
+            "mod m { pub type foo = u32; pub fn foo() {} }
+            fn foo() {}
+            use crate::m::foo;
+            fn main() {}",
+        );
+        assert!(
+            reports(&diags, |e| matches!(e, Error::RedefinedItem { .. })),
+            "the duplicate function import must surface: {diags}"
+        );
+    }
+
+    // P1, imports: a name a failed `use` was meant to introduce is poisoned, so
+    // the cost of a broken import is one error rather than one per use.
+
+    #[test]
+    fn unresolved_module_does_not_cascade_into_every_call() {
+        let diags = errors(
+            "use crate::nope::foo;
+            fn main() { foo(); foo(); foo(); foo(); foo(); }",
+        );
+        assert!(
+            reports(&diags, |e| matches!(e, Error::ModuleNotFound { .. })),
+            "{diags}"
+        );
+        assert_eq!(1, diags.error_count(), "{diags}");
+    }
+
+    #[test]
+    fn unresolved_item_does_not_cascade_into_every_call() {
+        let diags = errors(
+            "mod m { pub fn f() {} }
+            use crate::m::missing;
+            fn main() { missing(); missing(); missing(); }",
+        );
+        assert!(
+            reports(&diags, |e| matches!(e, Error::UnresolvedItem { .. })),
+            "{diags}"
+        );
+        assert_eq!(1, diags.error_count(), "{diags}");
+    }
+
+    #[test]
+    fn private_item_does_not_cascade_into_every_call() {
+        let diags = errors(
+            "mod m { fn f() -> u32 { 1 } }
+            use crate::m::f;
+            fn main() { let a: u32 = f(); let b: u32 = f(); let c: u32 = f(); }",
+        );
+        assert!(
+            reports(&diags, |e| matches!(e, Error::PrivateItem { .. })),
+            "{diags}"
+        );
+        assert_eq!(1, diags.error_count(), "{diags}");
+    }
+
+    #[test]
+    fn a_real_module_does_not_disable_poison_in_other_namespaces() {
+        // The poison covers the name in every namespace, so a same-named module
+        // must not re-enable the function cascade the poison exists to absorb.
+        let diags = errors(
+            "mod m { fn f() -> u32 { 1 } }
+            mod f {}
+            use crate::m::f;
+            fn main() { let a: u32 = f(); let b: u32 = f(); }",
+        );
+        assert!(
+            !reports(&diags, |e| matches!(e, Error::FunctionUndefined { .. })),
+            "the failed import must absorb the calls: {diags}"
+        );
+        assert_eq!(1, diags.error_count(), "{diags}");
+    }
+
+    #[test]
+    fn broken_path_still_reports_the_main_alias() {
+        // Aliasing to `main` is a property of the declaration, not of the target,
+        // so navigation failing says nothing about it.
+        let diags = errors("use crate::missing::{f as main, g}; fn main() {}");
+        assert!(
+            reports(&diags, |e| matches!(e, Error::ModuleNotFound { .. })),
+            "{diags}"
+        );
+        assert!(
+            reports(&diags, |e| matches!(e, Error::MainCannotBeAlias)),
+            "the `as main` alias is rejected regardless of the path: {diags}"
+        );
+    }
+
+    #[test]
+    fn poisoned_parameter_use_does_not_mask_a_later_conflict() {
+        // The first use poisons `param::P`; the second fixes it at u16. The
+        // third is a real u16/u32 conflict and must not be absorbed.
+        let diags = errors(
+            "fn main() {
+                let a: Missing = param::P;
+                let b: u16 = param::P;
+                let c: u32 = param::P;
+            }",
+        );
+        assert_eq!(["Missing"][..], undefined_aliases(&diags)[..]);
+        assert!(
+            reports(&diags, |e| matches!(
+                e,
+                Error::ExpressionTypeMismatch { .. }
+            )),
+            "the u16/u32 conflict between the later uses must report: {diags}"
+        );
+    }
+
+    #[test]
+    fn tuple_arity_mismatch_still_reports_known_slot_types() {
+        // The slots that line up keep their types, so `true` is still checked
+        // against u32; only the surplus element has no expected type.
+        let diags = errors("fn main() { let x: (u32, u32) = (true, 1, missing); }");
+        assert_eq!(["missing"][..], undefined_vars(&diags)[..]);
+        assert_eq!(
+            3,
+            diags.error_count(),
+            "arity, the true/u32 mismatch, and the undefined variable: {diags}"
+        );
+    }
+
+    #[test]
+    fn pattern_shape_failure_still_reports_duplicate_bindings() {
+        // `is_of_type` returns only its first error, so the shape mismatch would
+        // otherwise hide the reuse behind it.
+        let diags = errors("fn main() { let (x, x): u32 = 1; }");
+        assert!(
+            reports(&diags, |e| matches!(
+                e,
+                Error::VariableReuseInPattern { .. }
+            )),
+            "binding `x` twice is its own error: {diags}"
+        );
+        assert_eq!(2, diags.error_count(), "{diags}");
+    }
+
+    #[test]
+    fn every_duplicate_enum_variant_reports() {
+        let diags = errors("enum E { A, A, B, B } fn main() {}");
+        assert_eq!(
+            2,
+            grammar_count(&diags),
+            "both `A` and `B` are duplicated: {diags}"
+        );
+    }
+
+    #[test]
+    fn a_repeated_enum_variant_reports_once() {
+        let diags = errors("enum E { A, A, A } fn main() {}");
+        assert_eq!(
+            1,
+            grammar_count(&diags),
+            "`A` is one duplicated name, however often it repeats: {diags}"
+        );
+    }
+
+    #[test]
+    fn failed_import_does_not_cascade_into_every_type_use() {
+        // A `use` does not say which namespace the item lives in, so the name is
+        // poisoned as a type as well as a function.
+        let diags = errors(
+            "mod m { pub fn f() {} }
+            use crate::m::Missing;
+            fn main() { let x: Missing = 5; let y: Missing = 6; }",
+        );
+        assert!(undefined_aliases(&diags).is_empty(), "{diags}");
+        assert_eq!(1, diags.error_count(), "{diags}");
+    }
+
+    #[test]
+    fn failed_import_inside_a_module_does_not_cascade() {
+        let diags = errors(
+            "mod a { pub fn f() {} }
+            mod b { use crate::a::nope; pub fn g() { nope(); nope(); } }
+            fn main() {}",
+        );
+        assert_eq!(1, diags.error_count(), "{diags}");
+    }
+
+    #[test]
+    fn poisoned_import_absorbs_arity_and_output_checks() {
+        // The signature is unknowable, so neither the argument count nor the
+        // output type has an answer to check against.
+        let diags = errors(
+            "use crate::nope::foo;
+            fn main() { let x: u32 = foo(1, 2, 3); }",
+        );
+        assert_eq!(1, diags.error_count(), "{diags}");
+    }
+
+    #[test]
+    fn poisoned_import_still_reports_its_argument_errors() {
+        // Absorbing the callee must not swallow the arguments' own errors.
+        let diags = errors(
+            "use crate::nope::foo;
+            fn main() { foo(missing_a, missing_b); }",
+        );
+        assert_eq!(["missing_a", "missing_b"][..], undefined_vars(&diags)[..]);
+        assert_eq!(3, diags.error_count(), "{diags}");
+    }
+
+    #[test]
+    fn poisoned_import_does_not_cascade_into_not_foldable_or_not_loopable() {
+        for src in [
+            "use crate::nope::step;
+            fn main() { let r: u32 = array_fold::<step, 2>([1, 2], 0); }",
+            "use crate::nope::step;
+            fn main() { let r: u32 = fold::<step, 2>(list![1, 2], 0); }",
+            "use crate::nope::step;
+            fn main() { let r: Either<u32, u32> = for_while::<step>(0, ()); }",
+        ] {
+            let diags = errors(src);
+            assert!(
+                !reports(&diags, |e| matches!(
+                    e,
+                    Error::FunctionNotFoldable { .. } | Error::FunctionNotLoopable { .. }
+                )),
+                "a poisoned signature has no shape to fail: {src}\n{diags}"
+            );
+            assert_eq!(1, diags.error_count(), "{src}\n{diags}");
+        }
+    }
+
+    #[test]
+    fn a_failed_import_still_reports_every_bad_item() {
+        // Poisoning the names must not collapse the per-item collection.
+        let diags = errors(
+            "mod m { pub fn f() {} }
+            use crate::m::{missing_x, missing_y};
+            fn main() { missing_x(); missing_y(); }",
+        );
+        assert_eq!(2, diags.error_count(), "{diags}");
+    }
+
+    #[test]
+    fn a_failed_import_does_not_poison_its_healthy_siblings() {
+        let diags = errors(
+            "mod m { pub fn a() -> u32 { 1 } pub fn b() -> u32 { 2 } }
+            use crate::m::{a, nope, b};
+            fn main() { let x: u32 = a(); let y: u32 = b(); nope(); }",
+        );
+        assert_eq!(1, diags.error_count(), "{diags}");
+    }
+
+    #[test]
+    fn a_redefined_import_keeps_the_good_binding() {
+        // The name is already bound to a real function, so it must not be
+        // poisoned: a genuine mistake against that signature still reports.
+        let diags = errors(
+            "mod m { pub fn f(x: u32) -> u32 { x } }
+            use crate::m::f;
+            use crate::m::f;
+            fn main() { let y: u32 = f(1, 2); }",
+        );
+        assert!(
+            reports(&diags, |e| matches!(e, Error::RedefinedItem { .. })),
+            "{diags}"
+        );
+        assert!(
+            reports(&diags, |e| matches!(
+                e,
+                Error::InvalidNumberOfArguments { .. }
+            )),
+            "the real signature must still be checked: {diags}"
+        );
     }
 }
 

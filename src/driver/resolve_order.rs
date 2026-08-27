@@ -42,16 +42,16 @@ fn forbid_enum_dec_in_deps(
     }
 
     for decl in enum_declarations(local_items) {
-        diagnostics.push(Diagnostic::new(
+        diagnostics.push(
             Error::Grammar {
                 msg: format!(
                     "enum `{}` is declared in a dependency file; \
-                     enums may only be declared in the program's own files",
+                 enums may only be declared in the program's own files",
                     decl.name()
                 ),
-            },
-            *decl.as_ref(),
-        ));
+            }
+            .with_span(decl.into()),
+        );
     }
 }
 
@@ -63,7 +63,7 @@ impl DependencyGraph {
         diagnostics: &mut DiagnosticManager,
     ) -> Option<parse::Program> {
         match self.linearize() {
-            Ok(order) => self.assemble_program(&order, diagnostics),
+            Ok(order) => Some(self.assemble_program(&order, diagnostics)),
             Err(err) => {
                 diagnostics.push(err);
                 None
@@ -76,7 +76,7 @@ impl DependencyGraph {
         &self,
         order: &[usize],
         diagnostics: &mut DiagnosticManager,
-    ) -> Option<parse::Program> {
+    ) -> parse::Program {
         let mut items = Vec::with_capacity(order.len());
 
         let target_ids: HashMap<Span, usize> = self
@@ -130,8 +130,7 @@ impl DependencyGraph {
             )));
         }
 
-        (!diagnostics.has_errors())
-            .then(|| parse::Program::new(&items, *self.modules[&MAIN_MODULE].program.as_ref()))
+        parse::Program::new(&items, *self.modules[&MAIN_MODULE].program.as_ref())
     }
 
     /// Rewrites a single item for the flattened single-file representation.
@@ -177,8 +176,13 @@ impl DependencyGraph {
         target_ids: &HashMap<Span, usize>,
     ) -> parse::Item {
         let span = *use_decl.span();
-        let resolved = &self.use_cache[&span];
-        let target_id = target_ids[&span];
+
+        // A use that failed to resolve has no cache/target entry; its error was
+        // already reported. Skip it with as poison item instead of indexing and panicking.
+        let (Some(resolved), Some(&target_id)) = (self.use_cache.get(&span), target_ids.get(&span))
+        else {
+            return parse::Item::Ignored;
+        };
 
         let mut new_path = Vec::with_capacity(resolved.mod_path.len() + 2);
         new_path.push(Identifier::from_str_unchecked(CRATE_STR));
@@ -317,13 +321,7 @@ mod flattening_tests {
             ),
         ]);
 
-        let driver_program = graph.linearize_and_assemble(&mut diagnostics);
-
-        assert!(
-            driver_program.is_none(),
-            "Expected the build to fail and return None, but got: {:?}",
-            driver_program
-        );
+        let _ = graph.linearize_and_assemble(&mut diagnostics);
 
         assert!(
             diagnostics.has_errors(),

@@ -24,7 +24,7 @@ pub enum Token<'src> {
     Let,
     Type,
     Mod,
-    Const,
+    Const, // Currently unused
     Match,
     Enum,
     Crate,
