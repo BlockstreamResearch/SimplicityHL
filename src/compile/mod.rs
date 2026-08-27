@@ -448,6 +448,16 @@ impl Call {
                 let iden = ProgNode::iden(scope.ctx());
                 scope.with_debug_symbol(args, &iden, self)
             }
+            CallName::Padding(size) => {
+                // Each layer composes one more `unit` onto the chain. Used for increasing
+                // the size of the program to increase the budget.
+                let unit = ProgNode::unit(scope.ctx());
+                let mut padded = PairBuilder::unit(scope.ctx());
+                for _ in 0..size.get() {
+                    padded = padded.comp(&unit).with_span(self)?;
+                }
+                Ok(padded)
+            }
             CallName::TypeCast(..) => {
                 // A cast converts between two structurally equal types.
                 // Structural equality of SimplicityHL types A and B means
@@ -757,5 +767,79 @@ impl EnumMatch {
         let scrutinee = self.scrutinee().compile(scope)?;
         let input = scrutinee.pair(PairBuilder::iden(scope.ctx()));
         input.comp(&dispatch).with_span(self)
+    }
+}
+
+#[cfg(test)]
+mod padding_tests {
+    use crate::{
+        ast::{self, ElementsJetHinter},
+        parse::{self, ParseFromStr},
+    };
+
+    use super::*;
+
+    fn compile_program(input: &str) -> Result<Arc<named::CommitNode>, Diagnostic> {
+        let parse_program = parse::Program::parse_from_str(input).expect("Failed to parse");
+        let ast_program = ast::Program::analyze(&parse_program, Box::new(ElementsJetHinter))
+            .expect("Failed to analyze");
+        ast_program.compile(Arguments::default(), false, Box::new(ElementsJetHinter))
+    }
+
+    /// Compile `fn main() { padding::<size>(); }` and return the encoded program length.
+    fn encoded_len(size: usize) -> usize {
+        let program = compile_program(&format!("fn main() {{ padding::<{size}>(); }}"))
+            .expect("padding expression should compile");
+        named::forget_names(&program).to_vec_without_witness().len()
+    }
+
+    #[test]
+    fn test_padding_compiles() {
+        let input_program = r#"
+        fn main() {
+            padding::<20>();
+        }"#;
+
+        compile_program(input_program).expect("padding expression should compile");
+    }
+
+    /// Count the nodes of the compiled program under the same maximal sharing
+    /// that the encoder applies.
+    fn shared_node_count(size: usize) -> usize {
+        let program = compile_program(&format!("fn main() {{ padding::<{size}>(); }}"))
+            .expect("padding expression should compile");
+        let program = named::forget_names(&program);
+        simplicity::dag::DagLike::post_order_iter::<
+            simplicity::dag::MaxSharing<simplicity::node::Commit>,
+        >(&*program)
+        .count()
+    }
+
+    #[test]
+    fn test_padding_layers_are_not_shared() {
+        // Each layer's `comp` has a distinct left child (the chain built so far), so it
+        // has a distinct CMR. Maximal sharing -- what the encoder applies -- therefore
+        // cannot collapse the chain. If it could, padding would be a no-op.
+        let base = shared_node_count(10);
+        let extra = shared_node_count(110);
+
+        assert_eq!(
+            extra - base,
+            100,
+            "expected one fresh node per padding layer, got {} across 100 extra layers",
+            extra - base
+        );
+    }
+
+    #[test]
+    fn test_padding_grows_the_program() {
+        // The whole point of padding is to make the program bigger.
+        let small = encoded_len(1);
+        let large = encoded_len(20);
+
+        assert!(
+            large > small,
+            "padding::<20> encoded to {large} bytes, no larger than padding::<1> at {small}"
+        );
     }
 }

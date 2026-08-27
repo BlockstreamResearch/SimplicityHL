@@ -895,6 +895,11 @@ pub enum Error {
         declared: ResolvedType,
         assigned: ResolvedType,
     },
+    PaddingSizeZero,
+    PaddingSizeTooLarge {
+        size: usize,
+        max: usize,
+    },
 }
 
 #[rustfmt::skip]
@@ -1155,6 +1160,11 @@ impl fmt::Display for Error {
             Error::ArgumentTypeMismatch { name, declared, assigned } => write!(
                 f,
                 "Parameter `{name}` was declared with type `{declared}` but its assigned argument is of type `{assigned}`"
+            ),
+            Error::PaddingSizeZero => write!(f, "Padding size cannot be zero"),
+            Error::PaddingSizeTooLarge { size, max } => write!(
+                f,
+                "Expected a padding size of at most {max}, found {size}"
             ),
         }
     }
