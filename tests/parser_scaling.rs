@@ -138,7 +138,6 @@ fn measure(construct: &Construct) -> f64 {
 }
 
 #[test]
-#[ignore = "times the parser; run by hand when touching the grammar"]
 fn parsing_scales_linearly_with_nesting_depth() {
     let first_depth = DEPTHS.first().expect("DEPTHS is not empty");
     let last_depth = DEPTHS.last().expect("DEPTHS is not empty");

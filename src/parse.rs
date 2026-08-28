@@ -2591,6 +2591,47 @@ impl ChumskyParse for EnumDeclaration {
     }
 }
 
+/// Split a parsed block body into its statements and its optional final expression.
+///
+/// Each element arrives paired with the `;` that followed it, if any. Only the last
+/// element may omit its `;`, and only when it is an expression rather than an
+/// assignment: that element is the block's final expression. Every other missing `;`
+/// is reported, and the element is kept as a statement so that analysis of the rest
+/// of the block still happens.
+fn split_block_body(
+    elements: Vec<(Statement, Option<Token<'_>>)>,
+    emit: &mut chumsky::input::Emitter<Diagnostic>,
+) -> (Arc<[Statement]>, Option<Arc<Expression>>) {
+    let count = elements.len();
+    let mut statements = Vec::with_capacity(count);
+    let mut final_expr = None;
+
+    for (index, (statement, semi)) in elements.into_iter().enumerate() {
+        if semi.is_some() {
+            statements.push(statement);
+            continue;
+        }
+
+        match statement {
+            // A trailing expression without `;` is the block's value.
+            Statement::Expression(expression) if index + 1 == count => {
+                final_expr = Some(Arc::new(expression));
+            }
+            statement => {
+                emit.emit(
+                    Error::Grammar {
+                        msg: "Expected `;` after statement".to_string(),
+                    }
+                    .with_span(*statement.span()),
+                );
+                statements.push(statement);
+            }
+        }
+    }
+
+    (Arc::from(statements), final_expr)
+}
+
 impl ChumskyParse for Expression {
     fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
     where
@@ -2598,7 +2639,10 @@ impl ChumskyParse for Expression {
     {
         recursive(|expr| {
             let block = {
-                let statement = Statement::parser(expr.clone()).then_ignore(just(Token::Semi));
+                // A block body is a run of elements, each of which is a statement
+                // followed by `;`, except that the last one may drop the `;` and
+                // become the block's final expression.
+                let element = Statement::parser(expr.clone()).then(just(Token::Semi).or_not());
 
                 let block_recovery = nested_delimiters(
                     Token::LBrace,
@@ -2611,24 +2655,19 @@ impl ChumskyParse for Expression {
                     |span| Expression::empty(span).inner().clone(),
                 );
 
-                let statements = statement
+                let body = element
                     .repeated()
                     .collect::<Vec<_>>()
-                    .map(Arc::from)
+                    .validate(|elements, _, emit| split_block_body(elements, emit))
                     .recover_with(skip_then_retry_until(
                         block_recovery.ignored().or(any().ignored()),
                         one_of([Token::Semi, Token::RParen, Token::RBracket, Token::RBrace])
                             .ignored(),
                     ));
 
-                let final_expr = expr.clone().map(Arc::new).or_not();
-
-                delimited_with_recovery(
-                    statements.then(final_expr),
-                    Token::LBrace,
-                    Token::RBrace,
-                    |_| (Arc::from(Vec::new()), None),
-                )
+                delimited_with_recovery(body, Token::LBrace, Token::RBrace, |_| {
+                    (Arc::from(Vec::new()), None)
+                })
                 .map(|(stmts, end_expr)| ExpressionInner::Block(stmts, end_expr))
             };
 
@@ -3630,6 +3669,20 @@ mod regular_parsing {
         let text = diagnostics.to_string();
 
         (rejected, text)
+    }
+
+    /// Nested blocks must parse in time linear in their depth.
+    #[test]
+    fn nested_blocks_parse_without_exponential_backtracking() {
+        let depth = 32;
+        let input = format!(
+            "fn main() {{\n    let x: u32 = {}0{};\n    assert!(jet::eq_32(x, 0));\n}}",
+            "{".repeat(depth),
+            "}".repeat(depth)
+        );
+
+        let (rejected, text) = parse_with(&input, &UnstableFeatures::all());
+        assert!(!rejected, "nested blocks must parse: {text}");
     }
 
     #[test]
