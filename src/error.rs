@@ -758,6 +758,10 @@ pub enum Error {
     BitStringPow2 {
         len: usize,
     },
+    /// The input nests delimiters deeper than [`crate::parse::MAX_NESTING_DEPTH`].
+    NestingTooDeep {
+        max: usize,
+    },
     CannotParse {
         msg: String,
     },
@@ -963,6 +967,10 @@ impl fmt::Display for Error {
             Error::BitStringPow2 { len } => write!(
                 f,
                 "Expected a valid bit string length (1, 2, 4, 8, 16, 32, 64, 128, 256), found {len}"
+            ),
+            Error::NestingTooDeep { max } => write!(
+                f,
+                "Nesting is too deep: at most {max} levels of `(`, `[`, `{{` or `<` are supported"
             ),
             Error::CannotParse{ msg } => write!(
                 f,

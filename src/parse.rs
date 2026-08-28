@@ -1686,8 +1686,60 @@ pub trait ParseFromStrWithErrors: Sized {
     ) -> Option<Self>;
 }
 
+/// Maximum nesting depth of delimiters that the parser accepts.
+///
+/// Every level of nesting costs a stack frame in the recursive parser, and another
+/// one in every later recursive pass over the AST (`Display`, `ast::Program::analyze`,
+/// compilation). Deeply nested input therefore overflows the stack and aborts the
+/// process instead of producing an error, which makes any service that compiles
+/// `.simf` files trivially killable.
+///
+/// The depth of the token stream bounds the depth of the AST, so checking it once
+/// before parsing bounds the recursion depth of every pass that follows.
+///
+/// The parser dominates that cost. A release build spends well under a kilobyte of
+/// stack per level, but a debug build spends on the order of 80 kibibytes, so the debug
+/// profile is what sets the limit: it has to stay well inside the two megabytes that
+/// a spawned thread gets by default. Sixteen levels leave room for nested matches
+/// inside nested blocks, comfortably past the six levels of the deepest program in
+/// this repository.
+pub const MAX_NESTING_DEPTH: usize = 16;
+
 mod pipeline {
     use super::*;
+
+    /// Reject a token stream that nests delimiters deeper than [`MAX_NESTING_DEPTH`].
+    ///
+    /// Returns the diagnostic for the token that first exceeds the limit.
+    ///
+    /// Unbalanced closing delimiters saturate the depth at zero; they are reported
+    /// by the parser itself, which never runs on input that this check rejects.
+    pub fn check_nesting_depth(tokens: &[(Token<'_>, Span)]) -> Option<Diagnostic> {
+        let mut depth: usize = 0;
+
+        for (token, span) in tokens {
+            match token {
+                Token::LParen | Token::LBracket | Token::LBrace | Token::LAngle => {
+                    depth += 1;
+                    if MAX_NESTING_DEPTH < depth {
+                        return Some(
+                            Error::NestingTooDeep {
+                                max: MAX_NESTING_DEPTH,
+                            }
+                            .with_span(*span),
+                        );
+                    }
+                }
+                Token::RParen | Token::RBracket | Token::RBrace | Token::RAngle => {
+                    depth = depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
     /// Handle the `simc` directive before lexing: an incompatible or malformed
     /// directive is reported as the only diagnostic (the rest is noise), and
     /// lexing starts right after a valid one, so the lexer and grammar never
@@ -1732,6 +1784,13 @@ mod pipeline {
         tokens: Tokens<'_>,
         diagnostics: &mut DiagnosticManager,
     ) -> (Option<T>, bool) {
+        // The parser recurses once per nesting level, so the depth is bounded
+        // before the parser ever sees the tokens.
+        if let Some(too_deep) = check_nesting_depth(&tokens) {
+            diagnostics.push(too_deep);
+            return (None, false);
+        }
+
         let eoi = Span::eof(file_id, src.len());
         let (ast, parse_errs) = T::parser()
             .parse(tokens.as_slice().map(eoi, |(t, s)| (t, s)))
@@ -1786,6 +1845,10 @@ impl<A: ChumskyParse + std::fmt::Debug> ParseFromStr for A {
                     msg: "Empty token stream without an error".to_string(),
                 })));
         };
+
+        if let Some(too_deep) = pipeline::check_nesting_depth(&tokens) {
+            return Err(too_deep);
+        }
 
         let (ast, parse_errs) = A::parser()
             .map_with(|parsed, _| parsed)
@@ -3630,6 +3693,96 @@ mod regular_parsing {
         let text = diagnostics.to_string();
 
         (rejected, text)
+    }
+
+    /// `fn main() { let x: u32 = (((0))); assert!(jet::eq_32(x, 0)); }`
+    /// with `n` nested parentheses. The deepest point is `n + 1` levels: the
+    /// parentheses plus the enclosing block.
+    fn nested_parens(n: usize) -> String {
+        format!(
+            "fn main() {{\n    let x: u32 = {}0{};\n    assert!(jet::eq_32(x, 0));\n}}",
+            "(".repeat(n),
+            ")".repeat(n)
+        )
+    }
+
+    /// Deeply nested input must be rejected instead of overflowing the stack.
+    ///
+    /// The parser recurses once per nesting level, and so does every later pass over
+    /// the AST, so without a limit deeply nested input aborts the whole process.
+    /// See <https://github.com/BlockstreamResearch/SimplicityHL/issues/399>.
+    #[test]
+    fn deeply_nested_input_is_rejected() {
+        let inputs = [
+            // Parentheses, as reported in the issue.
+            nested_parens(300),
+            // Blocks.
+            format!("fn main() {{ {} {} }}", "{".repeat(100), "}".repeat(100)),
+            // Types, which have their own recursive parser.
+            format!(
+                "fn main() {{ let x: {}u8{} = witness::W; }}",
+                "Option<".repeat(100),
+                ">".repeat(100)
+            ),
+            // Tuple types nest through parentheses rather than angle brackets.
+            format!(
+                "fn main() {{ let x: {}u8{} = witness::W; }}",
+                "(".repeat(100),
+                ",)".repeat(100)
+            ),
+        ];
+        for input in inputs {
+            let (rejected, text) = parse_with(&input, &UnstableFeatures::all());
+
+            assert!(rejected, "deeply nested input must be rejected");
+            assert!(
+                text.contains("Nesting is too deep"),
+                "unexpected error: {text}"
+            );
+        }
+    }
+
+    /// A fragment parsed on its own goes through [`ParseFromStr`], which checks the
+    /// nesting depth separately. Witness and parameter types arrive this way.
+    #[test]
+    fn deeply_nested_type_fragment_is_rejected() {
+        let input = format!("{}u8{}", "Option<".repeat(300), ">".repeat(300));
+        let error =
+            AliasedType::parse_from_str(&input).expect_err("a deeply nested type must be rejected");
+
+        assert!(
+            error.to_string().contains("Nesting is too deep"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// The limit is inclusive: nesting up to [`MAX_NESTING_DEPTH`] keeps parsing.
+    ///
+    /// Input at the limit is by construction the most stack-hungry input that the
+    /// parser accepts, and a debug build spends tens of kilobytes of stack per
+    /// nesting level. The default stack of a test thread varies by platform, so this
+    /// runs on a thread with an explicit one: the test is about the limit, not about
+    /// how much stack the harness happens to hand out.
+    #[test]
+    fn nesting_at_the_limit_is_accepted() {
+        let deepest_accepted = nested_parens(MAX_NESTING_DEPTH - 1);
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let (rejected, text) = parse_with(&deepest_accepted, &UnstableFeatures::all());
+                assert!(!rejected, "nesting at the limit must be accepted: {text}");
+            })
+            .expect("spawning the parser thread")
+            .join()
+            .expect("the parser must not overflow the stack at the limit");
+
+        let (rejected, text) =
+            parse_with(&nested_parens(MAX_NESTING_DEPTH), &UnstableFeatures::all());
+        assert!(rejected, "one level past the limit must be rejected");
+        assert!(
+            text.contains("Nesting is too deep"),
+            "unexpected error: {text}"
+        );
     }
 
     #[test]
