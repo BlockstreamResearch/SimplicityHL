@@ -752,8 +752,22 @@ pub enum Error {
     ArraySizeNonZero {
         size: usize,
     },
+    /// The array size is larger than [`crate::types::MAX_ARRAY_SIZE`].
+    ///
+    /// The size is kept as written because it may not fit into a `usize`.
+    ArraySizeTooLarge {
+        size: String,
+        max: usize,
+    },
     ListBoundPow2 {
         bound: usize,
+    },
+    /// The list bound is larger than [`crate::types::MAX_LIST_BOUND`].
+    ///
+    /// The bound is kept as written because it may not fit into a `usize`.
+    ListBoundTooLarge {
+        bound: String,
+        max: usize,
     },
     BitStringPow2 {
         len: usize,
@@ -956,9 +970,17 @@ impl fmt::Display for Error {
                 f,
                 "Expected a non-negative integer as array size, found {size}"
             ),
+            Error::ArraySizeTooLarge { size, max } => write!(
+                f,
+                "Array size {size} exceeds the maximum supported size of {max}"
+            ),
             Error::ListBoundPow2 { bound } => write!(
                 f,
                 "Expected a power of two greater than one (2, 4, 8, 16, 32, ...) as list bound, found {bound}"
+            ),
+            Error::ListBoundTooLarge { bound, max } => write!(
+                f,
+                "List bound {bound} exceeds the maximum supported bound of {max}"
             ),
             Error::BitStringPow2 { len } => write!(
                 f,

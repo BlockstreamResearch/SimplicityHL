@@ -1315,6 +1315,29 @@ fn main() {
         }
     }
 
+    /// Regression test for <https://github.com/BlockstreamResearch/SimplicityHL/issues/398>.
+    ///
+    /// Lowering a type to its structural (Simplicity) type allocates memory
+    /// proportional to the array size resp. list bound. An uncapped size used to
+    /// abort the compiler with a capacity-overflow panic, or to exhaust all memory.
+    #[test]
+    fn oversized_type_size_is_rejected_without_panic() {
+        let programs = [
+            "fn main() {\n    let _x: List<u8, 4611686018427387904> = witness::W;\n}",
+            "fn main() {\n    let _x: [u8; 4611686018427387904] = witness::W;\n}",
+        ];
+        for prog_text in programs {
+            let error = TemplateProgram::new(prog_text, Box::new(ElementsJetHinter::new()))
+                .map(|_| ())
+                .expect_err("an oversized type size must be rejected");
+
+            assert!(
+                error.to_string().contains("exceeds the maximum"),
+                "Unexpected error: {error}",
+            );
+        }
+    }
+
     #[test]
     fn fuzz_regression_2() {
         parse::Program::parse_from_str("fn dbggscas(h: bool, asyxhaaaa: a) {\nfalse}\n\n").unwrap();
