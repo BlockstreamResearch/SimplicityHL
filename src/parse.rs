@@ -27,11 +27,12 @@ use crate::num::NonZeroPow2Usize;
 use crate::pattern::Pattern;
 use crate::str::{
     AliasName, Binary, Decimal, FunctionName, Hexadecimal, Identifier, JetName, ModuleName,
-    SymbolName, WitnessName,
+    SymbolName,
 };
 use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
 use crate::unstable::{impl_require_feature, RequireFeature, UnstableFeature, UnstableFeatures};
 use crate::version::SimcDirective;
+use crate::TemplateProgramWitness;
 
 #[cfg(feature = "fmt")]
 use crate::lexer::{FmtToken, FmtTokens};
@@ -254,7 +255,7 @@ impl UseDecl {
     }
 
     pub fn str_path(&self) -> String {
-        let path: PathBuf = self.path().iter().map(|iden| iden.as_inner()).collect();
+        let path: PathBuf = self.path().iter().map(Identifier::as_str).collect();
         path.display().to_string()
     }
 
@@ -264,7 +265,7 @@ impl UseDecl {
     ///
     /// Returns a `Diagnostic` if the use declaration path is completely empty.
     pub fn drp_name(&self) -> Result<&str, Diagnostic> {
-        let parts: Vec<&str> = self.path().iter().map(|iden| iden.as_inner()).collect();
+        let parts: Vec<&str> = self.path().iter().map(Identifier::as_str).collect();
         parts.first().copied().ok_or_else(|| {
             Error::CannotParse {
                 msg: "Empty use path".to_string(),
@@ -816,9 +817,9 @@ pub enum SingleExpressionInner {
     /// Hexadecimal string literal.
     Hexadecimal(Hexadecimal),
     /// Witness value.
-    Witness(WitnessName),
+    Witness(TemplateProgramWitness),
     /// Parameter value.
-    Parameter(WitnessName),
+    Parameter(TemplateProgramWitness),
     /// Variable identifier expression
     Variable(Identifier),
     /// Function call
@@ -970,7 +971,7 @@ impl EnumMatchArm {
     pub fn enum_path_string(&self) -> String {
         self.enum_path
             .iter()
-            .map(Identifier::as_inner)
+            .map(Identifier::as_str)
             .collect::<Vec<_>>()
             .join("::")
     }
@@ -1056,7 +1057,7 @@ impl EnumConstruction {
     pub fn enum_path_string(&self) -> String {
         self.enum_path
             .iter()
-            .map(Identifier::as_inner)
+            .map(Identifier::as_str)
             .collect::<Vec<_>>()
             .join("::")
     }
@@ -1658,7 +1659,6 @@ macro_rules! impl_parse_wrapped_string {
 impl_parse_wrapped_string!(SymbolName, "unresolved symbol name");
 impl_parse_wrapped_string!(FunctionName, "function name");
 impl_parse_wrapped_string!(Identifier, "identifier");
-impl_parse_wrapped_string!(WitnessName, "witness name");
 impl_parse_wrapped_string!(AliasName, "alias name");
 impl_parse_wrapped_string!(ModuleName, "module name");
 
@@ -2477,7 +2477,7 @@ impl ChumskyParse for TypeAlias {
 
         let name = AliasName::parser()
             .validate(|name, e, emit| {
-                let ident = name.as_inner();
+                let ident = name.as_str();
                 let known_type = if ident == "bool" {
                     Some(AliasedType::boolean())
                 } else if let Ok(uint_type) = UIntType::from_str(ident) {
@@ -2529,7 +2529,7 @@ impl ChumskyParse for EnumDeclaration {
             .map(Option::unwrap_or_default);
 
         let name = AliasName::parser().try_map(|name, span| {
-            if RESERVED_PATTERN_NAMES.contains(&name.as_inner()) {
+            if RESERVED_PATTERN_NAMES.contains(&name.as_str()) {
                 return Err(Diagnostic::new(
                     Error::Grammar {
                         msg: format!(
@@ -2545,7 +2545,7 @@ impl ChumskyParse for EnumDeclaration {
             // constructions name the enum while type annotations resolve
             // to the builtin, and the ABI would report the bare name
             // ambiguously.
-            if crate::str::is_reserved_alias_name(name.as_inner()) {
+            if crate::str::is_reserved_alias_name(name.as_str()) {
                 return Err(Diagnostic::new(
                     Error::RedefinedAliasAsBuiltin { name: name.clone() },
                     span,
@@ -2710,8 +2710,8 @@ impl SingleExpression {
             Token::DecLiteral(s) => SingleExpressionInner::Decimal(s),
             Token::HexLiteral(s) => SingleExpressionInner::Hexadecimal(s),
             Token::BinLiteral(s) => SingleExpressionInner::Binary(s),
-            Token::Witness(s) => SingleExpressionInner::Witness(WitnessName::from_str_unchecked(s)),
-            Token::Param(s) => SingleExpressionInner::Parameter(WitnessName::from_str_unchecked(s)),
+            Token::Witness(s) => SingleExpressionInner::Witness(TemplateProgramWitness::witness_from_str(s)),
+            Token::Param(s) => SingleExpressionInner::Parameter(TemplateProgramWitness::parameter_from_str(s)),
         };
 
         // Enum variant construction: `Path::To::Enum::Variant(args..)`.
@@ -3420,7 +3420,7 @@ impl crate::ArbitraryRec for SingleExpression {
                 2 => Decimal::arbitrary(u).map(S::Decimal),
                 3 => Hexadecimal::arbitrary(u).map(S::Hexadecimal),
                 4 => Identifier::arbitrary(u).map(S::Variable),
-                5 => WitnessName::arbitrary(u).map(S::Witness),
+                5 => TemplateProgramWitness::arbitrary(u).map(S::Witness),
                 6 => Ok(S::Option(None)),
                 _ => unreachable!(),
             },
@@ -3430,7 +3430,7 @@ impl crate::ArbitraryRec for SingleExpression {
                 2 => Decimal::arbitrary(u).map(S::Decimal),
                 3 => Hexadecimal::arbitrary(u).map(S::Hexadecimal),
                 4 => Identifier::arbitrary(u).map(S::Variable),
-                5 => WitnessName::arbitrary(u).map(S::Witness),
+                5 => TemplateProgramWitness::arbitrary(u).map(S::Witness),
                 6 => Ok(S::Option(None)),
                 7 => Expression::arbitrary_rec(u, new_budget)
                     .map(Arc::new)
@@ -3820,10 +3820,10 @@ fn main() {
         let Item::EnumDeclaration(decl) = item else {
             panic!("expected EnumDeclaration, got {item:?}");
         };
-        assert_eq!(decl.name().as_inner(), "Path");
+        assert_eq!(decl.name(), "Path");
         assert_eq!(decl.variants().len(), 3);
-        assert_eq!(decl.variants()[0].name().as_inner(), "Inherit");
-        assert_eq!(decl.variants()[2].name().as_inner(), "RefreshSpend");
+        assert_eq!(decl.variants()[0].name(), "Inherit");
+        assert_eq!(decl.variants()[2].name(), "RefreshSpend");
     }
 
     #[test]
@@ -3833,7 +3833,7 @@ fn main() {
             panic!("expected EnumDeclaration");
         };
         assert_eq!(decl.visibility(), &Visibility::Public);
-        assert_eq!(decl.name().as_inner(), "Color");
+        assert_eq!(decl.name(), "Color");
     }
 
     #[test]
@@ -4177,10 +4177,10 @@ fn main() {
         let Item::EnumDeclaration(decl) = item else {
             panic!("expected EnumDeclaration, got {item:?}");
         };
-        assert_eq!(decl.name().as_inner(), "Path");
+        assert_eq!(decl.name(), "Path");
         assert_eq!(decl.variants().len(), 3);
-        assert_eq!(decl.variants()[0].name().as_inner(), "Inherit");
-        assert_eq!(decl.variants()[2].name().as_inner(), "RefreshSpend");
+        assert_eq!(decl.variants()[0].name(), "Inherit");
+        assert_eq!(decl.variants()[2].name(), "RefreshSpend");
     }
 
     #[test]
@@ -4190,7 +4190,7 @@ fn main() {
             panic!("expected EnumDeclaration");
         };
         assert_eq!(decl.visibility(), &Visibility::Public);
-        assert_eq!(decl.name().as_inner(), "Color");
+        assert_eq!(decl.name(), "Color");
     }
 
     #[test]

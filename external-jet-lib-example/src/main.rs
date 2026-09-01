@@ -19,7 +19,7 @@
 //! loads and runs native code from the given path. Only point it at libraries
 //! you trust.
 
-use simplicityhl::{jet::external::ExternalJetHinter, TemplateProgram};
+use simplicityhl::{jet::external::ExternalJetHinter, TemplateAst};
 
 /// Loads the external jet library named on the command line and compiles a tiny
 /// SimplicityHL program against it.
@@ -45,7 +45,7 @@ fn main() {
     //    (`parse_jet`, `construct_verify`, `conjure`) to the loaded library; here
     //    `assert!(true)` is lowered via `construct_verify` to the library's
     //    `verify` jet.
-    let _ = TemplateProgram::new(code, Box::new(ExternalJetHinter::new()))
+    let _ = TemplateAst::new(code, Box::new(ExternalJetHinter::new()))
         .expect("failed to compile code with external jets");
 
     println!("External jets were successfully used to compile:\n{}", code);

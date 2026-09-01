@@ -7,16 +7,16 @@ use simplicity::node::{
 use simplicity::Cmr;
 use simplicity::{types, FailEntropy};
 
-use crate::str::WitnessName;
 use crate::value::StructuralValue;
-use crate::witness::WitnessValues;
+use crate::witness::{WitnessNameToValueMap as _, WitnessValues};
+use crate::TemplateProgramWitness;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct WithNames<T>(T);
 
 impl<M: node::Marker> node::Marker for WithNames<M> {
     type CachedData = M::CachedData;
-    type Witness = WitnessName;
+    type Witness = TemplateProgramWitness;
     // It's quite difficult to wrap M::Disconnect because of Rust's lack of HKTs, and
     // we don't use disconnect in this library right now, so punt on it for now.
     type Disconnect = NoDisconnect;
@@ -84,7 +84,7 @@ where
     N::Witness: Nullable,
     F: FnMut(
         &Node<WithNames<M>>,
-        Inner<&N::CachedData, &NoDisconnect, &WitnessName>,
+        Inner<&N::CachedData, &NoDisconnect, &TemplateProgramWitness>,
     ) -> Result<N::CachedData, E>,
 {
     struct Translator<F>(F);
@@ -96,7 +96,7 @@ where
         N::Witness: Nullable,
         F: FnMut(
             &Node<WithNames<M>>,
-            Inner<&N::CachedData, &NoDisconnect, &WitnessName>,
+            Inner<&N::CachedData, &NoDisconnect, &TemplateProgramWitness>,
         ) -> Result<N::CachedData, E>,
     {
         type Error = E;
@@ -104,8 +104,8 @@ where
         fn convert_witness(
             &mut self,
             _: &PostOrderIterItem<&Node<WithNames<M>>>,
-            wit: &WitnessName,
-        ) -> Result<WitnessName, Self::Error> {
+            wit: &TemplateProgramWitness,
+        ) -> Result<TemplateProgramWitness, Self::Error> {
             Ok(wit.shallow_clone())
         }
 
@@ -121,7 +121,7 @@ where
         fn convert_data(
             &mut self,
             data: &PostOrderIterItem<&Node<WithNames<M>>>,
-            inner: Inner<&Arc<Node<WithNames<N>>>, &NoDisconnect, &WitnessName>,
+            inner: Inner<&Arc<Node<WithNames<N>>>, &NoDisconnect, &TemplateProgramWitness>,
         ) -> Result<N::CachedData, Self::Error> {
             let new_inner = inner.map(|node| node.cached_data());
             self.0(data.node, new_inner)
@@ -151,7 +151,7 @@ where
         fn convert_witness(
             &mut self,
             _: &PostOrderIterItem<&Node<WithNames<M>>>,
-            _: &WitnessName,
+            _: &TemplateProgramWitness,
         ) -> Result<M::Witness, Self::Error> {
             Ok(M::Witness::none())
         }
@@ -206,7 +206,7 @@ pub fn populate_witnesses(
         fn convert_witness(
             &mut self,
             _: &PostOrderIterItem<&CommitNode>,
-            witness: &WitnessName,
+            witness: &TemplateProgramWitness,
         ) -> Result<simplicity::Value, Self::Error> {
             match self.values.get(witness) {
                 Some(val) => Ok(simplicity::Value::from(StructuralValue::from(val))),
@@ -251,8 +251,8 @@ pub fn populate_witnesses(
 // This awkward construction is required by rust-simplicity to implement WitnessConstructible
 // for Node<WithNames<Construct>>. See
 //     https://docs.rs/simplicity-lang/latest/simplicity/node/trait.WitnessConstructible.html#foreign-impls
-impl<'brand> WitnessConstructible<'brand, WitnessName> for node::ConstructData<'brand> {
-    fn witness(inference_context: &types::Context<'brand>, _: WitnessName) -> Self {
+impl<'brand> WitnessConstructible<'brand, TemplateProgramWitness> for node::ConstructData<'brand> {
+    fn witness(inference_context: &types::Context<'brand>, _: TemplateProgramWitness) -> Self {
         WitnessConstructible::<Option<_>>::witness(inference_context, None)
     }
 }
@@ -602,7 +602,7 @@ impl<'brand, P: CoreExt<'brand>> PairBuilder<P> {
     }
 }
 
-impl<'brand, P: WitnessConstructible<'brand, WitnessName>> PairBuilder<P> {
+impl<'brand, P: WitnessConstructible<'brand, TemplateProgramWitness>> PairBuilder<P> {
     /// Create the witness expression.
     ///
     /// ## Invariant
@@ -613,7 +613,10 @@ impl<'brand, P: WitnessConstructible<'brand, WitnessName>> PairBuilder<P> {
     /// ---------------
     /// witness : A → B
     /// ```
-    pub fn witness(inference_context: &types::Context<'brand>, witness: WitnessName) -> Self {
+    pub fn witness(
+        inference_context: &types::Context<'brand>,
+        witness: TemplateProgramWitness,
+    ) -> Self {
         Self(P::witness(inference_context, witness))
     }
 }

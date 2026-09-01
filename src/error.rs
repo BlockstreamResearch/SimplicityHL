@@ -21,9 +21,10 @@ use itertools::Itertools;
 use crate::driver::{SourceMap, CRATE_STR, MAIN_MODULE};
 use crate::lexer::Token;
 use crate::parse::MatchPattern;
-use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName, WitnessName};
+use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName};
 use crate::types::{ResolvedType, UIntType};
 use crate::unstable::UnstableFeature;
+use crate::TemplateProgramWitness;
 
 /// Area that an object spans inside a file.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -449,7 +450,7 @@ impl DiagnosticManager {
         //
         // The only caller that hits this branch is the legacy one-file program
         // flow, which bypasses the driver. All modern paths (LSP, `simc`,
-        // Simplex, and the Web build via `TemplateProgram::flatten`) register
+        // Simplex, and the Web build via `TemplateAst::flatten`) register
         // sources with the driver and hit the `RenderCache`-based render below.
         //
         // Legacy callers get message-only output — no source snippets, no
@@ -864,18 +865,18 @@ pub enum Error {
         identifier: Identifier,
     },
     WitnessReused {
-        name: WitnessName,
+        name: TemplateProgramWitness,
     },
     WitnessMissing {
-        name: WitnessName,
+        name: TemplateProgramWitness,
     },
     WitnessTypeMismatch {
-        name: WitnessName,
+        name: TemplateProgramWitness,
         declared: ResolvedType,
         assigned: ResolvedType,
     },
     WitnessReassigned {
-        name: WitnessName,
+        name: TemplateProgramWitness,
     },
     WitnessOutsideMain,
     ModuleRedefined {
@@ -888,10 +889,10 @@ pub enum Error {
         name: ModuleName,
     },
     ArgumentMissing {
-        name: WitnessName,
+        name: TemplateProgramWitness,
     },
     ArgumentTypeMismatch {
-        name: WitnessName,
+        name: TemplateProgramWitness,
         declared: ResolvedType,
         assigned: ResolvedType,
     },

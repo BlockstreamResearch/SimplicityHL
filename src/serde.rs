@@ -1,25 +1,35 @@
+use core::hash::Hash;
 use std::collections::HashMap;
 use std::fmt;
+use std::marker::PhantomData;
 
-use crate::parse::ParseFromStr;
-use crate::str::WitnessName;
+use crate::parse::ParseFromStr as _;
+use crate::str::Identifier;
 use crate::types::ResolvedType;
 use crate::value::Value;
-use crate::witness::{Arguments, UnresolvedValue, UnresolvedValues, WitnessValues};
-use crate::{AbiMeta, Parameters, WitnessTypes};
+use crate::witness::{
+    Arguments, UnresolvedValue, UnresolvedValues, WitnessNameToValueMap as _, WitnessValues,
+};
+use crate::{AbiMeta, Parameters, TemplateProgramWitness, WitnessTypes};
 use serde::{de, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 
-/// Visitor for a map from witness names to values of type `V`, rejecting duplicate names.
-struct NamedMapVisitor<V>(std::marker::PhantomData<V>);
+/// Visitor for a map from identifiers to values of type `V`, rejecting duplicate names.
+struct NamedMapVisitor<K, V> {
+    key_map_fn: fn(&Identifier) -> K,
+    phantom: PhantomData<V>,
+}
 
-impl<V> NamedMapVisitor<V> {
-    const fn new() -> Self {
-        Self(std::marker::PhantomData)
+impl<K, V> NamedMapVisitor<K, V> {
+    const fn new(key_map_fn: fn(&Identifier) -> K) -> Self {
+        Self {
+            key_map_fn,
+            phantom: PhantomData,
+        }
     }
 }
 
-impl<'de, V: Deserialize<'de>> de::Visitor<'de> for NamedMapVisitor<V> {
-    type Value = HashMap<WitnessName, V>;
+impl<'de, K: Eq + Hash, V: Deserialize<'de>> de::Visitor<'de> for NamedMapVisitor<K, V> {
+    type Value = HashMap<K, V>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("a map with string keys")
@@ -30,8 +40,8 @@ impl<'de, V: Deserialize<'de>> de::Visitor<'de> for NamedMapVisitor<V> {
         M: de::MapAccess<'de>,
     {
         let mut map = HashMap::new();
-        while let Some((key, value)) = access.next_entry::<WitnessName, V>()? {
-            if map.insert(key.shallow_clone(), value).is_some() {
+        while let Some((key, value)) = access.next_entry::<Identifier, V>()? {
+            if map.insert((self.key_map_fn)(&key), value).is_some() {
                 return Err(de::Error::custom(format!("Name `{key}` is assigned twice")));
             }
         }
@@ -45,8 +55,10 @@ impl<'de> Deserialize<'de> for WitnessValues {
         D: Deserializer<'de>,
     {
         deserializer
-            .deserialize_map(NamedMapVisitor::<Value>::new())
-            .map(Self::from)
+            .deserialize_map(NamedMapVisitor::new(
+                TemplateProgramWitness::witness_from_ident,
+            ))
+            .map(Self::from_map)
     }
 }
 
@@ -93,7 +105,7 @@ impl<'de> Deserialize<'de> for UnresolvedValues {
         D: Deserializer<'de>,
     {
         deserializer
-            .deserialize_map(NamedMapVisitor::<UnresolvedValue>::new())
+            .deserialize_map(NamedMapVisitor::new(Identifier::shallow_clone))
             .map(Self::from_map)
     }
 }
@@ -106,15 +118,6 @@ impl Serialize for ResolvedType {
         // Enum mentions serialize as the enum's declared name, which is opaque.
         // Variants and wire encoding live in the program's declarations.
         serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl Serialize for WitnessName {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_ref())
     }
 }
 
@@ -140,7 +143,7 @@ impl Serialize for Parameters {
         let map_ref = self.as_ref();
         let mut map = serializer.serialize_map(Some(map_ref.len()))?;
         for (key, value) in map_ref {
-            map.serialize_entry(key, value)?;
+            map.serialize_entry(key.as_str(), value)?;
         }
         map.end()
     }
@@ -154,7 +157,7 @@ impl Serialize for WitnessTypes {
         let map_ref = self.as_ref();
         let mut map = serializer.serialize_map(Some(map_ref.len()))?;
         for (key, value) in map_ref {
-            map.serialize_entry(key, value)?;
+            map.serialize_entry(key.as_str(), value)?;
         }
         map.end()
     }
@@ -166,8 +169,10 @@ impl<'de> Deserialize<'de> for Arguments {
         D: Deserializer<'de>,
     {
         deserializer
-            .deserialize_map(NamedMapVisitor::<Value>::new())
-            .map(Self::from)
+            .deserialize_map(NamedMapVisitor::new(
+                TemplateProgramWitness::parameter_from_ident,
+            ))
+            .map(Self::from_map)
     }
 }
 
@@ -239,33 +244,32 @@ impl<'de> Deserialize<'de> for Value {
     }
 }
 
-struct ParserVisitor<A>(std::marker::PhantomData<A>);
-
-impl<'de, A: ParseFromStr> de::Visitor<'de> for ParserVisitor<A> {
-    type Value = A;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a valid string")
-    }
-
-    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        A::parse_from_str(value).map_err(E::custom)
-    }
-}
-
-impl<'de> Deserialize<'de> for WitnessName {
+impl<'de> Deserialize<'de> for Identifier {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_str(ParserVisitor::<Self>(std::marker::PhantomData))
+        struct ParserVisitor;
+        impl<'de> de::Visitor<'de> for ParserVisitor {
+            type Value = Identifier;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a valid string")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                crate::parse::ParseFromStr::parse_from_str(value).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(ParserVisitor)
     }
 }
 
-struct WitnessMapSerializer<'a>(&'a HashMap<WitnessName, Value>);
+struct WitnessMapSerializer<'a>(&'a HashMap<TemplateProgramWitness, Value>);
 
 impl<'a> Serialize for WitnessMapSerializer<'a> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -282,10 +286,10 @@ impl<'a> Serialize for WitnessMapSerializer<'a> {
             // TODO: Consider serializing every value as a bare string and retiring the { value, type } form.
             // That drops "witness file readable without the program" entirely.
             if value.ty().contains_enum() {
-                map.serialize_entry(name.as_inner(), &value.to_string())?;
+                map.serialize_entry(name.as_str(), &value.to_string())?;
                 continue;
             }
-            map.serialize_entry(name.as_inner(), &ValueMapSerializer(value))?;
+            map.serialize_entry(name.as_str(), &ValueMapSerializer(value))?;
         }
         map.end()
     }
@@ -326,6 +330,7 @@ impl Serialize for Arguments {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::str::Identifier;
 
     #[test]
     fn witness_serde_duplicate_assignment() {
@@ -341,7 +346,6 @@ mod tests {
     }
 
     fn unit_enum(name: &str, variants: &[&str]) -> ResolvedType {
-        use crate::str::Identifier;
         use crate::types::{EnumInfo, EnumVariantInfo};
         use std::sync::Arc;
 
@@ -354,22 +358,24 @@ mod tests {
 
     #[test]
     fn abi_enum_type_serializes_as_name() {
-        use crate::str::WitnessName;
         use crate::types::TypeConstructible;
 
         let action_ty = unit_enum("Action", &["Inherit", "ColdSpend"]);
         let witness_types = WitnessTypes::from(HashMap::from([
-            (WitnessName::from_str_unchecked("ACTION"), action_ty.clone()),
             (
-                WitnessName::from_str_unchecked("MAYBE"),
+                TemplateProgramWitness::witness_from_str("ACTION"),
+                action_ty.clone(),
+            ),
+            (
+                TemplateProgramWitness::witness_from_str("MAYBE"),
                 ResolvedType::option(action_ty.clone()),
             ),
             (
-                WitnessName::from_str_unchecked("PAIR"),
+                TemplateProgramWitness::witness_from_str("PAIR"),
                 ResolvedType::tuple([action_ty, unit_enum("Reaction", &["Fast", "Slow"])]),
             ),
             (
-                WitnessName::from_str_unchecked("PLAIN"),
+                TemplateProgramWitness::witness_from_str("PLAIN"),
                 crate::parse::ParseFromStr::parse_from_str("u32").unwrap(),
             ),
         ]));
@@ -383,8 +389,6 @@ mod tests {
 
     #[test]
     fn enum_witness_value_serializes_as_variant_name() {
-        use crate::str::{Identifier, WitnessName};
-
         let action_ty = unit_enum("Action", &["Inherit", "ColdSpend"]);
         let value = Value::enum_variant(
             &action_ty,
@@ -392,8 +396,8 @@ mod tests {
             vec![],
         )
         .unwrap();
-        let witness = WitnessValues::from(HashMap::from([(
-            WitnessName::from_str_unchecked("ACTION"),
+        let witness = WitnessValues::from_map(HashMap::from([(
+            TemplateProgramWitness::witness_from_str("ACTION"),
             value,
         )]));
 
@@ -405,7 +409,7 @@ mod tests {
         let text = serde_json::to_string(&witness).unwrap();
         let unresolved: UnresolvedValues = serde_json::from_str(&text).unwrap();
         let witness_types = WitnessTypes::from(HashMap::from([(
-            WitnessName::from_str_unchecked("ACTION"),
+            TemplateProgramWitness::witness_from_str("ACTION"),
             action_ty,
         )]));
         let round_tripped: WitnessValues = unresolved.resolve(&witness_types).unwrap();
@@ -422,12 +426,11 @@ mod tests {
 
     #[test]
     fn payload_enum_witness_value_round_trips() {
-        use crate::str::{Identifier, WitnessName};
         use crate::types::{EnumInfo, EnumVariantInfo};
         use crate::value::ValueConstructible;
         use std::sync::Arc;
 
-        let u32_ty: ResolvedType = ParseFromStr::parse_from_str("u32").unwrap();
+        let u32_ty = ResolvedType::parse_from_str("u32").unwrap();
         let variants: Arc<[EnumVariantInfo]> = Arc::from([
             EnumVariantInfo::new(Identifier::from_str_unchecked("Cold"), Arc::from([])),
             EnumVariantInfo::new(
@@ -442,8 +445,8 @@ mod tests {
             vec![Value::u32(42)],
         )
         .unwrap();
-        let witness = WitnessValues::from(HashMap::from([(
-            WitnessName::from_str_unchecked("ACTION"),
+        let witness = WitnessValues::from_map(HashMap::from([(
+            TemplateProgramWitness::witness_from_str("ACTION"),
             value,
         )]));
 
@@ -454,7 +457,7 @@ mod tests {
         let text = serde_json::to_string(&witness).unwrap();
         let unresolved: UnresolvedValues = serde_json::from_str(&text).unwrap();
         let witness_types = WitnessTypes::from(HashMap::from([(
-            WitnessName::from_str_unchecked("ACTION"),
+            TemplateProgramWitness::witness_from_str("ACTION"),
             action_ty,
         )]));
         let round_tripped: WitnessValues = unresolved.resolve(&witness_types).unwrap();
@@ -463,7 +466,6 @@ mod tests {
 
     #[test]
     fn nested_enum_witness_value_serializes_as_bare_string() {
-        use crate::str::{Identifier, WitnessName};
         use crate::types::TypeConstructible;
         use crate::value::ValueConstructible;
 
@@ -471,8 +473,8 @@ mod tests {
         let option_ty = ResolvedType::option(action_ty.clone());
         let cold = Value::enum_variant(&action_ty, &Identifier::from_str_unchecked("Cold"), vec![])
             .unwrap();
-        let witness = WitnessValues::from(HashMap::from([(
-            WitnessName::from_str_unchecked("MAYBE"),
+        let witness = WitnessValues::from_map(HashMap::from([(
+            TemplateProgramWitness::witness_from_str("MAYBE"),
             Value::some(cold),
         )]));
 
@@ -484,7 +486,7 @@ mod tests {
         let text = serde_json::to_string(&witness).unwrap();
         let unresolved: UnresolvedValues = serde_json::from_str(&text).unwrap();
         let witness_types = WitnessTypes::from(HashMap::from([(
-            WitnessName::from_str_unchecked("MAYBE"),
+            TemplateProgramWitness::witness_from_str("MAYBE"),
             option_ty,
         )]));
         let round_tripped: WitnessValues = unresolved.resolve(&witness_types).unwrap();

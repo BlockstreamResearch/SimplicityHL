@@ -40,13 +40,11 @@ fn do_test(data: &[u8]) -> libfuzzer_sys::Corpus {
     if slow_input(&program_text) {
         return Corpus::Reject;
     }
-    let template = match simplicityhl::TemplateProgram::new(
-        program_text,
-        Box::new(ElementsJetHinter::new()),
-    ) {
-        Ok(x) => x,
-        Err(..) => return Corpus::Keep,
-    };
+    let template =
+        match simplicityhl::TemplateAst::new(program_text, Box::new(ElementsJetHinter::new())) {
+            Ok(x) => x,
+            Err(..) => return Corpus::Keep,
+        };
     let arguments = match Arguments::arbitrary_of_type(&mut u, template.parameters()) {
         Ok(arguments) => arguments,
         Err(..) => return Corpus::Reject,

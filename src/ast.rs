@@ -14,13 +14,14 @@ use crate::jet::{source_type, target_type, JetHL};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::parse::{MatchPattern, UseDecl, Visibility};
 use crate::pattern::Pattern;
-use crate::str::{AliasName, FunctionName, Identifier, ModuleName, SymbolName, WitnessName};
+use crate::str::{AliasName, FunctionName, Identifier, ModuleName, SymbolName};
 use crate::types::{
     AliasedType, EnumInfo, EnumVariantInfo, ResolvedType, StructuralType, TypeConstructible,
     TypeDeconstructible, TypeInner, UIntType,
 };
 use crate::value::{UIntValue, Value};
 use crate::witness::{Parameters, WitnessTypes};
+use crate::TemplateProgramWitness;
 use crate::{impl_eq_hash, parse};
 
 /// A program consists of the main function.
@@ -227,9 +228,9 @@ pub enum SingleExpressionInner {
     /// Constant value.
     Constant(Value),
     /// Witness value.
-    Witness(WitnessName),
+    Witness(TemplateProgramWitness),
     /// Parameter value.
-    Parameter(WitnessName),
+    Parameter(TemplateProgramWitness),
     /// Variable that has been assigned a value.
     Variable(Identifier),
     /// Expression in parentheses.
@@ -725,8 +726,8 @@ struct Scope {
 
     /// Block-level variable scopes. Push on block enter, pop on block exit.
     variables: Vec<HashMap<Identifier, ResolvedType>>,
-    parameters: HashMap<WitnessName, ResolvedType>,
-    witnesses: HashMap<WitnessName, ResolvedType>,
+    parameters: HashMap<TemplateProgramWitness, ResolvedType>,
+    witnesses: HashMap<TemplateProgramWitness, ResolvedType>,
     /// Allow enum constructions to name an enum by its declared name even
     /// when that name is not an alias in scope. Enabled only for value
     /// parsing (witness and argument files), which runs without a scope.
@@ -961,7 +962,7 @@ impl Scope {
     /// * May also return errors propagated from item collection and insertion, such as [`Error::PrivateItem`] or [`Error::RedefinedItem`].
     pub fn resolve_use(&mut self, use_decl: &UseDecl) -> Result<(), Error> {
         let path = use_decl.path();
-        if path.first().map(|id| id.as_inner()) != Some(CRATE_STR) {
+        if path.first().map(|id| id.as_str()) != Some(CRATE_STR) {
             return Err(Error::MissingCrateKeyword);
         }
 
@@ -981,13 +982,13 @@ impl Scope {
                 .module_path
                 .iter()
                 .zip(&path[1..])
-                .take_while(|(curr, nav)| curr.as_inner() == nav.as_inner())
+                .take_while(|(curr, nav)| curr.as_str() == nav.as_str())
                 .count();
 
             let mut target_scope = &self.root;
 
             for (ind, segment) in path[1..].iter().enumerate() {
-                let name = ModuleName::from_str_unchecked(segment.as_inner());
+                let name = ModuleName::from_ident(segment);
 
                 let (inner, visibility) = target_scope
                     .submodules
@@ -1003,7 +1004,7 @@ impl Scope {
 
             let mut collected = Vec::with_capacity(use_decl_items.len());
             for (name, aliased) in use_decl_items {
-                if aliased.as_ref().is_some_and(|a| a.as_inner() == MAIN_STR) {
+                if aliased.as_ref().is_some_and(|a| a == MAIN_STR) {
                     return Err(Error::MainCannotBeAlias);
                 }
 
@@ -1210,7 +1211,7 @@ impl Scope {
     ) -> Result<(), Error> {
         self.check_alias_free(&name)?;
 
-        let info = EnumInfo::new(Arc::from(name.as_inner()), variants);
+        let info = EnumInfo::new(Arc::clone(name.as_inner()), variants);
         let resolved = ResolvedType::enumeration(info);
 
         self.current_module_mut()
@@ -1225,7 +1226,11 @@ impl Scope {
     /// ## Errors
     ///
     /// * [`Error::ExpressionTypeMismatch`] A parameter of the same name has already been defined as a different type.
-    pub fn insert_parameter(&mut self, name: WitnessName, ty: ResolvedType) -> Result<(), Error> {
+    pub fn insert_parameter(
+        &mut self,
+        name: TemplateProgramWitness,
+        ty: ResolvedType,
+    ) -> Result<(), Error> {
         match self.parameters.entry(name.clone()) {
             Entry::Occupied(entry) if entry.get() == &ty => Ok(()),
             Entry::Occupied(entry) => Err(Error::ExpressionTypeMismatch {
@@ -1245,7 +1250,11 @@ impl Scope {
     ///
     /// * [`Error::WitnessOutsideMain`] The current scope is not inside the main function.
     /// * [`Error::WitnessReused`] A witness with the same name has already been defined.
-    pub fn insert_witness(&mut self, name: WitnessName, ty: ResolvedType) -> Result<(), Error> {
+    pub fn insert_witness(
+        &mut self,
+        name: TemplateProgramWitness,
+        ty: ResolvedType,
+    ) -> Result<(), Error> {
         if !self.is_main {
             return Err(Error::WitnessOutsideMain);
         }
@@ -1486,7 +1495,7 @@ impl AbstractSyntaxTree for Function {
             "Variables live only inside the function"
         );
 
-        if from.name().as_inner() != MAIN_STR {
+        if from.name() != MAIN_STR {
             let params = from
                 .params()
                 .iter()
@@ -1634,7 +1643,7 @@ fn analyze_enum_construction(
     let written = construction.enum_path_string();
     let names_expected_enum = match construction.enum_path() {
         [single] => {
-            let alias = AliasName::from_str_unchecked(single.as_inner());
+            let alias = AliasName::from_ident(single);
             match scope.get_alias(&alias) {
                 Ok(resolved) if &resolved == ty => true,
                 Ok(resolved) => {
@@ -1658,7 +1667,7 @@ fn analyze_enum_construction(
 
     let (variant_index, variant) = info
         .variant(construction.variant())
-        .ok_or_else(|| enum_variant_error(construction.variant().as_inner(), info))
+        .ok_or_else(|| enum_variant_error(construction.variant().as_str(), info))
         .with_span(span)?;
     if construction.args().len() != variant.payload().len() {
         return Err(Error::Grammar {
@@ -1985,7 +1994,7 @@ impl AbstractSyntaxTree for EnumMatch {
             })
             .with_span(span);
         };
-        let alias = AliasName::from_str_unchecked(single.as_inner());
+        let alias = AliasName::from_ident(single);
         let enum_ty = scope.get_alias(&alias).with_span(span)?;
         let info = match enum_ty.as_enum() {
             Some(info) => info.clone(),
@@ -3089,9 +3098,9 @@ mod module_tests {
             "main.simf",
             "
                 pub fn global_func() {}
-                mod inner { 
-                    use crate::global_func; 
-                    pub fn call_it() { global_func(); } 
+                mod inner {
+                    use crate::global_func;
+                    pub fn call_it() { global_func(); }
                 }
                 fn main() {}
             ",
@@ -3133,11 +3142,11 @@ mod module_tests {
         let result = analyze_multifile(vec![(
             "main.simf",
             "
-                mod brother { 
+                mod brother {
                     fn secret_toy() {} // Missing 'pub'
                 }
-                mod sister { 
-                    use crate::brother::secret_toy; 
+                mod sister {
+                    use crate::brother::secret_toy;
                 }
                 fn main() {}
             ",
@@ -3153,8 +3162,8 @@ mod module_tests {
         let result = analyze_multifile(vec![(
             "main.simf",
             "
-                mod child { 
-                    fn hidden() {} 
+                mod child {
+                    fn hidden() {}
                 }
                 use crate::child::hidden;
                 fn main() {}
@@ -3192,10 +3201,10 @@ mod module_tests {
 #[cfg(test)]
 mod enum_tests {
     use crate::ast::ElementsJetHinter;
-    use crate::{TemplateProgram, UnstableFeatures};
+    use crate::{TemplateAst, UnstableFeatures};
 
     fn analyze(src: &str) -> Result<(), String> {
-        TemplateProgram::new_with_unstable(
+        TemplateAst::new_with_unstable(
             src,
             &UnstableFeatures::all(),
             Box::new(ElementsJetHinter::new()),
@@ -3653,7 +3662,7 @@ mod enum_tests {
     fn alias_named_after_pattern_stays_valid_without_enums() {
         // Stable programs may alias pattern names; the enums feature must
         // not retroactively reject them.
-        let result = TemplateProgram::new_with_unstable(
+        let result = TemplateAst::new_with_unstable(
             "type Left = u32;\nfn main() { let _x: Left = 1; }",
             &UnstableFeatures::none(),
             Box::new(ElementsJetHinter::new()),
@@ -3708,7 +3717,7 @@ mod enum_tests {
 
     #[test]
     fn enum_requires_unstable_feature() {
-        let result = TemplateProgram::new_with_unstable(
+        let result = TemplateAst::new_with_unstable(
             "enum Color { Red, Green }\nfn main() {}",
             &UnstableFeatures::none(),
             Box::new(ElementsJetHinter::new()),

@@ -30,12 +30,12 @@ unsafe {
 
 ### 4. Pass `ExternalJetHinter` to the compiler
 
-`ExternalJetHinter` implements `JetHinter` and delegates `parse_jet` / `construct_verify` to the loaded library. Pass it when constructing a `TemplateProgram`:
+`ExternalJetHinter` implements `JetHinter` and delegates `parse_jet` / `construct_verify` to the loaded library. Pass it when constructing a `TemplateAst`:
 
 ```rust
-use simplicityhl::{jet::external::ExternalJetHinter, TemplateProgram};
+use simplicityhl::{jet::external::ExternalJetHinter, TemplateAst};
 
-let program = TemplateProgram::new(simf_code, Box::new(ExternalJetHinter::new()))
+let program = TemplateAst::new(simf_code, Box::new(ExternalJetHinter::new()))
     .expect("compilation failed");
 ```
 

@@ -15,7 +15,7 @@ type FnWitness = fn([u8; 32]) -> simplicityhl::WitnessValues;
 
 pub struct TestCase<'a> {
     pub name: &'static str,
-    template: Option<simplicityhl::TemplateProgram>,
+    template: Option<simplicityhl::TemplateAst>,
     compiled: Option<simplicityhl::CompiledProgram>,
     witness: FnWitness,
     lock_time: elements::LockTime,
@@ -67,7 +67,7 @@ impl<'a> TestCase<'a> {
     pub fn template_path<P: AsRef<std::path::Path>>(mut self, path: P) -> Self {
         let text = std::fs::read_to_string(path).expect("path should be readable");
         let template =
-            simplicityhl::TemplateProgram::new(text.as_str(), Box::new(ElementsJetHinter::new()))
+            simplicityhl::TemplateAst::new(text.as_str(), Box::new(ElementsJetHinter::new()))
                 .expect("program should compile");
         self.template = Some(template);
         self
