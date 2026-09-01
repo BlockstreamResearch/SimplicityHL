@@ -778,6 +778,41 @@ impl Scope {
         self.variables.push(HashMap::new());
     }
 
+    /// Analyze within a nested block scope and restore the previous scope afterwards
+    fn in_block<T>(&mut self, analyze: impl FnOnce(&mut Self) -> T) -> T {
+        let outer_depth = self.variables.len();
+        self.enter_block();
+        let result = analyze(self);
+        debug_assert_eq!(
+            self.variables.len(),
+            outer_depth + 1,
+            "Unbalanced nested block scopes"
+        );
+        self.exit_block();
+        debug_assert_eq!(
+            self.variables.len(),
+            outer_depth,
+            "Block scope was not restored"
+        );
+        result
+    }
+
+    /// Analyze within a function scope and restore the outside-function state afterwards
+    fn in_function<T>(&mut self, analyze: impl FnOnce(&mut Self) -> T) -> T {
+        debug_assert!(self.is_outside_function(), "Already inside a function body");
+        let result = self.in_block(analyze);
+        debug_assert!(
+            self.is_outside_function(),
+            "Function scope was not restored"
+        );
+        result
+    }
+
+    /// Analyze within a match-arm scope and restore the enclosing scope afterwards
+    fn in_match_arm<T>(&mut self, analyze: impl FnOnce(&mut Self) -> T) -> T {
+        self.in_block(analyze)
+    }
+
     /// Push the scope of the main function onto the stack.
     ///
     /// ## Panics
@@ -789,6 +824,25 @@ impl Scope {
         assert!(self.is_outside_function(), "Already inside a function body");
         self.enter_block();
         self.is_main = true;
+    }
+
+    /// Analyze within the main-function scope and restore the outside-function state afterwards.
+    fn in_main<T>(&mut self, analyze: impl FnOnce(&mut Self) -> T) -> T {
+        self.enter_main();
+        let result = analyze(self);
+        debug_assert!(self.is_main, "Main scope was exited during analysis");
+        debug_assert_eq!(
+            self.variables.len(),
+            1,
+            "Unbalanced nested blocks in main scope"
+        );
+        self.exit_main();
+        debug_assert!(!self.is_main, "Main scope was not restored");
+        debug_assert!(
+            self.is_outside_function(),
+            "Main function scope was not restored"
+        );
+        result
     }
 
     /// Exit the current block inside the curreent function.
@@ -832,6 +886,35 @@ impl Scope {
             .insert(name.clone(), (ModuleScope::default(), visibility));
         self.module_path.push(name);
         Ok(())
+    }
+
+    /// Analyze within a named module and restore the enclosing module afterwards.
+    fn in_module<T>(
+        &mut self,
+        name: ModuleName,
+        visibility: Visibility,
+        analyze: impl FnOnce(&mut Self) -> T,
+    ) -> Result<T, Error> {
+        let outer_depth = self.module_path.len();
+        self.enter_module(name.clone(), visibility)?;
+        let result = analyze(self);
+        debug_assert_eq!(
+            self.module_path.len(),
+            outer_depth + 1,
+            "Unbalanced nested module scopes"
+        );
+        debug_assert_eq!(
+            self.module_path.last(),
+            Some(&name),
+            "Current module changed during analysis"
+        );
+        self.exit_module();
+        debug_assert_eq!(
+            self.module_path.len(),
+            outer_depth,
+            "Module scope was not restored"
+        );
+        Ok(result)
     }
 
     /// Exit the current module, popping it from the module path.
@@ -1371,18 +1454,19 @@ impl AbstractSyntaxTree for Item {
 
                 Ok(Self::EnumDeclaration)
             }
-            parse::Item::Module(module) => {
-                scope
-                    .enter_module(module.name().clone(), module.visibility().clone())
-                    .with_span(module)?;
-
-                let mut analyzed_children = Vec::new();
-                for item in module.items() {
-                    analyzed_children.push(Item::analyze(item, ty, scope)?);
-                }
-                scope.exit_module();
-                Ok(Self::Module(analyzed_children))
-            }
+            parse::Item::Module(module) => scope
+                .in_module(
+                    module.name().clone(),
+                    module.visibility().clone(),
+                    |scope| {
+                        let mut analyzed_children = Vec::new();
+                        for item in module.items() {
+                            analyzed_children.push(Item::analyze(item, ty, scope)?);
+                        }
+                        Ok(Self::Module(analyzed_children))
+                    },
+                )
+                .with_span(module)?,
             parse::Item::Ignored => Ok(Self::Ignored),
         }
     }
@@ -1424,14 +1508,12 @@ impl AbstractSyntaxTree for Function {
                 .transpose()?
                 .unwrap_or_else(ResolvedType::unit);
 
-            scope.enter_block();
-            for param in params.iter() {
-                scope.insert_variable(param.identifier().clone(), param.ty().clone());
-            }
-            let body = Expression::analyze(from.body(), &ret, scope).map(Arc::new)?;
-            scope.exit_block();
-
-            debug_assert!(scope.is_outside_function());
+            let body = scope.in_function(|scope| {
+                for param in params.iter() {
+                    scope.insert_variable(param.identifier().clone(), param.ty().clone());
+                }
+                Expression::analyze(from.body(), &ret, scope).map(Arc::new)
+            })?;
             let function = CustomFunction {
                 params,
                 body,
@@ -1458,9 +1540,7 @@ impl AbstractSyntaxTree for Function {
             return Err(Error::MainCannotBePublic).with_span(from);
         }
 
-        scope.enter_main();
-        let body = Expression::analyze(from.body(), ty, scope)?;
-        scope.exit_main();
+        let body = scope.in_main(|scope| Expression::analyze(from.body(), ty, scope))?;
         Ok(Self::Main(body))
     }
 }
@@ -1686,23 +1766,24 @@ impl AbstractSyntaxTree for Expression {
                 })
             }
             parse::ExpressionInner::Block(statements, expression) => {
-                scope.enter_block();
-                let ast_statements = statements
-                    .iter()
-                    .map(|s| Statement::analyze(s, &ResolvedType::unit(), scope))
-                    .collect::<Result<Arc<[Statement]>, Diagnostic>>()?;
-                let ast_expression = match expression {
-                    Some(expression) => Expression::analyze(expression, ty, scope)
-                        .map(Arc::new)
-                        .map(Some),
-                    None if ty.is_unit() => Ok(None),
-                    None => Err(Error::ExpressionTypeMismatch {
-                        expected: ty.clone(),
-                        found: ResolvedType::unit(),
-                    })
-                    .with_span(from),
-                }?;
-                scope.exit_block();
+                let (ast_statements, ast_expression) = scope.in_block(|scope| {
+                    let ast_statements = statements
+                        .iter()
+                        .map(|s| Statement::analyze(s, &ResolvedType::unit(), scope))
+                        .collect::<Result<Arc<[Statement]>, Diagnostic>>()?;
+                    let ast_expression = match expression {
+                        Some(expression) => Expression::analyze(expression, ty, scope)
+                            .map(Arc::new)
+                            .map(Some),
+                        None if ty.is_unit() => Ok(None),
+                        None => Err(Error::ExpressionTypeMismatch {
+                            expected: ty.clone(),
+                            found: ResolvedType::unit(),
+                        })
+                        .with_span(from),
+                    }?;
+                    Ok((ast_statements, ast_expression))
+                })?;
 
                 Ok(Self {
                     ty: ty.clone(),
@@ -1985,18 +2066,18 @@ impl AbstractSyntaxTree for EnumMatch {
             .map(|(arm, variant)| {
                 let arm_span = *arm.span();
                 let pattern = analyze_enum_arm_bindings(arm, variant, scope, arm_span)?;
-                scope.enter_block();
-                let payload_ty = variant.payload_type();
-                let typed_variables = pattern.is_of_type(payload_ty).with_span(arm_span)?;
-                for (identifier, variable_ty) in typed_variables {
-                    scope.insert_variable(identifier, variable_ty);
-                }
-                let body = Expression::analyze(arm.expression(), ty, scope).map(Arc::new);
-                scope.exit_block();
-                Ok(EnumMatchArm {
-                    pattern,
-                    body: body?,
-                    span: arm_span,
+                scope.in_match_arm(|scope| {
+                    let payload_ty = variant.payload_type();
+                    let typed_variables = pattern.is_of_type(payload_ty).with_span(arm_span)?;
+                    for (identifier, variable_ty) in typed_variables {
+                        scope.insert_variable(identifier, variable_ty);
+                    }
+                    let body = Expression::analyze(arm.expression(), ty, scope).map(Arc::new)?;
+                    Ok(EnumMatchArm {
+                        pattern,
+                        body,
+                        span: arm_span,
+                    })
                 })
             })
             .collect::<Result<Arc<[EnumMatchArm]>, Diagnostic>>()?;
@@ -2385,26 +2466,26 @@ impl AbstractSyntaxTree for Match {
         let scrutinee =
             Expression::analyze(from.scrutinee(), &scrutinee_ty, scope).map(Arc::new)?;
 
-        scope.enter_block();
-        if let Some((pat_l, ty_l)) = from.left().pattern().as_typed_pattern() {
-            let ty_l = scope.resolve(ty_l).with_span(from.left())?;
-            let typed_variables = pat_l.is_of_type(&ty_l).with_span(from.left())?;
-            for (identifier, ty) in typed_variables {
-                scope.insert_variable(identifier, ty);
+        let ast_l = scope.in_match_arm(|scope| {
+            if let Some((pat_l, ty_l)) = from.left().pattern().as_typed_pattern() {
+                let ty_l = scope.resolve(ty_l).with_span(from.left())?;
+                let typed_variables = pat_l.is_of_type(&ty_l).with_span(from.left())?;
+                for (identifier, ty) in typed_variables {
+                    scope.insert_variable(identifier, ty);
+                }
             }
-        }
-        let ast_l = Expression::analyze(from.left().expression(), ty, scope).map(Arc::new)?;
-        scope.exit_block();
-        scope.enter_block();
-        if let Some((pat_r, ty_r)) = from.right().pattern().as_typed_pattern() {
-            let ty_r = scope.resolve(ty_r).with_span(from.right())?;
-            let typed_variables = pat_r.is_of_type(&ty_r).with_span(from.right())?;
-            for (identifier, ty) in typed_variables {
-                scope.insert_variable(identifier, ty);
+            Expression::analyze(from.left().expression(), ty, scope).map(Arc::new)
+        })?;
+        let ast_r = scope.in_match_arm(|scope| {
+            if let Some((pat_r, ty_r)) = from.right().pattern().as_typed_pattern() {
+                let ty_r = scope.resolve(ty_r).with_span(from.right())?;
+                let typed_variables = pat_r.is_of_type(&ty_r).with_span(from.right())?;
+                for (identifier, ty) in typed_variables {
+                    scope.insert_variable(identifier, ty);
+                }
             }
-        }
-        let ast_r = Expression::analyze(from.right().expression(), ty, scope).map(Arc::new)?;
-        scope.exit_block();
+            Expression::analyze(from.right().expression(), ty, scope).map(Arc::new)
+        })?;
 
         Ok(Self {
             scrutinee,
@@ -2566,6 +2647,37 @@ fn main() {
             match_.arms()[1].span().to_slice(source),
             Some("Choice::Second => {},")
         );
+    }
+}
+
+#[cfg(test)]
+mod scope_balance_tests {
+    use super::*;
+
+    #[test]
+    fn scopes_are_restored_after_failed_analysis() {
+        let mut scope = Scope::new(Box::new(ElementsJetHinter));
+
+        scope.enter_block();
+        let result: Result<(), ()> = scope.in_block(|_| Err(()));
+        assert!(result.is_err());
+        assert_eq!(scope.variables.len(), 1);
+        scope.exit_block();
+
+        let result: Result<(), ()> = scope.in_main(|_| Err(()));
+        assert!(result.is_err());
+        assert!(!scope.is_main);
+        assert!(scope.is_outside_function());
+
+        let result: Result<(), ()> = scope
+            .in_module(
+                ModuleName::from_str_unchecked("module"),
+                Visibility::Private,
+                |_| Err(()),
+            )
+            .expect("module entry succeeds");
+        assert!(result.is_err());
+        assert!(scope.module_path.is_empty());
     }
 }
 
