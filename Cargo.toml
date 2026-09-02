@@ -71,11 +71,13 @@ indexing_slicing = "allow" # Too many false positives ... would be cool though
 match_bool = "allow" # Adds extra indentation and LOC.
 match_same_arms = "allow" # Collapses things that are conceptually unrelated to each other.
 must_use_candidate = "allow" # Useful for audit but many false positives.
-# Whitelist the cast lints because sometimes casts are unavoidable. But
-# every cast should contain a code comment!
-cast_possible_truncation = "allow"
-cast_possible_wrap = "allow"
-cast_sign_loss = "allow"
+# Casts are sometimes unavoidable, but every cast must be justified at the
+# site with an `#[allow]` and a code comment explaining why it cannot lose
+# information. Keep these enabled so that requirement is enforced rather
+# than aspirational.
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
 # Exhaustive list of pedantic clippy lints
 assigning_clones = "warn"
 bool_to_int_with_if = "warn"

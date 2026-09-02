@@ -300,7 +300,13 @@ impl fmt::Display for U256 {
             // Divide by 10, starting at the most significant bytes
             for byte in &mut bytes {
                 let value = carry * 256 + u32::from(*byte);
-                *byte = (value / 10) as u8;
+                // `carry` is the previous iteration's `value % 10`, so it is at
+                // most 9 and `value` is at most 9 * 256 + 255 = 2559. The
+                // quotient is therefore at most 255 and fits in a `u8`.
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    *byte = (value / 10) as u8;
+                }
                 carry = value % 10;
 
                 if *byte != 0 {
@@ -308,6 +314,8 @@ impl fmt::Display for U256 {
                 }
             }
 
+            // `carry` is a remainder modulo 10, so it is at most 9.
+            #[allow(clippy::cast_possible_truncation)]
             digits.push(carry as u8);
         }
 
@@ -335,7 +343,11 @@ impl FromStr for U256 {
             // Add to the least significant bytes first
             for byte in bytes.iter_mut().rev() {
                 let value = u32::from(*byte) * 10 + carry;
-                *byte = (value % 256) as u8;
+                // A remainder modulo 256 is at most 255, so it fits in a `u8`.
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    *byte = (value % 256) as u8;
+                }
                 carry = value / 256;
             }
             if 0 < carry {
