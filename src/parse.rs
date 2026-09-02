@@ -29,7 +29,9 @@ use crate::str::{
     AliasName, Binary, Decimal, FunctionName, Hexadecimal, Identifier, JetName, ModuleName,
     SymbolName,
 };
-use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
+use crate::types::{
+    AliasedType, BuiltinAlias, TypeConstructible, UIntType, MAX_ARRAY_SIZE, MAX_LIST_BOUND,
+};
 use crate::unstable::{impl_require_feature, RequireFeature, UnstableFeature, UnstableFeatures};
 use crate::version::SimcDirective;
 use crate::TemplateProgramWitness;
@@ -1972,11 +1974,29 @@ impl ChumskyParse for AliasedType {
                 ty.clone()
                     .then_ignore(parse_token_with_recovery(Token::Semi))
                     .then(num.clone())
-                    .map(|(ty, size)| {
+                    .validate(|(ty, size), e, emit| {
                         let digits =
                             crate::str::underscore_parsing::strip_digit_separators(size.as_inner());
 
-                        AliasedType::array(ty, usize::from_str(digits.as_ref()).unwrap_or_default())
+                        // A size that overflows `usize` is too large by definition.
+                        // Lowering the array type would allocate memory proportional
+                        // to the size, so reject it here instead.
+                        let size = match usize::from_str(digits.as_ref()) {
+                            Ok(size) if size <= MAX_ARRAY_SIZE => size,
+                            _ => {
+                                emit.emit(
+                                    Error::ArraySizeTooLarge {
+                                        size: digits.into_owned(),
+                                        max: MAX_ARRAY_SIZE,
+                                    }
+                                    .with_span(e.span()),
+                                );
+                                // fallback to default value
+                                0
+                            }
+                        };
+
+                        AliasedType::array(ty, size)
                     }),
                 Token::LBracket,
                 Token::RBracket,
@@ -1996,6 +2016,23 @@ impl ChumskyParse for AliasedType {
                             let digits = crate::str::underscore_parsing::strip_digit_separators(
                                 num.as_inner(),
                             );
+
+                            // A bound that overflows `usize` is too large by definition.
+                            // Lowering the list type would allocate memory proportional
+                            // to the bound, so reject it here instead.
+                            let too_large = usize::from_str(digits.as_ref())
+                                .map_or(true, |bound| MAX_LIST_BOUND < bound);
+                            if too_large {
+                                emit.emit(
+                                    Error::ListBoundTooLarge {
+                                        bound: digits.into_owned(),
+                                        max: MAX_LIST_BOUND,
+                                    }
+                                    .with_span(e.span()),
+                                );
+                                // fallback to default value
+                                return NonZeroPow2Usize::TWO;
+                            }
 
                             match NonZeroPow2Usize::from_str(digits.as_ref()) {
                                 Ok(number) => number,
@@ -2382,6 +2419,18 @@ impl ChumskyParse for CallName {
                     crate::str::underscore_parsing::strip_digit_separators(bound_str.as_inner());
 
                 let bound = match digits.parse::<usize>() {
+                    // `fold` builds a list type from its bound, which is capped
+                    // like the bound of a `List<_, _>` type annotation.
+                    Ok(num) if MAX_LIST_BOUND < num => {
+                        emit.emit(
+                            Error::ListBoundTooLarge {
+                                bound: digits.into_owned(),
+                                max: MAX_LIST_BOUND,
+                            }
+                            .with_span(e.span()),
+                        );
+                        NonZeroPow2Usize::TWO
+                    }
                     Ok(num) => match NonZeroPow2Usize::new(num) {
                         Some(val) => val,
                         None => {
@@ -2389,10 +2438,12 @@ impl ChumskyParse for CallName {
                             NonZeroPow2Usize::TWO
                         }
                     },
+                    // A bound that overflows `usize` is too large by definition.
                     Err(_) => {
                         emit.emit(
-                            Error::CannotParse {
-                                msg: format!("Invalid number: {}", bound_str),
+                            Error::ListBoundTooLarge {
+                                bound: digits.into_owned(),
+                                max: MAX_LIST_BOUND,
                             }
                             .with_span(e.span()),
                         );
@@ -2418,11 +2469,25 @@ impl ChumskyParse for CallName {
                         emit.emit(Error::ArraySizeNonZero { size: 0 }.with_span(e.span()));
                         NonZeroUsize::new(1).unwrap()
                     }
+                    // `array_fold` builds an array type from its size, which is capped
+                    // like the size of a `[_; _]` type annotation.
+                    Ok(n) if MAX_ARRAY_SIZE < n => {
+                        emit.emit(
+                            Error::ArraySizeTooLarge {
+                                size: digits.into_owned(),
+                                max: MAX_ARRAY_SIZE,
+                            }
+                            .with_span(e.span()),
+                        );
+                        NonZeroUsize::new(1).unwrap()
+                    }
                     Ok(n) => NonZeroUsize::new(n).unwrap(),
+                    // A size that overflows `usize` is too large by definition.
                     Err(_) => {
                         emit.emit(
-                            Error::CannotParse {
-                                msg: format!("Invalid number: {}", size_str),
+                            Error::ArraySizeTooLarge {
+                                size: digits.into_owned(),
+                                max: MAX_ARRAY_SIZE,
                             }
                             .with_span(e.span()),
                         );
@@ -3630,6 +3695,92 @@ mod regular_parsing {
         let text = diagnostics.to_string();
 
         (rejected, text)
+    }
+
+    /// An array size beyond [`MAX_ARRAY_SIZE`] must be rejected at parse time.
+    ///
+    /// `StructuralType::from` allocates a vector proportional to the array size for
+    /// every type that it lowers, so an uncapped size makes the compiler exhaust all
+    /// memory or panic with a capacity overflow.
+    /// See <https://github.com/BlockstreamResearch/SimplicityHL/issues/398>.
+    #[test]
+    fn oversized_array_size_is_rejected() {
+        let sizes = [
+            (MAX_ARRAY_SIZE + 1).to_string(),
+            "4611686018427387904".to_string(),
+            // Does not even fit into a `usize`.
+            "99999999999999999999999999".to_string(),
+        ];
+        for size in sizes {
+            let input = format!("fn main() {{ let _x: [u8; {size}] = witness::W; }}");
+            let (rejected, text) = parse_with(&input, &UnstableFeatures::all());
+
+            assert!(rejected, "`[u8; {size}]` must be rejected");
+            assert!(
+                text.contains("exceeds the maximum"),
+                "unexpected error for `[u8; {size}]`: {text}"
+            );
+        }
+    }
+
+    /// A list bound beyond [`MAX_LIST_BOUND`] must be rejected at parse time.
+    ///
+    /// See <https://github.com/BlockstreamResearch/SimplicityHL/issues/398>.
+    #[test]
+    fn oversized_list_bound_is_rejected() {
+        let bounds = [
+            (MAX_LIST_BOUND * 2).to_string(),
+            "4611686018427387904".to_string(),
+            // Does not even fit into a `usize`.
+            "99999999999999999999999999".to_string(),
+        ];
+        for bound in bounds {
+            let input = format!("fn main() {{ let _x: List<u8, {bound}> = witness::W; }}");
+            let (rejected, text) = parse_with(&input, &UnstableFeatures::all());
+
+            assert!(rejected, "`List<u8, {bound}>` must be rejected");
+            assert!(
+                text.contains("exceeds the maximum"),
+                "unexpected error for `List<u8, {bound}>`: {text}"
+            );
+        }
+    }
+
+    /// `fold` and `array_fold` build a list resp. array type from their bound,
+    /// so their bounds are capped just like the ones written in a type annotation.
+    #[test]
+    fn oversized_fold_bound_is_rejected() {
+        let calls = [
+            "fold::<f, 4611686018427387904>(witness::L, 0)",
+            "array_fold::<f, 4611686018427387904>(witness::A, 0)",
+        ];
+        for call in calls {
+            let input = format!(
+                "fn f(e: u8, acc: u8) -> u8 {{ acc }}\nfn main() {{ let _x: u8 = {call}; }}"
+            );
+            let (rejected, text) = parse_with(&input, &UnstableFeatures::all());
+
+            assert!(rejected, "`{call}` must be rejected");
+            assert!(
+                text.contains("exceeds the maximum"),
+                "unexpected error for `{call}`: {text}"
+            );
+        }
+    }
+
+    /// The caps are inclusive: sizes up to the maximum keep parsing.
+    #[test]
+    fn maximum_array_size_and_list_bound_are_accepted() {
+        let input = format!(
+            "fn main() {{ let _x: [u8; {MAX_ARRAY_SIZE}] = witness::A; \
+             let _y: List<u8, {MAX_LIST_BOUND}> = witness::L; }}"
+        );
+        let (rejected, text) = parse_with(&input, &UnstableFeatures::all());
+
+        assert!(
+            !rejected,
+            "the maximum size and bound must be accepted: {text}"
+        );
     }
 
     #[test]

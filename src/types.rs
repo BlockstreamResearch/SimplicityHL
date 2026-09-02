@@ -10,6 +10,25 @@ use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::str::{AliasName, Identifier};
 use crate::unstable::impl_require_feature;
 
+/// Maximum number of elements of an array type.
+///
+/// Lowering `[T; N]` to its structural (Simplicity) type allocates a vector of `N`
+/// elements and folds it into `N - 1` product nodes. The lowering runs for every type
+/// during ordinary type unification, so an uncapped `N` lets a single type annotation
+/// drive the compiler into a multi-gigabyte allocation or a capacity-overflow panic.
+///
+/// The cap is far above any array that compiles into a usable Simplicity program:
+/// lowering an array of this size takes a few megabytes.
+pub const MAX_ARRAY_SIZE: usize = 1 << 16;
+
+/// Maximum bound of a list type.
+///
+/// Lowering `List<T, N>` to its structural (Simplicity) type allocates a vector of
+/// `N - 1` elements, so the bound is capped for the same reason as [`MAX_ARRAY_SIZE`].
+///
+/// The bound of a list is a power of two, and so is this cap.
+pub const MAX_LIST_BOUND: usize = 1 << 16;
+
 /// Primitives of the SimplicityHL type system, excluding type aliases.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 #[non_exhaustive]
