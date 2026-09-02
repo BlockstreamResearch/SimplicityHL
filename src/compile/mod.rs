@@ -40,42 +40,8 @@ type ProgNode<'brand> = Arc<named::ConstructNode<'brand>>;
 /// Bindings live as long as their scope.
 #[derive(Debug)]
 struct Scope<'brand> {
-    /// The patterns of all live bindings, in insertion order: the oldest
-    /// binding first, the newest last.
-    ///
-    /// ## Input pattern
-    ///
-    /// The bindings form the _input pattern_, the right-nested product
-    ///
-    /// ```text
-    /// product(binding_n, product(binding_{n-1}, ..., product(binding_1, binding_0)))
-    /// ```
-    ///
-    /// All valid input values match the input pattern.
-    /// Inner scopes occur higher in the tree than outer scopes.
-    /// Later assignments occur higher in the tree than earlier assignments.
-    ///
-    /// ## Example
-    ///
-    /// The stack `[[p1], [p2, p3]]` corresponds to a nested product pattern:
-    ///
-    /// ```text
-    ///    .
-    ///   / \
-    /// p3   .
-    ///     / \
-    ///   p2   p1
-    /// ```
-    bindings: Vec<BasePattern>,
-    /// For every live identifier, the indices into [`Scope::bindings`] of the
-    /// bindings that bind it, oldest first. The last index is the binding in
-    /// effect; earlier ones are shadowed and come back into effect when
-    /// their scope pops.
-    identifiers: HashMap<Identifier, Vec<usize>>,
-    /// For every scope on the stack, the index in [`Scope::bindings`] where
-    /// that scope starts. Popping a scope truncates the bindings and restores
-    /// the shadowed identifiers.
-    binding_starts: Vec<usize>,
+    /// The live bindings: their patterns, name index and scope boundaries.
+    bindings: ScopeBindings,
     ctx: simplicity::types::Context<'brand>,
     /// Tracker of function calls.
     call_tracker: Arc<CallTracker>,
@@ -83,20 +49,6 @@ struct Scope<'brand> {
     arguments: Arguments,
     include_debug_symbols: bool,
     jet_hinter: Box<dyn JetHinter>,
-}
-
-/// Register every identifier inside `bindings` in an identifiers map.
-fn binding_identifiers(bindings: &[BasePattern]) -> HashMap<Identifier, Vec<usize>> {
-    let mut identifiers: HashMap<Identifier, Vec<usize>> = HashMap::new();
-    for (index, binding) in bindings.iter().enumerate() {
-        for identifier in binding.identifiers() {
-            identifiers
-                .entry(identifier.clone())
-                .or_default()
-                .push(index);
-        }
-    }
-    identifiers
 }
 
 impl<'brand> Scope<'brand> {
@@ -116,9 +68,7 @@ impl<'brand> Scope<'brand> {
         jet_hinter: Box<dyn JetHinter>,
     ) -> Self {
         Self {
-            bindings: vec![BasePattern::Ignore],
-            identifiers: HashMap::new(),
-            binding_starts: vec![0],
+            bindings: ScopeBindings::from_root(BasePattern::Ignore),
             ctx,
             call_tracker,
             arguments,
@@ -129,11 +79,8 @@ impl<'brand> Scope<'brand> {
 
     /// Create a child scope for a function that takes `input` of the given pattern.
     pub fn child(&self, input: Pattern) -> Self {
-        let bindings = vec![BasePattern::from(&input)];
         Self {
-            identifiers: binding_identifiers(&bindings),
-            bindings,
-            binding_starts: vec![0],
+            bindings: ScopeBindings::from_root(BasePattern::from(&input)),
             ctx: self.ctx.shallow_clone(),
             call_tracker: Arc::clone(&self.call_tracker),
             arguments: self.arguments.clone(),
@@ -144,7 +91,7 @@ impl<'brand> Scope<'brand> {
 
     /// Push a new scope onto the stack.
     pub fn push_scope(&mut self) {
-        self.binding_starts.push(self.bindings.len());
+        self.bindings.push_scope();
     }
 
     /// Pop the current scope from the stack.
@@ -156,23 +103,7 @@ impl<'brand> Scope<'brand> {
     ///
     /// The stack is empty.
     pub fn pop_scope(&mut self) {
-        let start = self.binding_starts.pop().expect("Empty stack");
-        while self.bindings.len() > start {
-            let index = self.bindings.len() - 1;
-            for identifier in self.bindings[index].identifiers() {
-                match self.identifiers.get_mut(identifier) {
-                    Some(indices) => {
-                        debug_assert_eq!(indices.last(), Some(&index));
-                        indices.pop();
-                        if indices.is_empty() {
-                            self.identifiers.remove(identifier);
-                        }
-                    }
-                    None => unreachable!("every binding registers its identifiers"),
-                }
-            }
-            self.bindings.pop();
-        }
+        self.bindings.pop_scope();
     }
 
     /// Push an assignment to the current scope.
@@ -184,20 +115,8 @@ impl<'brand> Scope<'brand> {
     ///  / \
     /// p   previous
     /// ```
-    ///
-    /// ## Panics
-    ///
-    /// The stack is empty.
     pub fn insert(&mut self, pattern: Pattern) {
-        let index = self.bindings.len();
-        let binding = BasePattern::from(&pattern);
-        for identifier in binding.identifiers() {
-            self.identifiers
-                .entry(identifier.clone())
-                .or_default()
-                .push(index);
-        }
-        self.bindings.push(binding);
+        self.bindings.insert(BasePattern::from(&pattern));
     }
 
     /// Get the input pattern.
@@ -208,7 +127,7 @@ impl<'brand> Scope<'brand> {
     ///
     /// The stack is empty.
     fn get_input_pattern(&self) -> BasePattern {
-        let mut it = self.bindings.iter();
+        let mut it = self.bindings.as_slice().iter();
         let first = it.next().expect("Empty stack");
         it.cloned()
             .fold(first.clone(), |acc, next| BasePattern::product(next, acc))
@@ -267,8 +186,9 @@ impl<'brand> Scope<'brand> {
     /// work to produce it shrinks from O(live bindings) per access to
     /// O(distance from the binding).
     fn get_identifier(&self, identifier: &Identifier) -> Option<PairBuilder<ProgNode<'brand>>> {
-        let index = *self.identifiers.get(identifier)?.last()?;
-        let newer_bindings = self.bindings.len() - 1 - index;
+        let bindings = self.bindings.as_slice();
+        let index = self.bindings.position_of(identifier)?;
+        let newer_bindings = bindings.len() - 1 - index;
 
         let mut selector = SelectorBuilder::<ProgNode<'brand>>::default();
         for _ in 0..newer_bindings {
@@ -280,7 +200,7 @@ impl<'brand> Scope<'brand> {
             0 => selector,
             _ => selector.o(),
         };
-        let selector = self.bindings[index].get_from(selector, identifier)?;
+        let selector = bindings[index].get_from(selector, identifier)?;
         Some(selector.h(&self.ctx))
     }
 
@@ -315,6 +235,145 @@ impl<'brand> Scope<'brand> {
         self.arguments
             .get(name)
             .expect("Precondition: Arguments are consistent with parameters")
+    }
+}
+
+/// The live bindings of a scope stack, in the shape that makes identifier
+/// extraction O(distance) instead of O(live bindings).
+///
+/// ## Input pattern
+///
+/// The bindings form the _input pattern_, the right-nested product
+///
+/// ```text
+/// product(binding_n, product(binding_{n-1}, ..., product(binding_1, binding_0)))
+/// ```
+///
+/// All valid input values match the input pattern.
+/// Inner scopes occur higher in the tree than outer scopes.
+/// Later assignments occur higher in the tree than earlier assignments.
+///
+/// ## Example
+///
+/// The stack `[[p1], [p2, p3]]` corresponds to a nested product pattern:
+///
+/// ```text
+///    .
+///   / \
+/// p3   .
+///     / \
+///   p2   p1
+/// ```
+///
+/// ## Invariants
+///
+/// - `binding_starts` is nonempty and non-decreasing; its last entry is the
+///   index where the current (innermost) scope's bindings begin.
+/// - Every index stored in `identifiers` is in range of `bindings`, and
+///   every identifier's indices are ascending: the last one is the binding
+///   in effect, earlier ones are shadowed by it.
+/// - All mutations go through [`insert`](Self::insert),
+///   [`push_scope`](Self::push_scope) and [`pop_scope`](Self::pop_scope),
+///   which restore the invariants before returning.
+#[derive(Debug)]
+struct ScopeBindings {
+    /// The patterns of all live bindings, in insertion order: the oldest
+    /// binding first, the newest last.
+    bindings: Vec<BasePattern>,
+    /// For every live identifier, the indices into `bindings` of the
+    /// bindings that bind it, oldest first. The last index is the binding
+    /// in effect; earlier ones are shadowed and come back into effect when
+    /// their scope pops.
+    identifiers: HashMap<Identifier, Vec<usize>>,
+    /// For every scope on the stack, the index in `bindings` where that
+    /// scope starts. Popping a scope truncates the bindings and restores
+    /// the shadowed identifiers.
+    binding_starts: Vec<usize>,
+}
+
+impl ScopeBindings {
+    /// Create bindings whose oldest binding — the right tip of the input
+    /// pattern — is `root`.
+    fn from_root(root: BasePattern) -> Self {
+        let mut bindings = Self {
+            bindings: vec![root.clone()],
+            identifiers: HashMap::new(),
+            binding_starts: vec![0],
+        };
+        for identifier in root.identifiers() {
+            bindings
+                .identifiers
+                .entry(identifier.clone())
+                .or_default()
+                .push(0);
+        }
+        bindings
+    }
+
+    /// The live bindings, oldest first. A binding's index in the slice is
+    /// its position in the input pattern: 0 is the right tip, `len() - 1`
+    /// the newest, leftmost binding.
+    fn as_slice(&self) -> &[BasePattern] {
+        &self.bindings
+    }
+
+    /// The index of the binding in effect for `identifier`, or `None` if no
+    /// live binding binds that name.
+    fn position_of(&self, identifier: &Identifier) -> Option<usize> {
+        self.identifiers
+            .get(identifier)
+            .and_then(|indices| indices.last().copied())
+    }
+
+    /// Open a new, empty scope.
+    fn push_scope(&mut self) {
+        self.binding_starts.push(self.bindings.len());
+    }
+
+    /// Close the current scope: its bindings die and the identifiers they
+    /// shadowed come back into effect.
+    ///
+    /// ## Panics
+    ///
+    /// The stack is empty.
+    fn pop_scope(&mut self) {
+        let start = self.binding_starts.pop().expect("Empty stack");
+        while self.bindings.len() > start {
+            let index = self.bindings.len() - 1;
+            for identifier in self.bindings[index].identifiers() {
+                match self.identifiers.get_mut(identifier) {
+                    Some(indices) => {
+                        debug_assert_eq!(indices.last(), Some(&index));
+                        indices.pop();
+                        if indices.is_empty() {
+                            self.identifiers.remove(identifier);
+                        }
+                    }
+                    None => unreachable!("every binding registers its identifiers"),
+                }
+            }
+            self.bindings.pop();
+        }
+    }
+
+    /// Append `binding` to the current scope and register its identifiers.
+    ///
+    /// Update the input pattern accordingly:
+    ///
+    /// ```text
+    ///   .
+    ///  / \
+    /// p   previous
+    /// ```
+    fn insert(&mut self, binding: BasePattern) {
+        let index = self.bindings.len();
+        for identifier in binding.identifiers() {
+            self.identifiers
+                .entry(identifier.clone())
+                .or_default()
+                .push(index);
+        }
+        self.bindings.push(binding);
     }
 }
 
@@ -974,5 +1033,54 @@ mod scope_tests {
                 }
             }
         });
+    }
+
+    /// [`ScopeBindings::position_of`] must agree with a naive newest-first
+    /// rescan of the bindings after every mutation, so that the referential
+    /// integrity between the three fields has its own oracle instead of
+    /// being checked only indirectly through selector equality.
+    #[test]
+    fn position_of_matches_rescan() {
+        let ids: Vec<Identifier> = ["a", "b", "c", "d"].map(ident).to_vec();
+        let mut rng = Rng(0xD1CE_C0FF_EE0D_0002);
+
+        for iteration in 0..200u32 {
+            // Roots with and without identifiers: an ignore root mirrors
+            // the main scope, a pattern root mirrors a function's parameters.
+            let root = if iteration % 2 == 0 {
+                BasePattern::Ignore
+            } else {
+                BasePattern::from(&random_pattern(&mut rng, &ids, 2))
+            };
+            let mut bindings = ScopeBindings::from_root(root);
+            let mut depth = 1;
+            for _ in 0..(5 + iteration % 30) {
+                match rng.below(10) {
+                    0 | 1 if depth < 6 => {
+                        bindings.push_scope();
+                        depth += 1;
+                    }
+                    2 if depth > 1 => {
+                        bindings.pop_scope();
+                        depth -= 1;
+                    }
+                    _ => bindings.insert(BasePattern::from(&random_pattern(&mut rng, &ids, 3))),
+                }
+                for id in &ids {
+                    let naive = bindings
+                        .as_slice()
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find(|(_, binding)| binding.contains(id))
+                        .map(|(index, _)| index);
+                    assert_eq!(
+                        bindings.position_of(id),
+                        naive,
+                        "mismatch for {id}, iteration {iteration}"
+                    );
+                }
+            }
+        }
     }
 }
