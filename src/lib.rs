@@ -1316,6 +1316,30 @@ fn main() {
         }
     }
 
+    /// Regression test for <https://github.com/BlockstreamResearch/SimplicityHL/issues/399>.
+    ///
+    /// The parser recurses once per nesting level, and so does every later pass over
+    /// the AST. Deeply nested input used to overflow the stack, which aborts the
+    /// process rather than producing an error, so this test guards the whole pipeline
+    /// and not just the parser: a regression kills the test binary outright.
+    #[test]
+    fn deeply_nested_input_is_rejected_without_stack_overflow() {
+        let depth = 300;
+        let prog_text = format!(
+            "fn main() {{\n    let x: u32 = {}0{};\n    assert!(jet::eq_32(x, 0));\n}}",
+            "(".repeat(depth),
+            ")".repeat(depth)
+        );
+        let error = TemplateProgram::new(prog_text, Box::new(ElementsJetHinter::new()))
+            .map(|_| ())
+            .expect_err("deeply nested input must be rejected");
+
+        assert!(
+            error.to_string().contains("Nesting is too deep"),
+            "Unexpected error: {error}",
+        );
+    }
+
     #[test]
     fn fuzz_regression_2() {
         parse::Program::parse_from_str("fn dbggscas(h: bool, asyxhaaaa: a) {\nfalse}\n\n").unwrap();
