@@ -1602,24 +1602,88 @@ fn main() {
 
     #[test]
     fn enum_construction_compiles_and_runs() {
-        let src = "enum Action { Refresh(u32, bool), Cold, }
-             fn pick() -> Action {
-                 Action::Refresh(7, true)
-             }
-             fn main() {
-                 let a: Action = pick();
-                 match a {
-                     Action::Refresh(n: u32, b: bool) => {
-                         assert!(jet::eq_32(n, 7));
-                         assert!(b);
-                     },
-                     Action::Cold => assert!(false),
-                 }
-             }";
+        let ws = TempWorkspace::new("crate_success");
+        let root = ws.create_dir("workspace");
+        ws.create_file(
+            format!("workspace/{MAIN}").as_str(),
+            "enum Action { Refresh(u32, bool), Cold, }
+            fn pick() -> Action {
+                Action::Refresh(7, true)
+            }
+            fn main() {
+                let a: Action = pick();
+                match a {
+                    Action::Refresh(n: u32, b: bool) => {
+                        assert!(jet::eq_32(n, 7));
+                        assert!(b);
+                    },
+                    Action::Cold => assert!(false),
+                }
+            }",
+        );
 
-        TestCase::program_text_with_unstable(Cow::Borrowed(src), UnstableFeatures::all())
-            .with_witness_values(WitnessValues::default())
-            .assert_run_success();
+        let main_path = root.join(MAIN);
+        let canon_root = CanonPath::canonicalize(&root).unwrap();
+        let dependency_map = build_map(&canon_root, &[]).unwrap();
+
+        TestCase::<TemplateAst>::template_deps_with_unstable(
+            &main_path,
+            &dependency_map,
+            UnstableFeatures::all(),
+        )
+        .with_arguments(Arguments::default())
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
+    }
+
+    #[test]
+    fn enum_same_name_in_two_modules_are_distinct_types() {
+        let ws = TempWorkspace::new("enum_nominal_identity");
+        let root = ws.create_dir("workspace");
+        let main_path = ws.create_file(
+            format!("workspace/{MAIN}").as_str(),
+            "mod door {
+                pub enum Action { Open, Close, }
+                pub fn describe(a: Action) -> u32 {
+                    match a { Action::Open => 1, Action::Close => 2, }
+                }
+            }
+            mod wallet {
+                pub enum Action { Open, Close, }
+                pub fn spend(a: Action) -> u32 {
+                    match a { Action::Open => 100, Action::Close => 200, }
+                }
+            }
+            use crate::door::Action as DoorAction;
+            use crate::wallet::spend;
+            fn main() {
+                let d: DoorAction = DoorAction::Open;
+                assert!(jet::eq_32(spend(d), 100));
+            }",
+        );
+
+        let canon_root = CanonPath::canonicalize(&root).unwrap();
+        let dependencies = build_map(&canon_root, &[]).unwrap();
+        let source = CanonSourceFile::new(
+            CanonPath::canonicalize(&main_path).unwrap(),
+            Arc::from(std::fs::read_to_string(&main_path).unwrap()),
+        );
+
+        let err = TemplateAst::new_with_dep(
+            source,
+            &dependencies,
+            &UnstableFeatures::all(),
+            Box::new(ElementsJetHinter::new()),
+        )
+        .expect_err("`door::Action` must not satisfy a `wallet::Action` parameter");
+
+        // TODO: both types display as `Action`, so the message cannot be acted on.
+        // Print the declaring module path and point at both declaration sites.
+        assert!(
+            err.to_string()
+                .contains("Expected expression of type `Action`, found type `Action`"),
+            "expected a nominal type mismatch, got:\n{err}"
+        );
     }
 
     #[test]

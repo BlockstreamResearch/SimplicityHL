@@ -10,7 +10,7 @@ use crate::num::NonZeroPow2Usize;
 
 /// SimplicityHL type without type aliases.
 #[derive(PartialEq, Eq, Hash, Clone)]
-pub struct ResolvedType(TypeInner<Arc<Self>>);
+pub struct ResolvedType(pub(super) TypeInner<Arc<Self>>);
 
 impl ResolvedType {
     /// Access the inner type primitive.
@@ -31,12 +31,12 @@ impl ResolvedType {
 /// (which owns the uniqueness of declaration ids) can mint enum types.
 impl ResolvedType {
     /// Create a nominal enum type from the given definition.
-    pub const fn enumeration(info: EnumInfo) -> Self {
-        Self(TypeInner::Enum(info))
+    pub fn enumeration(info: EnumInfo) -> Self {
+        Self(TypeInner::Enum(Arc::new(info)))
     }
 
     /// Access the enum definition if this is an enum type.
-    pub const fn as_enum(&self) -> Option<&EnumInfo> {
+    pub fn as_enum(&self) -> Option<&EnumInfo> {
         match &self.0 {
             TypeInner::Enum(info) => Some(info),
             _ => None,

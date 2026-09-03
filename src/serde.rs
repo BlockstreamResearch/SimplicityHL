@@ -330,6 +330,7 @@ impl Serialize for Arguments {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Span;
     use crate::str::Identifier;
 
     #[test]
@@ -345,7 +346,7 @@ mod tests {
         }
     }
 
-    fn unit_enum(name: &str, variants: &[&str]) -> ResolvedType {
+    fn unit_enum(name: &str, variants: &[&str], span: Span) -> ResolvedType {
         use crate::types::{EnumInfo, EnumVariantInfo};
         use std::sync::Arc;
 
@@ -353,14 +354,14 @@ mod tests {
             .iter()
             .map(|name| EnumVariantInfo::new(Identifier::from_str_unchecked(name), Arc::from([])))
             .collect();
-        ResolvedType::enumeration(EnumInfo::new(Arc::from(name), variants))
+        ResolvedType::enumeration(EnumInfo::new(Arc::from(name), variants, span))
     }
 
     #[test]
     fn abi_enum_type_serializes_as_name() {
         use crate::types::TypeConstructible;
 
-        let action_ty = unit_enum("Action", &["Inherit", "ColdSpend"]);
+        let action_ty = unit_enum("Action", &["Inherit", "ColdSpend"], Span::DUMMY);
         let witness_types = WitnessTypes::from(HashMap::from([
             (
                 TemplateProgramWitness::witness_from_str("ACTION"),
@@ -372,7 +373,10 @@ mod tests {
             ),
             (
                 TemplateProgramWitness::witness_from_str("PAIR"),
-                ResolvedType::tuple([action_ty, unit_enum("Reaction", &["Fast", "Slow"])]),
+                ResolvedType::tuple([
+                    action_ty,
+                    unit_enum("Reaction", &["Fast", "Slow"], Span::DUMMY),
+                ]),
             ),
             (
                 TemplateProgramWitness::witness_from_str("PLAIN"),
@@ -389,7 +393,7 @@ mod tests {
 
     #[test]
     fn enum_witness_value_serializes_as_variant_name() {
-        let action_ty = unit_enum("Action", &["Inherit", "ColdSpend"]);
+        let action_ty = unit_enum("Action", &["Inherit", "ColdSpend"], Span::DUMMY);
         let value = Value::enum_variant(
             &action_ty,
             &Identifier::from_str_unchecked("ColdSpend"),
@@ -438,7 +442,8 @@ mod tests {
                 Arc::from([u32_ty.clone()]),
             ),
         ]);
-        let action_ty = ResolvedType::enumeration(EnumInfo::new(Arc::from("Action"), variants));
+        let action_ty =
+            ResolvedType::enumeration(EnumInfo::new(Arc::from("Action"), variants, Span::DUMMY));
         let value = Value::enum_variant(
             &action_ty,
             &Identifier::from_str_unchecked("Refresh"),
@@ -469,7 +474,7 @@ mod tests {
         use crate::types::TypeConstructible;
         use crate::value::ValueConstructible;
 
-        let action_ty = unit_enum("Action", &["Hot", "Cold"]);
+        let action_ty = unit_enum("Action", &["Hot", "Cold"], Span::DUMMY);
         let option_ty = ResolvedType::option(action_ty.clone());
         let cold = Value::enum_variant(&action_ty, &Identifier::from_str_unchecked("Cold"), vec![])
             .unwrap();

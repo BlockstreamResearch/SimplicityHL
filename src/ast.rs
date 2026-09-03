@@ -1196,9 +1196,11 @@ impl Scope {
     /// An enum is a type alias for a nominal enum type, so its name resolves as a type
     /// and its identity travels wherever the alias is imported.
     ///
-    /// Enums may only be declared at the top level of the program's own files
-    /// (the parser rejects declarations inside `mod` blocks, the driver rejects them in dependency files),
-    /// so the bare name is unique program-wide and identifies the enum in the ABI.
+    /// Identity is the declaration site, not the written name: `file_id` is the
+    /// source file the declaration came from, and it participates in the type's
+    /// equality. Two files may therefore each declare an `Action` without the
+    /// two becoming one type. `name` stays a display string, which is what
+    /// diagnostics print and what witness and argument files write.
     ///
     /// ## Errors
     ///
@@ -1208,10 +1210,11 @@ impl Scope {
         name: AliasName,
         visibility: Visibility,
         variants: Arc<[EnumVariantInfo]>,
+        span: Span,
     ) -> Result<(), Error> {
         self.check_alias_free(&name)?;
 
-        let info = EnumInfo::new(Arc::clone(name.as_inner()), variants);
+        let info = EnumInfo::new(Arc::clone(name.as_inner()), variants, span);
         let resolved = ResolvedType::enumeration(info);
 
         self.current_module_mut()
@@ -1458,7 +1461,12 @@ impl AbstractSyntaxTree for Item {
                     })
                     .collect::<Result<Arc<[EnumVariantInfo]>, Diagnostic>>()?;
                 scope
-                    .insert_enum(decl.name().clone(), decl.visibility().clone(), variants)
+                    .insert_enum(
+                        decl.name().clone(),
+                        decl.visibility().clone(),
+                        variants,
+                        *decl.span(),
+                    )
                     .with_span(decl)?;
 
                 Ok(Self::EnumDeclaration)
@@ -3268,45 +3276,6 @@ mod enum_tests {
              fn main() {}",
         );
         assert!(result.is_err(), "redefined enum name should error");
-    }
-
-    #[test]
-    fn enum_declaration_inside_module_errors() {
-        // FIXME: Enums may only be declared at the top level of a file.
-        let result = analyze(
-            "mod m {
-                 pub enum Choice { X, Y, }
-             }
-             fn main() {}",
-        );
-        let err = result.expect_err("enum inside `mod` must be rejected");
-        assert!(
-            err.contains("top level"),
-            "error should say enums are top-level only: {err}"
-        );
-    }
-
-    #[test]
-    fn enum_declaration_in_dependency_errors() {
-        use crate::ast::scope_resolution_tests::analyze_multifile;
-
-        // FIXME: An enum's declared name is its identity in the ABI, so enums may only be declared in the program's own files.
-        let result = analyze_multifile(vec![
-            (
-                "main.simf",
-                "use lib::A::helper;
-                 fn main() { helper(); }",
-            ),
-            (
-                "libs/lib/A.simf",
-                "pub enum Status { On, Off, } pub fn helper() {}",
-            ),
-        ]);
-        let err = result.expect_err("enums in dependency files must be rejected");
-        assert!(
-            err.contains("dependency"),
-            "error should say enums cannot live in dependency files: {err}"
-        );
     }
 
     #[test]

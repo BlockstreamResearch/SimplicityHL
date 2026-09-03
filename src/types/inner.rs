@@ -2,6 +2,7 @@ use core::fmt;
 use core::str::FromStr;
 use std::sync::Arc;
 
+use crate::error::Span;
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::str::Identifier;
 
@@ -27,7 +28,7 @@ pub enum TypeInner<A> {
     List(A, NonZeroPow2Usize),
     /// Nominal enum type, represented as a balanced sum of its variants'
     /// payload types
-    Enum(EnumInfo),
+    Enum(Arc<EnumInfo>),
 }
 
 impl<A> TypeInner<A> {
@@ -234,6 +235,7 @@ impl FromStr for UIntType {
 pub struct EnumInfo {
     name: Arc<str>,
     variants: Arc<[EnumVariantInfo]>,
+    span: Span,
 }
 
 impl EnumInfo {
@@ -242,9 +244,13 @@ impl EnumInfo {
     /// `variants` must not be empty: a sum of zero types would be
     /// uninhabited, which Simplicity's type algebra cannot express.
     /// A single-variant enum is a named wrapper of its payload.
-    pub(crate) fn new(name: Arc<str>, variants: Arc<[EnumVariantInfo]>) -> Self {
+    pub(crate) fn new(name: Arc<str>, variants: Arc<[EnumVariantInfo]>, span: Span) -> Self {
         debug_assert!(!variants.is_empty());
-        Self { name, variants }
+        Self {
+            name,
+            variants,
+            span,
+        }
     }
 
     /// Access the declared name of the enum.

@@ -5,56 +5,6 @@ use crate::error::{Diagnostic, DiagnosticManager, Error, Span};
 use crate::parse::{self, Visibility};
 use crate::str::{Identifier, ModuleName};
 
-/// All enum declarations among `items`, recursing into `mod` blocks.
-fn enum_declarations(items: &[parse::Item]) -> Vec<&parse::EnumDeclaration> {
-    let mut found = Vec::new();
-    for item in items {
-        match item {
-            parse::Item::EnumDeclaration(decl) => found.push(decl),
-            parse::Item::Module(module) => found.extend(enum_declarations(module.items())),
-            _ => {}
-        }
-    }
-    found
-}
-
-// TODO: allow enums in deps when mentioned problems are resolved
-/// Enums by design are nominative, therefore to reason about same named enums in different modules
-/// we have to have a stable ABI with the suport of "qualified name".
-/// Currently, there is no support of "qualified name" concpet, therefore at the time of creating
-/// enums, it is forbidden to decler them in dependencies.
-///
-/// If we used current ABI we would face following problems:
-/// 1. Adding or removing an unrelated dependency renumbers the files, so the same enum's ABI
-///    name changes between builds even though no source changed.
-///    The whole point of "identity is the qualified name" is that serialized forms can identify an enum across builds.
-/// 2. Unwritable witness files. A user filling in a witness would have
-///    to write `unit_2::Action::Cold` (a name that appears nowhere in their source and that they can't predict).
-/// 3. Meaningless nominal distinctness. `a::Action` vs `b::Action` being distinct types only makes
-///    sense if a and b are the user's module names, not compiler-generated counters.
-fn forbid_enum_dec_in_deps(
-    source_id: usize,
-    local_items: &[parse::Item],
-    diagnostics: &mut DiagnosticManager,
-) {
-    if source_id == MAIN_MODULE {
-        return;
-    }
-
-    for decl in enum_declarations(local_items) {
-        diagnostics.push(Diagnostic::new(
-            Error::Grammar {
-                msg: format!(
-                    "enum `{}` is declared in a dependency file; \
-                     enums may only be declared in the program's own files",
-                    decl.name()
-                ),
-            },
-            *decl.as_ref(),
-        ));
-    }
-}
-
 /// This is a core component of the [`DependencyGraph`].
 impl DependencyGraph {
     /// Resolves the dependency graph and constructs the final AST program.
@@ -113,14 +63,6 @@ impl DependencyGraph {
                 }
             }
 
-            forbid_enum_dec_in_deps(source_id, &local_items, diagnostics);
-
-            // TODO(enums): the flattened output wraps every file — the
-            // entry file included — in a generated module, but enum
-            // declarations are only valid at the top level of a file, so
-            // flattening an enum program produces source that no longer
-            // re-parses (`TemplateAst::flatten`). Splice the entry
-            // file's items at the root instead of wrapping them.
             let name = ModuleName::from_ident(&Self::get_module_name(source_id));
             items.push(parse::Item::Module(parse::Module::new(
                 source_id,
