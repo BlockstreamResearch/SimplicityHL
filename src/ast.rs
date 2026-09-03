@@ -3593,6 +3593,41 @@ mod enum_tests {
     }
 
     #[test]
+    fn enum_cast_reshaping_enum_free_siblings_is_ok_2() {
+        // This one has an enum with a left sibling which is much bigger (as a HL type DAG) in the
+        // source type than the target.
+        let result = analyze(
+            "enum E { A, B, }
+             fn main() {
+                 let x: ((Either<(), u8>, Either<(), u8>, Either<(), u8>), E)
+                     = ((Left(()), Left(()), Left(())), E::A);
+                 let _y: ((Option<u8>, Option<u8>, Option<u8>), E)
+                     = <((Either<(), u8>, Either<(), u8>, Either<(), u8>), E)>::into(x);
+             }",
+        );
+        assert!(
+            result.is_ok(),
+            "reshaping enum-free siblings must stay castable: {result:?}"
+        );
+
+        // Same thing, but we try to swap out the enums. This should fail.
+        let result = analyze(
+            "enum E { A, B, }
+             enum F { C, D, }
+             fn main() {
+                 let x: ((Either<(), u8>, Either<(), u8>, Either<(), u8>), E)
+                     = ((Left(()), Left(()), Left(())), E::A);
+                 let _y: ((Option<u8>, Option<u8>, Option<u8>), F)
+                     = <((Either<(), u8>, Either<(), u8>, Either<(), u8>), E)>::into(x);
+             }",
+        );
+        assert!(
+            result.is_err(),
+            "reshaping enum-free siblings must stay non-castable: {result:?}"
+        );
+    }
+
+    #[test]
     fn enum_cast_to_itself_is_ok() {
         let result = analyze(
             "enum Source { Allow, Deny, }
@@ -3605,6 +3640,54 @@ mod enum_tests {
             result.is_ok(),
             "nominally identical cast should stay allowed: {result:?}"
         );
+    }
+
+    #[test]
+    fn enum_cast_option_either() {
+        let result = analyze(
+            "enum E { A, B, }
+             fn main() {
+                 let x: Option<E> = None;
+                 let _y: Either<(), E> = <Option<E>>::into(x);
+             }",
+        );
+        result.expect_err("this should work");
+    }
+
+    #[test]
+    fn enum_cast_array_tuple() {
+        let result = analyze(
+            "enum E { A, B, }
+             fn main() {
+                 let x: [E; 2] = [E::A, E::B];
+                 let _y: (E, E) = <[E; 2]>::into(x);
+             }",
+        );
+        result.expect_err("this should work");
+    }
+
+    #[test]
+    fn enum_cast_list1_option() {
+        let result = analyze(
+            "enum E { A, B, }
+             fn main() {
+                 let x: List<E, 2> = list![];
+                 let _y: Option<E> = <List<E, 2>>::into(x);
+             }",
+        );
+        result.expect_err("this should work");
+    }
+
+    #[test]
+    fn enum_cast_list2_option() {
+        let result = analyze(
+            "enum E { A, B, }
+             fn main() {
+                 let x: List<E, 4> = list![];
+                 let _y: (Option<(E, E)>, Option<E>) = <List<E, 4>>::into(x);
+             }",
+        );
+        result.expect_err("this should work");
     }
 
     #[test]
