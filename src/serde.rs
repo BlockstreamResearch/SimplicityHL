@@ -128,9 +128,20 @@ impl Serialize for AbiMeta {
     {
         use ::serde::ser::SerializeStruct;
 
+        let witness_types: HashMap<_, _> = self
+            .witness_types
+            .iter()
+            .map(|(name, ty)| (name.as_str(), ty.abi_description()))
+            .collect();
+        let param_types: HashMap<_, _> = self
+            .param_types
+            .iter()
+            .map(|(name, ty)| (name.as_str(), ty.abi_description()))
+            .collect();
+
         let mut state = serializer.serialize_struct("AbiMeta", 2)?;
-        state.serialize_field("witness_types", &self.witness_types)?;
-        state.serialize_field("parameter_types", &self.param_types)?;
+        state.serialize_field("witness_types", &witness_types)?;
+        state.serialize_field("parameter_types", &param_types)?;
         state.end()
     }
 }

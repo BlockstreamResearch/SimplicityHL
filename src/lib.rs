@@ -1,5 +1,8 @@
 //! Library for parsing and compiling SimplicityHL
 
+use std::collections::HashMap;
+use std::fmt;
+
 pub mod array;
 pub mod ast;
 pub mod compile;
@@ -400,10 +403,29 @@ impl CompiledProgram {
 /// encoding and the CMR while leaving the ABI text identical). Such
 /// consumers need the program source or another artifact carrying the enum
 /// schema.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct AbiMeta {
     pub witness_types: WitnessTypes,
     pub param_types: Parameters,
+}
+
+impl fmt::Debug for AbiMeta {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let witness_types: HashMap<_, _> = self
+            .witness_types
+            .iter()
+            .map(|(name, ty)| (name.clone(), ty.abi_description()))
+            .collect();
+        let param_types: HashMap<_, _> = self
+            .param_types
+            .iter()
+            .map(|(name, ty)| (name.clone(), ty.abi_description()))
+            .collect();
+        f.debug_struct("AbiMeta")
+            .field("witness_types", &witness_types)
+            .field("param_types", &param_types)
+            .finish()
+    }
 }
 
 /// A SimplicityHL program, compiled to Simplicity and satisfied with witness data.
@@ -1684,6 +1706,71 @@ fn main() {
                 .contains("Expected expression of type `Action`, found type `Action`"),
             "expected a nominal type mismatch, got:\n{err}"
         );
+    }
+
+    #[test]
+    fn abi_description_cannot_distinguish_two_same_shaped_enums_yet() {
+        // Two enums, same name and same variant shapes, declared in
+        // different modules: distinct nominal types (see
+        // `enum_same_name_in_two_modules_are_distinct_types`), each used at
+        // its own type here, so this compiles.
+        //
+        // TODO(follow-up): once `EnumInfo` carries a declaration path,
+        // these two should render differently (e.g. `door::Action { .. }`
+        // vs `wallet::Action { .. }`).
+        let ws = TempWorkspace::new("abi_same_shaped_enums");
+        let root = ws.create_dir("workspace");
+        let main_path = ws.create_file(
+            format!("workspace/{MAIN}").as_str(),
+            "mod door {
+                pub enum Action { Open, Close(u32), }
+                pub fn describe(a: Action) -> u32 {
+                    match a { Action::Open => 1, Action::Close(n: u32) => n, }
+                }
+            }
+            mod wallet {
+                pub enum Action { Open, Close(u32), }
+                pub fn spend(a: Action) -> u32 {
+                    match a { Action::Open => 100, Action::Close(n: u32) => n, }
+                }
+            }
+            use crate::door::{Action as DoorAction, describe};
+            use crate::wallet::{Action as WalletAction, spend};
+            fn main() {
+                let dact: DoorAction = witness::DOOR_ACTION;
+                let wact: WalletAction = witness::WALLET_ACTION;
+                assert!(jet::eq_32(describe(dact), 1));
+                assert!(jet::eq_32(spend(wact), 100));
+            }",
+        );
+
+        let canon_root = CanonPath::canonicalize(&root).unwrap();
+        let dependencies = build_map(&canon_root, &[]).unwrap();
+        let source = CanonSourceFile::new(
+            CanonPath::canonicalize(&main_path).unwrap(),
+            Arc::from(std::fs::read_to_string(&main_path).unwrap()),
+        );
+
+        let template = TemplateAst::new_with_dep(
+            source,
+            &dependencies,
+            &UnstableFeatures::all(),
+            Box::new(ElementsJetHinter::new()),
+        )
+        .expect("two distinct enums used at their own type must compile");
+
+        let abi = template.generate_abi_meta().unwrap();
+        let door = abi
+            .witness_types
+            .get(&TemplateProgramWitness::witness_from_str("DOOR_ACTION"))
+            .expect("DOOR_ACTION must be recorded");
+        let wallet = abi
+            .witness_types
+            .get(&TemplateProgramWitness::witness_from_str("WALLET_ACTION"))
+            .expect("WALLET_ACTION must be recorded");
+
+        assert_eq!(door.abi_description(), wallet.abi_description());
+        assert_eq!(door.abi_description(), "Action { Open, Close(u32) }");
     }
 
     #[test]
