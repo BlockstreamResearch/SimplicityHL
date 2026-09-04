@@ -1,3 +1,9 @@
+# Unreleased
+
+## Changed
+
+* Deduplicate identical compiler diagnostics and present multi-file diagnostics in deterministic dependency and source order. [#413](https://github.com/BlockstreamResearch/SimplicityHL/pull/413)
+
 # 0.7.2 - 2026-08-25
 
 ## Added
