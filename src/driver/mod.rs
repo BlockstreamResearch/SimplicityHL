@@ -252,6 +252,9 @@ impl DependencyGraph {
         graph.discover_dependencies(&mut diagnostics, unstable_features);
 
         if diagnostics.has_errors() {
+            if let Ok(order) = graph.linearize() {
+                diagnostics.with_source_order(&order);
+            }
             diagnostics.with_sources(graph.sources);
             (None, diagnostics)
         } else {

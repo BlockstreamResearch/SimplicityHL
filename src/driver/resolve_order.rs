@@ -63,7 +63,10 @@ impl DependencyGraph {
         diagnostics: &mut DiagnosticManager,
     ) -> Option<parse::Program> {
         match self.linearize() {
-            Ok(order) => self.assemble_program(&order, diagnostics),
+            Ok(order) => {
+                diagnostics.with_source_order(&order);
+                self.assemble_program(&order, diagnostics)
+            }
             Err(err) => {
                 diagnostics.push(err);
                 None
@@ -199,6 +202,7 @@ impl DependencyGraph {
 mod flattening_tests {
     use crate::driver::tests::setup_graph;
     use crate::driver::CRATE_STR;
+    use crate::error::{Diagnostic, Error, Location, Span};
     use crate::parse::{self, Visibility};
 
     use std::collections::HashMap;
@@ -326,6 +330,39 @@ mod flattening_tests {
             diagnostics.has_errors(),
             "a dependency `fn main` must not satisfy a missing entrypoint `fn main`"
         );
+    }
+
+    #[test]
+    fn driver_supplies_dependency_order_for_diagnostic_presentation() {
+        let (graph, ids, _dir, mut diagnostics) = setup_graph(vec![
+            ("libs/lib/A.simf", "pub fn helper() {}"),
+            ("main.simf", "use lib::A::helper; fn main() {}"),
+        ]);
+        let main_id = ids["main"];
+        let dependency_id = ids["A"];
+
+        diagnostics.push(Diagnostic::new(
+            Error::CannotParse {
+                msg: "entry".to_owned(),
+            },
+            Span::new(main_id, 0..1),
+        ));
+        diagnostics.push(Diagnostic::new(
+            Error::CannotParse {
+                msg: "dependency".to_owned(),
+            },
+            Span::new(dependency_id, 0..1),
+        ));
+
+        let _ = graph.linearize_and_assemble(&mut diagnostics);
+        assert!(matches!(
+            diagnostics.diagnostics()[0].location(),
+            Location::Code(span) if span.file_id == main_id
+        ));
+        assert!(matches!(
+            diagnostics.presentation_order()[0].location(),
+            Location::Code(span) if span.file_id == dependency_id
+        ));
     }
 }
 
