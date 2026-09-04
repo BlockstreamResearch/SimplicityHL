@@ -6,12 +6,23 @@ use simplicityhl::ast::ElementsJetHinter;
 use simplicityhl::error::should_color;
 use simplicityhl::version::SimcDirective;
 use simplicityhl::{
-    resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, AbiMeta,
-    TemplateAst,
+    resolution::DependencyMapBuilder, source::CanonPath, source::CanonSourceFile, TemplateAst,
 };
 use simplicityhl::{UnstableFeature, UnstableFeatures};
+use std::collections::HashMap;
 use std::path::Path;
 use std::{env, fmt, io};
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(not(feature = "serde"), allow(dead_code))]
+#[derive(Debug)]
+/// ABI metadata rendered for display: each witness/parameter type as text,
+/// with enum types qualified by their real declaration path.
+struct AbiOutput {
+    witness_types: HashMap<String, String>,
+    #[cfg_attr(feature = "serde", serde(rename = "parameter_types"))]
+    param_types: HashMap<String, String>,
+}
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 /// The compilation output.
@@ -21,7 +32,7 @@ struct Output {
     /// Simplicity witness result, base64 encoded, if the .wit file was provided.
     witness: Option<String>,
     /// Simplicity program ABI metadata to the program which the user provides.
-    abi_meta: Option<AbiMeta>,
+    abi_meta: Option<AbiOutput>,
     /// Commitment Merkle Root (CMR) of the program, hex encoded.
     cmr: String,
     /// Version of the compiler that produced this output. Different compiler
@@ -293,7 +304,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let abi_opt = if abi_param {
-        Some(compiled.generate_abi_meta()?)
+        let abi = compiled.generate_abi_meta()?;
+        let (witness_types, param_types) = abi.describe(template.source_map());
+        Some(AbiOutput {
+            witness_types,
+            param_types,
+        })
     } else {
         None
     };

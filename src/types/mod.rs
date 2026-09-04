@@ -107,7 +107,7 @@ pub trait TypeDeconstructible: Sized {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::str::Identifier;
+    use crate::{error::Span, str::Identifier};
 
     #[test]
     fn display_type() {
@@ -150,7 +150,12 @@ mod tests {
             pair.payload_type()
         );
 
-        let info = EnumInfo::new(Arc::from("Test"), Arc::from([unit, single, pair]));
+        let info = EnumInfo::new(
+            Arc::from("Test"),
+            Arc::from([unit, single, pair]),
+            Span::DUMMY,
+            Arc::from([]),
+        );
         assert_eq!("Test", info.name());
         assert_eq!(3, info.structural_variants().len());
         let (index, variant) = info
