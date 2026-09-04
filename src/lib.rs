@@ -428,6 +428,53 @@ impl fmt::Debug for AbiMeta {
     }
 }
 
+impl AbiMeta {
+    /// Same as `abi_description`, except an enum type is prefixed with the
+    /// absolute path of the file. It acts like unique identifier for nominative type
+    pub fn describe(
+        &self,
+        sources: Option<&SourceMap>,
+    ) -> (HashMap<String, String>, HashMap<String, String>) {
+        let describe_one = |ty: &types::ResolvedType| -> String {
+            let base = ty.abi_description();
+            let (Some(info), Some(sources)) = (ty.as_enum(), sources) else {
+                return base;
+            };
+            let Some(path) = sources.path(info.span().file_id) else {
+                return base;
+            };
+
+            let modules = info
+                .module_path()
+                .get(1..) // drop the driver-assigned `unit_N` segment
+                .unwrap_or(&[])
+                .iter()
+                .map(|m| m.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+
+            let file = path.as_path().display();
+            if modules.is_empty() {
+                format!("{file}: {base}")
+            } else {
+                format!("{file}::{modules}: {base}")
+            }
+        };
+
+        let witness_types = self
+            .witness_types
+            .iter()
+            .map(|(name, ty)| (name.as_str().to_string(), describe_one(ty)))
+            .collect();
+        let param_types = self
+            .param_types
+            .iter()
+            .map(|(name, ty)| (name.as_str().to_string(), describe_one(ty)))
+            .collect();
+        (witness_types, param_types)
+    }
+}
+
 /// A SimplicityHL program, compiled to Simplicity and satisfied with witness data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SatisfiedProgram {
@@ -1709,15 +1756,11 @@ fn main() {
     }
 
     #[test]
-    fn abi_description_cannot_distinguish_two_same_shaped_enums_yet() {
+    fn abi_description_bare_vs_qualified_for_two_same_shaped_enums() {
         // Two enums, same name and same variant shapes, declared in
         // different modules: distinct nominal types (see
         // `enum_same_name_in_two_modules_are_distinct_types`), each used at
         // its own type here, so this compiles.
-        //
-        // TODO(follow-up): once `EnumInfo` carries a declaration path,
-        // these two should render differently (e.g. `door::Action { .. }`
-        // vs `wallet::Action { .. }`).
         let ws = TempWorkspace::new("abi_same_shaped_enums");
         let root = ws.create_dir("workspace");
         let main_path = ws.create_file(
@@ -1769,8 +1812,37 @@ fn main() {
             .get(&TemplateProgramWitness::witness_from_str("WALLET_ACTION"))
             .expect("WALLET_ACTION must be recorded");
 
+        // The bare form is intentionally shape-only: same name, same
+        // variants, so identical text either way.
         assert_eq!(door.abi_description(), wallet.abi_description());
         assert_eq!(door.abi_description(), "Action { Open, Close(u32) }");
+
+        // Qualified by declaration site, the two must render distinctly.
+        let sources = template
+            .source_map()
+            .expect("a driver-compiled program has a source map");
+        let (witness_types, _) = abi.describe(Some(sources));
+        let door_q = witness_types.get("DOOR_ACTION").expect("recorded above");
+        let wallet_q = witness_types.get("WALLET_ACTION").expect("recorded above");
+
+        dbg!(door_q, wallet_q);
+
+        assert_ne!(
+            door_q, wallet_q,
+            "distinct declarations must render distinctly once qualified"
+        );
+        assert!(
+            door_q.ends_with("::door: Action { Open, Close(u32) }"),
+            "got {door_q}"
+        );
+        assert!(
+            wallet_q.ends_with("::wallet: Action { Open, Close(u32) }"),
+            "got {wallet_q}"
+        );
+        assert!(
+            !door_q.contains("unit_0") && !wallet_q.contains("unit_0"),
+            "the driver-assigned segment must not leak into the qualified form: {door_q} / {wallet_q}"
+        );
     }
 
     #[test]

@@ -1413,7 +1413,12 @@ mod tests {
             })
             .collect();
 
-        ResolvedType::enumeration(EnumInfo::new(Arc::from("Test"), variants, Span::DUMMY))
+        ResolvedType::enumeration(EnumInfo::new(
+            Arc::from("Test"),
+            variants,
+            Span::DUMMY,
+            Arc::from([]),
+        ))
     }
 
     /// An enum with one unit variant, one single-payload variant and one
@@ -1431,7 +1436,12 @@ mod tests {
             ),
         ]);
 
-        ResolvedType::enumeration(EnumInfo::new(Arc::from("Test"), variants, Span::DUMMY))
+        ResolvedType::enumeration(EnumInfo::new(
+            Arc::from("Test"),
+            variants,
+            Span::DUMMY,
+            Arc::from([]),
+        ))
     }
 
     #[test]

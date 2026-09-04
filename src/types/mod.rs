@@ -154,6 +154,7 @@ mod tests {
             Arc::from("Test"),
             Arc::from([unit, single, pair]),
             Span::DUMMY,
+            Arc::from([]),
         );
         assert_eq!("Test", info.name());
         assert_eq!(3, info.structural_variants().len());

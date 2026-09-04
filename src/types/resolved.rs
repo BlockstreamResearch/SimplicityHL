@@ -43,6 +43,12 @@ impl ResolvedType {
         }
     }
 
+    /// Check whether the type mentions an enum, at any nesting depth.
+    pub fn contains_enum(&self) -> bool {
+        self.post_order_iter()
+            .any(|data| data.node.as_enum().is_some())
+    }
+
     /// Full description for the ABI: an enum expands into its variants and
     /// their payload types; every other type is unchanged from [`Display`].
     pub(crate) fn abi_description(&self) -> String {
@@ -69,12 +75,6 @@ impl ResolvedType {
             .collect::<Vec<_>>()
             .join(", ");
         format!("{} {{ {} }}", info.name(), variants)
-    }
-
-    /// Check whether the type mentions an enum, at any nesting depth.
-    pub fn contains_enum(&self) -> bool {
-        self.post_order_iter()
-            .any(|data| data.node.as_enum().is_some())
     }
 }
 

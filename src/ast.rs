@@ -1214,7 +1214,12 @@ impl Scope {
     ) -> Result<(), Error> {
         self.check_alias_free(&name)?;
 
-        let info = EnumInfo::new(Arc::clone(name.as_inner()), variants, span);
+        let info = EnumInfo::new(
+            Arc::clone(name.as_inner()),
+            variants,
+            span,
+            Arc::from(self.module_path.clone()),
+        );
         let resolved = ResolvedType::enumeration(info);
 
         self.current_module_mut()

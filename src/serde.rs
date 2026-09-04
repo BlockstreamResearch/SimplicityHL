@@ -365,7 +365,12 @@ mod tests {
             .iter()
             .map(|name| EnumVariantInfo::new(Identifier::from_str_unchecked(name), Arc::from([])))
             .collect();
-        ResolvedType::enumeration(EnumInfo::new(Arc::from(name), variants, span))
+        ResolvedType::enumeration(EnumInfo::new(
+            Arc::from(name),
+            variants,
+            span,
+            Arc::from([]),
+        ))
     }
 
     #[test]
@@ -453,8 +458,12 @@ mod tests {
                 Arc::from([u32_ty.clone()]),
             ),
         ]);
-        let action_ty =
-            ResolvedType::enumeration(EnumInfo::new(Arc::from("Action"), variants, Span::DUMMY));
+        let action_ty = ResolvedType::enumeration(EnumInfo::new(
+            Arc::from("Action"),
+            variants,
+            Span::DUMMY,
+            Arc::from([]),
+        ));
         let value = Value::enum_variant(
             &action_ty,
             &Identifier::from_str_unchecked("Refresh"),
