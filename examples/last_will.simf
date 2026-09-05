@@ -24,9 +24,28 @@ fn recursive_covenant() {
     assert!(unwrap(jet::output_is_fee(1)));
 }
 
+pub fn enforce_relative_distance(min_distance: Distance) {
+    // Assert that the current input is spent in a transaction that can
+    // only appear a distance of at least min_distance blocks after the
+    // block containing the input UTXO.
+    // Panic otherwise.
+
+    // This is a replacement for the deprecated jet::check_lock_distance.
+
+    // Transaction version must be at least 2.
+    assert!(jet::le_32(2, jet::version()));
+
+    // Fetch and parse sequence
+    let actual_data: Either<Distance, Duration> = unwrap(jet::parse_sequence(jet::current_sequence()));
+    let actual_distance: Distance = unwrap_left::<Duration>(actual_data);
+
+    assert!(jet::le_16(min_distance, actual_distance));
+}
+
 fn inherit_spend(inheritor_sig: Signature) {
-    let days_180: Distance = 25920;
-    jet::broken_do_not_use_check_lock_distance(days_180);
+    // On Bitcoin, this Distance would be 180 days; on Liquid, it is 18 days.
+    let timelock_distance: Distance = 25920;
+    enforce_relative_distance(timelock_distance);
     let inheritor_pk: Pubkey = 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798; // 1 * G
     checksig(inheritor_pk, inheritor_sig);
 }
