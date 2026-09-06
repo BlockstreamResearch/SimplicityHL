@@ -231,8 +231,20 @@ impl BasePattern {
         &self,
         identifier: &Identifier,
     ) -> Option<SelectorBuilder<P>> {
-        let mut selector = SelectorBuilder::default();
+        self.get_from(SelectorBuilder::default(), identifier)
+    }
 
+    /// Like [`BasePattern::get`], but continue the selection accumulated in
+    /// `selector` instead of starting from an empty one: walk `self` as if
+    /// it had been entered after everything selected so far.
+    ///
+    /// The caller must know that `self` contains `identifier`; otherwise
+    /// the partial selection is discarded and `None` is returned.
+    pub(crate) fn get_from<'brand, P: CoreExt<'brand>>(
+        &self,
+        mut selector: SelectorBuilder<P>,
+        identifier: &Identifier,
+    ) -> Option<SelectorBuilder<P>> {
         for data in self.verbose_pre_order_iter() {
             match data.node {
                 BasePattern::Identifier(id) if id == identifier => return Some(selector),
