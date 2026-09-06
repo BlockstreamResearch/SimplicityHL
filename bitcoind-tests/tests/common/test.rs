@@ -52,7 +52,9 @@ impl<'a> TestCase<'a> {
     }
 
     pub fn program_path<P: AsRef<std::path::Path>>(mut self, path: P) -> Self {
-        let text = std::fs::read_to_string(path).expect("path should be readable");
+        let text =
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+                .expect("path should be readable");
         let compiled = simplicityhl::CompiledProgram::new(
             text.as_str(),
             simplicityhl::Arguments::default(),
@@ -65,7 +67,9 @@ impl<'a> TestCase<'a> {
     }
 
     pub fn template_path<P: AsRef<std::path::Path>>(mut self, path: P) -> Self {
-        let text = std::fs::read_to_string(path).expect("path should be readable");
+        let text =
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+                .expect("path should be readable");
         let template =
             simplicityhl::TemplateAst::new(text.as_str(), Box::new(ElementsJetHinter::new()))
                 .expect("program should compile");

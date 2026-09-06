@@ -3,9 +3,16 @@ name = "bitcoind-tests"
 version = "0.1.0"
 authors = ["sanket1729 <sanket1729@gmail.com>"]
 edition = "2021"
+rust-version = "1.79.0"
+publish = false
 
-[dependencies]
+# Because it requires ELEMENETS_EXE the test is explicitly disabled, even when --all-features flag is passed
+[[test]]
+name = "spend_utxo"
+path = "tests/spend_utxo.rs"
+test = false
+bench = false
+
+[dev-dependencies]
 simplicityhl = { path = ".." }
 elementsd = { version = "0.11.0" }
-actual-rand = { package = "rand", version = "0.8.4" }
-secp256k1 = { version = "0.29.0", features = ["rand-std"] }

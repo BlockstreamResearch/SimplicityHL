@@ -68,7 +68,6 @@ check_all:
     cargo rbmt tools cargo-fuzz
     just check_fuzz_crate
     just check_fuzz_bins
-    cargo rbmt --lock-file existing integration
     cargo rbmt --lock-file existing bench
     cargo rbmt --lock-file existing api --baseline master
     cargo rbmt --lock-file existing prerelease --baseline master
@@ -76,11 +75,11 @@ check_all:
 
 # Build integration tests
 build_integration:
-    cargo test --locked --no-run --manifest-path ./bitcoind-tests/Cargo.toml
+    cargo test --locked -p bitcoind-tests --test spend_utxo --no-run
 
 # Run integration tests (requires custom elementsd)
 check_integration:
-    cargo test --locked --manifest-path ./bitcoind-tests/Cargo.toml
+    cargo test --locked -p bitcoind-tests --test spend_utxo
 
 # Build code for the WASM target
 build_wasm:
