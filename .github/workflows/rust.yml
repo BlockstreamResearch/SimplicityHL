@@ -125,3 +125,15 @@ jobs:
 
       - name: "Run external-lib-consumer with compiled dylib"
         run: ./target/debug/external-lib-consumer ./target/debug/libexternal_jet_lib_example.so
+
+  IntegrationBuild:
+    name: Compile daemon integration tests - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked -p bitcoind-tests --test spend_utxo --no-run

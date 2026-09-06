@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use elements::hashes::Hash;
 use elements::secp256k1_zkp as secp256k1;
 use secp256k1::hashes::{sha256, HashEngine};
-use simplicityhl::str::WitnessName;
 use simplicityhl::types::TypeConstructible;
 use simplicityhl::value::ValueConstructible;
 use simplicityhl::{elements, ResolvedType, Value};
+use simplicityhl::{TemplateProgramWitness, WitnessNameToValueMap};
 
 mod common;
 use common::daemon::{self, Call};
@@ -53,12 +53,12 @@ fn hodl_vault(sighash_all: [u8; 32]) -> simplicityhl::WitnessValues {
     let mut witness_values = HashMap::new();
     let oracle_height = 1000;
     witness_values.insert(
-        WitnessName::from_str_unchecked("ORACLE_HEIGHT"),
+        TemplateProgramWitness::witness_from_str("ORACLE_HEIGHT"),
         Value::u32(oracle_height),
     );
     let oracle_price = 100_000;
     witness_values.insert(
-        WitnessName::from_str_unchecked("ORACLE_PRICE"),
+        TemplateProgramWitness::witness_from_str("ORACLE_PRICE"),
         Value::u32(oracle_price),
     );
     let mut hasher = sha256::HashEngine::default();
@@ -66,26 +66,26 @@ fn hodl_vault(sighash_all: [u8; 32]) -> simplicityhl::WitnessValues {
     hasher.input(&oracle_price.to_be_bytes());
     let oracle_hash = sha256::Hash::from_engine(hasher).to_byte_array();
     witness_values.insert(
-        WitnessName::from_str_unchecked("ORACLE_SIG"),
+        TemplateProgramWitness::witness_from_str("ORACLE_SIG"),
         Value::byte_array(util::sign_schnorr(1, oracle_hash)),
     );
     witness_values.insert(
-        WitnessName::from_str_unchecked("OWNER_SIG"),
+        TemplateProgramWitness::witness_from_str("OWNER_SIG"),
         Value::byte_array(util::sign_schnorr(2, sighash_all)),
     );
-    simplicityhl::WitnessValues::from(witness_values)
+    simplicityhl::WitnessValues::from_map(witness_values)
 }
 
 fn p2pk_args() -> simplicityhl::Arguments {
-    simplicityhl::Arguments::from(HashMap::from([(
-        WitnessName::from_str_unchecked("ALICE_PUBLIC_KEY"),
+    simplicityhl::Arguments::from_map(HashMap::from([(
+        TemplateProgramWitness::parameter_from_str("ALICE_PUBLIC_KEY"),
         Value::u256(util::xonly_public_key(1)),
     )]))
 }
 
 fn p2pk(sighash_all: [u8; 32]) -> simplicityhl::WitnessValues {
-    simplicityhl::WitnessValues::from(HashMap::from([(
-        WitnessName::from_str_unchecked("ALICE_SIGNATURE"),
+    simplicityhl::WitnessValues::from_map(HashMap::from([(
+        TemplateProgramWitness::witness_from_str("ALICE_SIGNATURE"),
         Value::byte_array(util::sign_schnorr(1, sighash_all)),
     )]))
 }
@@ -93,14 +93,14 @@ fn p2pk(sighash_all: [u8; 32]) -> simplicityhl::WitnessValues {
 fn p2pkh(sighash_all: [u8; 32]) -> simplicityhl::WitnessValues {
     let mut witness_values = HashMap::new();
     witness_values.insert(
-        WitnessName::from_str_unchecked("PK"),
+        TemplateProgramWitness::witness_from_str("PK"),
         Value::u256(util::xonly_public_key(1)),
     );
     witness_values.insert(
-        WitnessName::from_str_unchecked("SIG"),
+        TemplateProgramWitness::witness_from_str("SIG"),
         Value::byte_array(util::sign_schnorr(1, sighash_all)),
     );
-    simplicityhl::WitnessValues::from(witness_values)
+    simplicityhl::WitnessValues::from_map(witness_values)
 }
 
 fn p2ms(sighash_all: [u8; 32]) -> simplicityhl::WitnessValues {
@@ -110,6 +110,9 @@ fn p2ms(sighash_all: [u8; 32]) -> simplicityhl::WitnessValues {
     let sig3 = Value::some(Value::byte_array(util::sign_schnorr(3, sighash_all)));
     let ty = sig1.ty().clone();
     let maybe_sigs = Value::array([sig1, sig2, sig3], ty);
-    witness_values.insert(WitnessName::from_str_unchecked("MAYBE_SIGS"), maybe_sigs);
-    simplicityhl::WitnessValues::from(witness_values)
+    witness_values.insert(
+        TemplateProgramWitness::witness_from_str("MAYBE_SIGS"),
+        maybe_sigs,
+    );
+    simplicityhl::WitnessValues::from_map(witness_values)
 }
