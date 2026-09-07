@@ -1,5 +1,5 @@
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fmt;
 use std::io::{self, IsTerminal, Write};
@@ -397,7 +397,14 @@ where
 pub struct DiagnosticManager {
     diags: Vec<Diagnostic>,
     error_count: usize,
+    index: Box<DiagnosticIndex>,
     sources: Option<SourceMap>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DiagnosticIndex {
+    identities: HashSet<String>,
+    source_order: HashMap<usize, usize>,
 }
 
 impl DiagnosticManager {
@@ -409,8 +416,23 @@ impl DiagnosticManager {
         self.sources = Some(sources);
     }
 
+    pub(crate) fn with_source_order(&mut self, order: &[usize]) {
+        self.index.source_order = order
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(rank, file_id)| (file_id, rank))
+            .collect();
+    }
+
     /// Extend existing errors with specific `Diagnostic`.
     pub fn push(&mut self, diag: Diagnostic) {
+        // Debug is used because `Error` contains foreign error types that do not implement `Eq`/`Hash`.
+        // `Display` is not used because it coalesces some variants.
+        if !self.index.identities.insert(format!("{diag:?}")) {
+            return;
+        }
+
         if matches!(diag.severity, Severity::Error) {
             self.error_count += 1;
         }
@@ -434,8 +456,57 @@ impl DiagnosticManager {
         self.error_count
     }
 
+    /// Diagnostics in the order they were first accepted.
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diags
+    }
+
+    /// Diagnostics in deterministic dependency-and-source presentation order.
+    ///
+    /// The order is influenced by the linearized graph, where `file_rank` and
+    /// `location_rank` have the following meanings:
+    ///
+    /// | Rank | Value | Meaning |
+    /// |---|---|---|
+    /// | `file_rank` | `(0, file_id)` | Unranked file |
+    /// | `file_rank` | `(1, graph_rank)` | Dependency-graph file |
+    /// | `file_rank` | `(2, 0)` | Global diagnostic |
+    /// | `location_rank` | `0` | Whole-file diagnostic |
+    /// | `location_rank` | `1` | Code-span diagnostic |
+    /// | `location_rank` | `2` | Global diagnostic |
+    ///
+    /// Span (start and end variables), severity rank (see [`Severity`]), and `insertion_index` are self-documented.
+    pub fn presentation_order(&self) -> Vec<&Diagnostic> {
+        let mut indexed: Vec<_> = self.diags.iter().enumerate().collect();
+        indexed.sort_by_key(|(insertion_index, diag)| {
+            let (file_rank, location_rank, start, end) = match diag.location {
+                Location::Code(span) => (self.source_rank(span.file_id), 1, span.start, span.end),
+                Location::File(file_id) => (self.source_rank(file_id), 0, 0, 0),
+                Location::Global => ((2, 0), 2, usize::MAX, usize::MAX),
+            };
+            let severity_rank = match diag.severity {
+                Severity::Error => 0,
+                Severity::Warning => 1,
+            };
+
+            (
+                file_rank,
+                location_rank,
+                start,
+                end,
+                severity_rank,
+                *insertion_index,
+            )
+        });
+        indexed.into_iter().map(|(_, diag)| diag).collect()
+    }
+
+    fn source_rank(&self, file_id: usize) -> (u8, usize) {
+        self.index
+            .source_order
+            .get(&file_id)
+            .copied()
+            .map_or((0, file_id), |rank| (1, rank))
     }
 
     pub fn sources(&self) -> Option<&SourceMap> {
@@ -462,7 +533,7 @@ impl DiagnosticManager {
 
         let mut cache = RenderCache::new(sources);
 
-        for diag in &self.diags {
+        for diag in self.presentation_order() {
             render_one(diag, &mut cache, with_color, &mut w)?;
         }
 
@@ -483,7 +554,7 @@ impl fmt::Display for DiagnosticManager {
         // with span highlighting must call `render` or `render_to_string`
         // explicitly, because `fmt::Formatter` can't carry the color flag
         // or surface I/O errors.
-        for diag in &self.diags {
+        for diag in self.presentation_order() {
             writeln!(f, "{diag}")?;
         }
         Ok(())
@@ -1227,6 +1298,134 @@ mod tests {
         let result: Result<(), Error> = Err(Error::MainRequired);
         let diag = result.with_span(Span::new(0, 5..10)).unwrap_err();
         assert!(matches!(diag.location(), Location::Code(s) if s.start == 5 && s.end == 10));
+    }
+
+    #[test]
+    fn exact_identity_deduplicates_diagnostics() {
+        let mut manager = DiagnosticManager::new();
+        let span = Span::new(0, 4..8);
+        let duplicate = Diagnostic::new(
+            Error::CannotParse {
+                msg: "same".to_owned(),
+            },
+            span,
+        )
+        .with_secondary(Span::new(0, 0..2), "origin")
+        .with_note("note")
+        .with_help("help");
+
+        manager.push(duplicate.clone());
+        manager.push(duplicate);
+        assert_eq!(manager.error_count(), 1);
+
+        // The same text at a different primary span is a distinct structured identity.
+        manager.push(Diagnostic::new(
+            Error::CannotParse {
+                msg: "same".to_owned(),
+            },
+            Span::new(0, 9..13),
+        ));
+
+        assert_eq!(manager.error_count(), 2);
+
+        manager.push(Diagnostic::new(
+            Error::CannotParse {
+                msg: "also collected".to_owned(),
+            },
+            Span::new(0, 14..18),
+        ));
+
+        assert_eq!(manager.error_count(), 3);
+        assert_eq!(manager.diagnostics().len(), 3);
+    }
+
+    #[test]
+    fn matching_rendered_text_does_not_deduplicate_structured_errors() {
+        let mut manager = DiagnosticManager::new();
+        let invalid_digit = "x".parse::<u8>().unwrap_err();
+        let positive_overflow = "999".parse::<u8>().unwrap_err();
+
+        manager.push(Diagnostic::new(
+            Error::ParseInt {
+                source: invalid_digit,
+            },
+            Span::new(0, 0..1),
+        ));
+        manager.push(Diagnostic::new(
+            Error::ParseInt {
+                source: positive_overflow,
+            },
+            Span::new(0, 0..1),
+        ));
+
+        assert_eq!(manager.error_count(), 2);
+        assert_eq!(
+            manager.diagnostics()[0].to_string(),
+            "Integer parsing error"
+        );
+        assert_eq!(
+            manager.diagnostics()[1].to_string(),
+            "Integer parsing error"
+        );
+    }
+
+    #[test]
+    fn labels_notes_and_help_participate_in_identity() {
+        let mut manager = DiagnosticManager::new();
+        let base = || Diagnostic::new(Error::MainRequired, Span::new(0, 0..1));
+
+        manager.push(base().with_note("first note"));
+        manager.push(base().with_note("second note"));
+        manager.push(base().with_secondary(Span::new(0, 2..3), "secondary"));
+        manager.push(base().with_help("help"));
+        manager.push(Diagnostic::warning(Error::MainRequired, Span::new(0, 0..1)));
+
+        assert_eq!(manager.error_count(), 4);
+        assert_eq!(manager.diagnostics().len(), 5);
+    }
+
+    #[test]
+    fn insertion_and_presentation_orders_are_explicit_and_distinct() {
+        let mut manager = DiagnosticManager::new();
+        manager.with_source_order(&[2, 1, 0]);
+
+        manager.push(Diagnostic::global(Error::MainRequired));
+        manager.push(Diagnostic::warning(
+            Error::MainNoInputs,
+            Span::new(1, 10..12),
+        ));
+        manager.push(Diagnostic::new(Error::MainNoOutput, Span::new(2, 20..21)));
+        manager.push(Diagnostic::new(Error::MainRequired, Span::new(1, 10..12)));
+
+        assert!(matches!(
+            manager.diagnostics()[0].location(),
+            Location::Global
+        ));
+
+        let presented = manager.presentation_order();
+        assert!(matches!(presented[0].location(), Location::Code(span) if span.file_id == 2));
+        assert!(matches!(presented[1].error(), Error::MainRequired));
+        assert!(matches!(presented[2].error(), Error::MainNoInputs));
+        assert!(matches!(presented[3].location(), Location::Global));
+    }
+
+    #[test]
+    fn unranked_sources_precede_ranked_sources_without_key_collisions() {
+        let mut manager = DiagnosticManager::new();
+        manager.with_source_order(&[42]);
+
+        manager.push(Diagnostic::new(Error::MainRequired, Span::new(0, 0..1)));
+        manager.push(Diagnostic::new(Error::MainNoOutput, Span::new(42, 0..1)));
+
+        let presented = manager.presentation_order();
+        assert!(matches!(
+            presented[0].location(),
+            Location::Code(span) if span.file_id == 0
+        ));
+        assert!(matches!(
+            presented[1].location(),
+            Location::Code(span) if span.file_id == 42
+        ));
     }
 }
 
