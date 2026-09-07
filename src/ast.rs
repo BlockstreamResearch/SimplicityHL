@@ -1022,15 +1022,23 @@ impl Scope {
             collected
         };
 
-        // Phase 2: insert into current scope
-        let current = self.current_module_mut();
+        // Phase 2: validate against existing names and stage the complete import.
+        // Failed declarations discard these maps without changing the module tree.
+        let current = self.current_module();
+        let mut pending = ModuleScope::default();
         for (alias_res, func_res, mod_res) in collected {
             Self::resolve_processing_use_items_error(&[
-                Self::insert_collected(alias_res, &mut current.aliases),
-                Self::insert_collected(func_res, &mut current.functions),
-                Self::insert_collected(mod_res, &mut current.submodules),
+                Self::stage_collected(alias_res, &current.aliases, &mut pending.aliases),
+                Self::stage_collected(func_res, &current.functions, &mut pending.functions),
+                Self::stage_collected(mod_res, &current.submodules, &mut pending.submodules),
             ])?;
         }
+
+        // Phase 3: commit because every item was resolved successfully
+        let current = self.current_module_mut();
+        current.aliases.extend(pending.aliases);
+        current.functions.extend(pending.functions);
+        current.submodules.extend(pending.submodules);
 
         Ok(())
     }
@@ -1070,26 +1078,34 @@ impl Scope {
         ))
     }
 
-    /// Inserts a successfully collected item into the current scope's map.
+    /// Stages a collected item, checking existing bindings and earlier staged names.
     ///
     /// ## Errors
     ///
     /// * [`Error::RedefinedItem`] An item with the same name is already defined in the target scope.
     /// * Propagates any upstream resolution error passed into the `res` argument.
-    fn insert_collected<K, V>(
+    fn stage_collected<K, V>(
         res: Result<(K, (V, Visibility)), Error>,
-        map: &mut HashMap<K, (V, Visibility)>,
+        existing: &HashMap<K, (V, Visibility)>,
+        pending: &mut HashMap<K, (V, Visibility)>,
     ) -> Result<(), Error>
     where
         K: Eq + std::hash::Hash + std::fmt::Display,
     {
-        res.and_then(|(k, v)| match map.entry(k) {
-            Entry::Occupied(entry) => Err(Error::RedefinedItem {
-                name: entry.key().to_string(),
-            }),
-            Entry::Vacant(entry) => {
-                entry.insert(v);
-                Ok(())
+        res.and_then(|(k, v)| {
+            if existing.contains_key(&k) {
+                return Err(Error::RedefinedItem {
+                    name: k.to_string(),
+                });
+            }
+            match pending.entry(k) {
+                Entry::Occupied(entry) => Err(Error::RedefinedItem {
+                    name: entry.key().to_string(),
+                }),
+                Entry::Vacant(entry) => {
+                    entry.insert(v);
+                    Ok(())
+                }
             }
         })
     }
@@ -3848,5 +3864,123 @@ mod literal_tests {
             assert_eq!(value, &expected, "unexpected value for {source:?}");
             assert_eq!(single.span().to_slice(source), Some(source));
         }
+    }
+}
+
+#[cfg(test)]
+mod transactional_use_tests {
+    use super::*;
+    use crate::parse::ParseFromStr;
+
+    fn resolve(scope: &mut Scope, source: &str) -> Result<(), Error> {
+        let program = parse::Program::parse_from_str(source).unwrap();
+        let parse::Item::Use(decl) = &program.items()[0] else {
+            panic!("expected use declaration");
+        };
+        scope.resolve_use(decl)
+    }
+
+    fn scope() -> Scope {
+        let mut scope = Scope::default();
+        scope
+            .enter_module(ModuleName::from_str_unchecked("source"), Visibility::Public)
+            .unwrap();
+        scope.current_module_mut().aliases.insert(
+            AliasName::from_str_unchecked("Good"),
+            (ResolvedType::u32(), Visibility::Public),
+        );
+        scope.current_module_mut().aliases.insert(
+            AliasName::from_str_unchecked("Secret"),
+            (ResolvedType::u16(), Visibility::Private),
+        );
+        scope.exit_module();
+        scope
+    }
+
+    #[test]
+    fn failed_imports_preserve_the_complete_module_tree() {
+        for (source, expected) in [
+            (
+                "use crate::source::{Good, Missing};",
+                Error::UnresolvedItem {
+                    name: "Missing".into(),
+                },
+            ),
+            (
+                "use crate::source::{Good, Secret};",
+                Error::PrivateItem {
+                    name: "Secret".into(),
+                },
+            ),
+            (
+                "use crate::source::{Good as Same, Good as Same};",
+                Error::RedefinedItem {
+                    name: "Same".into(),
+                },
+            ),
+            (
+                "use crate::source::{Good, Good as main};",
+                Error::MainCannotBeAlias,
+            ),
+            (
+                "use crate::source::{Good, Good as Taken};",
+                Error::RedefinedItem {
+                    name: "Taken".into(),
+                },
+            ),
+        ] {
+            for nested in [false, true] {
+                let mut scope = scope();
+                if nested {
+                    scope
+                        .enter_module(
+                            ModuleName::from_str_unchecked("consumer"),
+                            Visibility::Private,
+                        )
+                        .unwrap();
+                }
+                scope.current_module_mut().aliases.insert(
+                    AliasName::from_str_unchecked("Taken"),
+                    (ResolvedType::u8(), Visibility::Private),
+                );
+                let before = scope.root.clone();
+                let path = scope.module_path.clone();
+                let error = resolve(&mut scope, source).expect_err(source);
+                assert_eq!(error.to_string(), expected.to_string(), "{source}");
+                assert_eq!(scope.root, before, "failed import mutated scope: {source}");
+                assert_eq!(scope.module_path, path, "{source}");
+                resolve(&mut scope, "use crate::source::Good;").unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn successful_import_commits_all_namespaces_and_visibility() {
+        let mut scope = scope();
+        let source = &mut scope
+            .root
+            .submodules
+            .get_mut(&ModuleName::from_str_unchecked("source"))
+            .unwrap()
+            .0;
+        source.submodules.insert(
+            ModuleName::from_str_unchecked("Good"),
+            (ModuleScope::default(), Visibility::Public),
+        );
+        resolve(&mut scope, "pub use crate::source::Good as Renamed;").unwrap();
+        assert_eq!(
+            scope
+                .root
+                .aliases
+                .get(&AliasName::from_str_unchecked("Renamed")),
+            Some(&(ResolvedType::u32(), Visibility::Public))
+        );
+        assert!(matches!(
+            scope
+                .root
+                .submodules
+                .get(&ModuleName::from_str_unchecked("Renamed")),
+            Some((_, Visibility::Public))
+        ));
     }
 }
