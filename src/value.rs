@@ -1398,6 +1398,7 @@ mod destruct {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Span;
     use crate::parse;
     use crate::types::{EnumInfo, EnumVariantInfo, StructuralType, TypeConstructible};
 
@@ -1412,7 +1413,12 @@ mod tests {
             })
             .collect();
 
-        ResolvedType::enumeration(EnumInfo::new(Arc::from("Test"), variants))
+        ResolvedType::enumeration(EnumInfo::new(
+            Arc::from("Test"),
+            variants,
+            Span::DUMMY,
+            Arc::from([]),
+        ))
     }
 
     /// An enum with one unit variant, one single-payload variant and one
@@ -1430,7 +1436,12 @@ mod tests {
             ),
         ]);
 
-        ResolvedType::enumeration(EnumInfo::new(Arc::from("Test"), variants))
+        ResolvedType::enumeration(EnumInfo::new(
+            Arc::from("Test"),
+            variants,
+            Span::DUMMY,
+            Arc::from([]),
+        ))
     }
 
     #[test]

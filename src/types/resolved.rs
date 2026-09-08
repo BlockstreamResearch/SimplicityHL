@@ -10,7 +10,7 @@ use crate::num::NonZeroPow2Usize;
 
 /// SimplicityHL type without type aliases.
 #[derive(PartialEq, Eq, Hash, Clone)]
-pub struct ResolvedType(TypeInner<Arc<Self>>);
+pub struct ResolvedType(pub(super) TypeInner<Arc<Self>>);
 
 impl ResolvedType {
     /// Access the inner type primitive.
@@ -31,12 +31,12 @@ impl ResolvedType {
 /// (which owns the uniqueness of declaration ids) can mint enum types.
 impl ResolvedType {
     /// Create a nominal enum type from the given definition.
-    pub const fn enumeration(info: EnumInfo) -> Self {
-        Self(TypeInner::Enum(info))
+    pub fn enumeration(info: EnumInfo) -> Self {
+        Self(TypeInner::Enum(Arc::new(info)))
     }
 
     /// Access the enum definition if this is an enum type.
-    pub const fn as_enum(&self) -> Option<&EnumInfo> {
+    pub fn as_enum(&self) -> Option<&EnumInfo> {
         match &self.0 {
             TypeInner::Enum(info) => Some(info),
             _ => None,
@@ -47,6 +47,34 @@ impl ResolvedType {
     pub fn contains_enum(&self) -> bool {
         self.post_order_iter()
             .any(|data| data.node.as_enum().is_some())
+    }
+
+    /// Full description for the ABI: an enum expands into its variants and
+    /// their payload types; every other type is unchanged from [`Display`].
+    pub(crate) fn abi_description(&self) -> String {
+        let Some(info) = self.as_enum() else {
+            return self.to_string();
+        };
+
+        let variants = info
+            .variants()
+            .iter()
+            .map(|v| {
+                if v.payload().is_empty() {
+                    v.name().to_string()
+                } else {
+                    let payload = v
+                        .payload()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{}({})", v.name(), payload)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{} {{ {} }}", info.name(), variants)
     }
 }
 

@@ -127,7 +127,7 @@ impl AliasedType {
                     }
                     // There is no syntax for writing an enum type inline (enums enter aliased types only by name)
                     TypeInner::Enum(info) => {
-                        output.push(ResolvedType::enumeration(info.clone()));
+                        output.push(ResolvedType(TypeInner::Enum(Arc::clone(info))));
                     }
                 },
             }

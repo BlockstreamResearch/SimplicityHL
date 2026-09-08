@@ -2,8 +2,9 @@ use core::fmt;
 use core::str::FromStr;
 use std::sync::Arc;
 
+use crate::error::Span;
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
-use crate::str::Identifier;
+use crate::str::{Identifier, ModuleName};
 
 use super::{ResolvedType, StructuralType, TypeConstructible as _};
 
@@ -27,7 +28,7 @@ pub enum TypeInner<A> {
     List(A, NonZeroPow2Usize),
     /// Nominal enum type, represented as a balanced sum of its variants'
     /// payload types
-    Enum(EnumInfo),
+    Enum(Arc<EnumInfo>),
 }
 
 impl<A> TypeInner<A> {
@@ -227,13 +228,15 @@ impl FromStr for UIntType {
 /// unrepresentable. A variant's position among the declared variants
 /// determines its leaf in the sum; there is no separate discriminant.
 ///
-/// Identity is the declared name: enums may only be declared at the top
-/// level of the program's own files, so the name is unique program-wide and
-/// serialized forms (such as the ABI) can identify an enum by it.
+/// Identity is the declaration site (`span`), not the written name: two
+/// files may each declare an `Action` without the two becoming one type.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct EnumInfo {
     name: Arc<str>,
     variants: Arc<[EnumVariantInfo]>,
+    span: Span,
+    /// Need it to retrieve actual path to unique `EnumInfo`.
+    module_path: Arc<[ModuleName]>,
 }
 
 impl EnumInfo {
@@ -242,14 +245,33 @@ impl EnumInfo {
     /// `variants` must not be empty: a sum of zero types would be
     /// uninhabited, which Simplicity's type algebra cannot express.
     /// A single-variant enum is a named wrapper of its payload.
-    pub(crate) fn new(name: Arc<str>, variants: Arc<[EnumVariantInfo]>) -> Self {
+    pub(crate) fn new(
+        name: Arc<str>,
+        variants: Arc<[EnumVariantInfo]>,
+        span: Span,
+        module_path: Arc<[ModuleName]>,
+    ) -> Self {
         debug_assert!(!variants.is_empty());
-        Self { name, variants }
+        Self {
+            name,
+            variants,
+            span,
+            module_path,
+        }
     }
 
     /// Access the declared name of the enum.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The module chain the declaration sits in, root first.
+    pub fn module_path(&self) -> &[ModuleName] {
+        &self.module_path
+    }
+
+    pub fn span(&self) -> &Span {
+        &self.span
     }
 
     /// Access the variants of the enum in declaration order.

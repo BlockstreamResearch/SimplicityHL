@@ -1,5 +1,8 @@
 //! Library for parsing and compiling SimplicityHL
 
+use std::collections::HashMap;
+use std::fmt;
+
 pub mod array;
 pub mod ast;
 pub mod compile;
@@ -400,10 +403,76 @@ impl CompiledProgram {
 /// encoding and the CMR while leaving the ABI text identical). Such
 /// consumers need the program source or another artifact carrying the enum
 /// schema.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct AbiMeta {
     pub witness_types: WitnessTypes,
     pub param_types: Parameters,
+}
+
+impl fmt::Debug for AbiMeta {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let witness_types: HashMap<_, _> = self
+            .witness_types
+            .iter()
+            .map(|(name, ty)| (name.clone(), ty.abi_description()))
+            .collect();
+        let param_types: HashMap<_, _> = self
+            .param_types
+            .iter()
+            .map(|(name, ty)| (name.clone(), ty.abi_description()))
+            .collect();
+        f.debug_struct("AbiMeta")
+            .field("witness_types", &witness_types)
+            .field("param_types", &param_types)
+            .finish()
+    }
+}
+
+impl AbiMeta {
+    /// Same as `abi_description`, except an enum type is prefixed with the
+    /// absolute path of the file. It acts like unique identifier for nominative type
+    pub fn describe(
+        &self,
+        sources: Option<&SourceMap>,
+    ) -> (HashMap<String, String>, HashMap<String, String>) {
+        let describe_one = |ty: &types::ResolvedType| -> String {
+            let base = ty.abi_description();
+            let (Some(info), Some(sources)) = (ty.as_enum(), sources) else {
+                return base;
+            };
+            let Some(path) = sources.path(info.span().file_id) else {
+                return base;
+            };
+
+            let modules = info
+                .module_path()
+                .get(1..) // drop the driver-assigned `unit_N` segment
+                .unwrap_or(&[])
+                .iter()
+                .map(|m| m.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+
+            let file = path.as_path().display();
+            if modules.is_empty() {
+                format!("{file}: {base}")
+            } else {
+                format!("{file}::{modules}: {base}")
+            }
+        };
+
+        let witness_types = self
+            .witness_types
+            .iter()
+            .map(|(name, ty)| (name.as_str().to_string(), describe_one(ty)))
+            .collect();
+        let param_types = self
+            .param_types
+            .iter()
+            .map(|(name, ty)| (name.as_str().to_string(), describe_one(ty)))
+            .collect();
+        (witness_types, param_types)
+    }
 }
 
 /// A SimplicityHL program, compiled to Simplicity and satisfied with witness data.
@@ -1602,24 +1671,178 @@ fn main() {
 
     #[test]
     fn enum_construction_compiles_and_runs() {
-        let src = "enum Action { Refresh(u32, bool), Cold, }
-             fn pick() -> Action {
-                 Action::Refresh(7, true)
-             }
-             fn main() {
-                 let a: Action = pick();
-                 match a {
-                     Action::Refresh(n: u32, b: bool) => {
-                         assert!(jet::eq_32(n, 7));
-                         assert!(b);
-                     },
-                     Action::Cold => assert!(false),
-                 }
-             }";
+        let ws = TempWorkspace::new("crate_success");
+        let root = ws.create_dir("workspace");
+        ws.create_file(
+            format!("workspace/{MAIN}").as_str(),
+            "enum Action { Refresh(u32, bool), Cold, }
+            fn pick() -> Action {
+                Action::Refresh(7, true)
+            }
+            fn main() {
+                let a: Action = pick();
+                match a {
+                    Action::Refresh(n: u32, b: bool) => {
+                        assert!(jet::eq_32(n, 7));
+                        assert!(b);
+                    },
+                    Action::Cold => assert!(false),
+                }
+            }",
+        );
 
-        TestCase::program_text_with_unstable(Cow::Borrowed(src), UnstableFeatures::all())
-            .with_witness_values(WitnessValues::default())
-            .assert_run_success();
+        let main_path = root.join(MAIN);
+        let canon_root = CanonPath::canonicalize(&root).unwrap();
+        let dependency_map = build_map(&canon_root, &[]).unwrap();
+
+        TestCase::<TemplateAst>::template_deps_with_unstable(
+            &main_path,
+            &dependency_map,
+            UnstableFeatures::all(),
+        )
+        .with_arguments(Arguments::default())
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
+    }
+
+    #[test]
+    fn enum_same_name_in_two_modules_are_distinct_types() {
+        let ws = TempWorkspace::new("enum_nominal_identity");
+        let root = ws.create_dir("workspace");
+        let main_path = ws.create_file(
+            format!("workspace/{MAIN}").as_str(),
+            "mod door {
+                pub enum Action { Open, Close, }
+                pub fn describe(a: Action) -> u32 {
+                    match a { Action::Open => 1, Action::Close => 2, }
+                }
+            }
+            mod wallet {
+                pub enum Action { Open, Close, }
+                pub fn spend(a: Action) -> u32 {
+                    match a { Action::Open => 100, Action::Close => 200, }
+                }
+            }
+            use crate::door::Action as DoorAction;
+            use crate::wallet::spend;
+            fn main() {
+                let d: DoorAction = DoorAction::Open;
+                assert!(jet::eq_32(spend(d), 100));
+            }",
+        );
+
+        let canon_root = CanonPath::canonicalize(&root).unwrap();
+        let dependencies = build_map(&canon_root, &[]).unwrap();
+        let source = CanonSourceFile::new(
+            CanonPath::canonicalize(&main_path).unwrap(),
+            Arc::from(std::fs::read_to_string(&main_path).unwrap()),
+        );
+
+        let err = TemplateAst::new_with_dep(
+            source,
+            &dependencies,
+            &UnstableFeatures::all(),
+            Box::new(ElementsJetHinter::new()),
+        )
+        .expect_err("`door::Action` must not satisfy a `wallet::Action` parameter");
+
+        // TODO: both types display as `Action`, so the message cannot be acted on.
+        // Print the declaring module path and point at both declaration sites.
+        assert!(
+            err.to_string()
+                .contains("Expected expression of type `Action`, found type `Action`"),
+            "expected a nominal type mismatch, got:\n{err}"
+        );
+    }
+
+    #[test]
+    fn abi_description_bare_vs_qualified_for_two_same_shaped_enums() {
+        // Two enums, same name and same variant shapes, declared in
+        // different modules: distinct nominal types (see
+        // `enum_same_name_in_two_modules_are_distinct_types`), each used at
+        // its own type here, so this compiles.
+        let ws = TempWorkspace::new("abi_same_shaped_enums");
+        let root = ws.create_dir("workspace");
+        let main_path = ws.create_file(
+            format!("workspace/{MAIN}").as_str(),
+            "mod door {
+                pub enum Action { Open, Close(u32), }
+                pub fn describe(a: Action) -> u32 {
+                    match a { Action::Open => 1, Action::Close(n: u32) => n, }
+                }
+            }
+            mod wallet {
+                pub enum Action { Open, Close(u32), }
+                pub fn spend(a: Action) -> u32 {
+                    match a { Action::Open => 100, Action::Close(n: u32) => n, }
+                }
+            }
+            use crate::door::{Action as DoorAction, describe};
+            use crate::wallet::{Action as WalletAction, spend};
+            fn main() {
+                let dact: DoorAction = witness::DOOR_ACTION;
+                let wact: WalletAction = witness::WALLET_ACTION;
+                assert!(jet::eq_32(describe(dact), 1));
+                assert!(jet::eq_32(spend(wact), 100));
+            }",
+        );
+
+        let canon_root = CanonPath::canonicalize(&root).unwrap();
+        let dependencies = build_map(&canon_root, &[]).unwrap();
+        let source = CanonSourceFile::new(
+            CanonPath::canonicalize(&main_path).unwrap(),
+            Arc::from(std::fs::read_to_string(&main_path).unwrap()),
+        );
+
+        let template = TemplateAst::new_with_dep(
+            source,
+            &dependencies,
+            &UnstableFeatures::all(),
+            Box::new(ElementsJetHinter::new()),
+        )
+        .expect("two distinct enums used at their own type must compile");
+
+        let abi = template.generate_abi_meta().unwrap();
+        let door = abi
+            .witness_types
+            .get(&TemplateProgramWitness::witness_from_str("DOOR_ACTION"))
+            .expect("DOOR_ACTION must be recorded");
+        let wallet = abi
+            .witness_types
+            .get(&TemplateProgramWitness::witness_from_str("WALLET_ACTION"))
+            .expect("WALLET_ACTION must be recorded");
+
+        // The bare form is intentionally shape-only: same name, same
+        // variants, so identical text either way.
+        assert_eq!(door.abi_description(), wallet.abi_description());
+        assert_eq!(door.abi_description(), "Action { Open, Close(u32) }");
+
+        // Qualified by declaration site, the two must render distinctly.
+        let sources = template
+            .source_map()
+            .expect("a driver-compiled program has a source map");
+        let (witness_types, _) = abi.describe(Some(sources));
+        let door_q = witness_types.get("DOOR_ACTION").expect("recorded above");
+        let wallet_q = witness_types.get("WALLET_ACTION").expect("recorded above");
+
+        dbg!(door_q, wallet_q);
+
+        assert_ne!(
+            door_q, wallet_q,
+            "distinct declarations must render distinctly once qualified"
+        );
+        assert!(
+            door_q.ends_with("::door: Action { Open, Close(u32) }"),
+            "got {door_q}"
+        );
+        assert!(
+            wallet_q.ends_with("::wallet: Action { Open, Close(u32) }"),
+            "got {wallet_q}"
+        );
+        assert!(
+            !door_q.contains("unit_0") && !wallet_q.contains("unit_0"),
+            "the driver-assigned segment must not leak into the qualified form: {door_q} / {wallet_q}"
+        );
     }
 
     #[test]

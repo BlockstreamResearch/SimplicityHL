@@ -357,6 +357,8 @@ impl crate::ArbitraryOfType for Arguments {
 mod tests {
     use super::*;
     use crate::ast::ElementsJetHinter;
+    #[cfg(feature = "serde")]
+    use crate::error::Span;
     use crate::parse::ParseFromStr;
     #[cfg(feature = "serde")]
     use crate::str::Identifier;
@@ -521,7 +523,12 @@ fn main() {
             .into_iter()
             .map(|name| EnumVariantInfo::new(Identifier::from_str_unchecked(name), Arc::from([])))
             .collect();
-        let action_ty = ResolvedType::enumeration(EnumInfo::new(Arc::from("Action"), variants));
+        let action_ty = ResolvedType::enumeration(EnumInfo::new(
+            Arc::from("Action"),
+            variants,
+            Span::DUMMY,
+            Arc::from([]),
+        ));
         let witness_types = WitnessTypes::from(HashMap::from([(
             TemplateProgramWitness::witness_from_str("ACTION"),
             action_ty.clone(),
@@ -562,7 +569,12 @@ fn main() {
             .into_iter()
             .map(|name| EnumVariantInfo::new(Identifier::from_str_unchecked(name), Arc::from([])))
             .collect();
-        let action_ty = ResolvedType::enumeration(EnumInfo::new(Arc::from("Action"), variants));
+        let action_ty = ResolvedType::enumeration(EnumInfo::new(
+            Arc::from("Action"),
+            variants,
+            Span::DUMMY,
+            Arc::from([]),
+        ));
         let option_ty = ResolvedType::option(action_ty.clone());
         let tuple_ty = ResolvedType::tuple([
             action_ty.clone(),
