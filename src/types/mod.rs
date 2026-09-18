@@ -128,6 +128,24 @@ mod tests {
         assert_eq!("List<(), 2>", &list.to_string());
         let either = ResolvedType::either(ResolvedType::unit(), ResolvedType::u32());
         assert_eq!("Either<(), u32>", &either.to_string());
+        let never = ResolvedType::never();
+        assert_eq!("!", &never.to_string());
+        let option_never = ResolvedType::option(ResolvedType::never());
+        assert_eq!("Option<!>", &option_never.to_string());
+    }
+
+    #[test]
+    fn never_type() {
+        assert!(ResolvedType::never().is_never());
+        assert!(!ResolvedType::unit().is_never());
+        // Only the outermost type is checked
+        assert!(!ResolvedType::option(ResolvedType::never()).is_never());
+    }
+
+    #[test]
+    #[should_panic(expected = "the never type has no structural type")]
+    fn never_type_has_no_structural_type() {
+        let _ = StructuralType::from(&ResolvedType::option(ResolvedType::never()));
     }
 
     #[test]

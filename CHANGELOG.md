@@ -1,5 +1,9 @@
 # Unreleased
 
+## Added
+
+* Add the uninhabited type `TypeInner::Never` with `ResolvedType::never` and `ResolvedType::is_never`. It has no values and no structural type; it will be used for error recovery during analysis.
+
 ## Changed
 
 * Deduplicate identical compiler diagnostics and present multi-file diagnostics in deterministic dependency and source order. [#413](https://github.com/BlockstreamResearch/SimplicityHL/pull/413)

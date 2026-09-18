@@ -28,6 +28,8 @@ pub enum TypeInner<A> {
     /// Nominal enum type, represented as a balanced sum of its variants'
     /// payload types
     Enum(EnumInfo),
+    /// The uninhabited type: no value has this type.
+    Never,
 }
 
 impl<A> TypeInner<A> {
@@ -91,6 +93,7 @@ impl<A> TypeInner<A> {
                 }
             },
             TypeInner::Enum(info) => write!(f, "{}", info.name()),
+            TypeInner::Never => f.write_str("!"),
         }
     }
 }

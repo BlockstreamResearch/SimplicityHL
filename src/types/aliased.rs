@@ -129,6 +129,7 @@ impl AliasedType {
                     TypeInner::Enum(info) => {
                         output.push(ResolvedType::enumeration(info.clone()));
                     }
+                    TypeInner::Never => output.push(ResolvedType::never()),
                 },
             }
         }
@@ -163,6 +164,7 @@ impl_require_feature!(TypeInner<Arc<AliasedType>> {
         Array(element, _),
         List(element, _),
         Enum(_),
+        Never,
 });
 
 impl TypeConstructible for AliasedType {
@@ -255,7 +257,10 @@ impl TreeLike for &AliasedType {
         match &self.0 {
             AliasedInner::Alias(_) | AliasedInner::Builtin(_) => Tree::Nullary,
             AliasedInner::Inner(inner) => match inner {
-                TypeInner::Boolean | TypeInner::UInt(..) | TypeInner::Enum(..) => Tree::Nullary,
+                TypeInner::Boolean
+                | TypeInner::UInt(..)
+                | TypeInner::Enum(..)
+                | TypeInner::Never => Tree::Nullary,
                 TypeInner::Option(l) | TypeInner::Array(l, _) | TypeInner::List(l, _) => {
                     Tree::Unary(l)
                 }

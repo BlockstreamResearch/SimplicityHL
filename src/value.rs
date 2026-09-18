@@ -864,6 +864,8 @@ impl Value {
                         }
                     }
                 }
+                // No value is of the never type
+                TypeInner::Never => return None,
             }
         }
         debug_assert_eq!(output.len(), 1);
@@ -937,6 +939,8 @@ impl crate::ArbitraryOfType for Value {
                     .collect::<arbitrary::Result<Vec<Self>>>()?;
                 Ok(Self::list(elements, ty.as_ref().clone(), *bound))
             }
+            // There is no value of the never type to choose from
+            TypeInner::Never => Err(arbitrary::Error::EmptyChoose),
         }
     }
 }
@@ -1258,6 +1262,8 @@ impl TreeLike for Destructor<'_> {
         };
         match ty.as_inner() {
             TypeInner::Boolean | TypeInner::UInt(..) => Tree::Nullary,
+            // No value is of the never type
+            TypeInner::Never => Tree::Unary(Self::WrongType),
             TypeInner::Enum(info) => match destruct::as_enum_leaf(value, info.variants().len()) {
                 Some((index, leaf)) => {
                     Tree::Unary(Self::new(leaf, info.variants()[index].payload_type()))
@@ -1648,5 +1654,27 @@ mod tests {
             assert_eq!(parsed_value, expected_value);
             assert!(parsed_value.is_of_type(&ty));
         }
+    }
+
+    #[test]
+    fn reconstruct_never_fails() {
+        let unit = StructuralValue::from(&Value::unit());
+        assert_eq!(None, Value::reconstruct(&unit, &ResolvedType::never()));
+
+        let some_unit = StructuralValue::from(&Value::some(Value::unit()));
+        let option_never = ResolvedType::option(ResolvedType::never());
+        assert_eq!(None, Value::reconstruct(&some_unit, &option_never));
+    }
+
+    #[test]
+    #[cfg(feature = "arbitrary")]
+    fn arbitrary_never_fails() {
+        use crate::ArbitraryOfType;
+
+        let mut u = arbitrary::Unstructured::new(&[0; 32]);
+        assert!(matches!(
+            Value::arbitrary_of_type(&mut u, &ResolvedType::never()),
+            Err(arbitrary::Error::EmptyChoose)
+        ));
     }
 }

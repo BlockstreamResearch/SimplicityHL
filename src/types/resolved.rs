@@ -50,6 +50,19 @@ impl ResolvedType {
     }
 }
 
+/// The uninhabited type.
+impl ResolvedType {
+    /// Create the uninhabited type.
+    pub const fn never() -> Self {
+        Self(TypeInner::Never)
+    }
+
+    /// Check whether this is the uninhabited type.
+    pub const fn is_never(&self) -> bool {
+        matches!(self.0, TypeInner::Never)
+    }
+}
+
 impl TypeConstructible for ResolvedType {
     fn either(left: Self, right: Self) -> Self {
         Self(TypeInner::Either(Arc::new(left), Arc::new(right)))
@@ -129,7 +142,9 @@ impl TypeDeconstructible for ResolvedType {
 impl TreeLike for &ResolvedType {
     fn as_node(&self) -> Tree<Self> {
         match &self.0 {
-            TypeInner::Boolean | TypeInner::UInt(..) | TypeInner::Enum(..) => Tree::Nullary,
+            TypeInner::Boolean | TypeInner::UInt(..) | TypeInner::Enum(..) | TypeInner::Never => {
+                Tree::Nullary
+            }
             TypeInner::Option(l) | TypeInner::Array(l, _) | TypeInner::List(l, _) => Tree::Unary(l),
             TypeInner::Either(l, r) => Tree::Binary(l, r),
             TypeInner::Tuple(elements) => Tree::Nary(elements.iter().map(Arc::as_ref).collect()),
@@ -160,6 +175,8 @@ impl From<UIntType> for ResolvedType {
 
 #[cfg(feature = "arbitrary")]
 impl crate::ArbitraryRec for ResolvedType {
+    // Deliberately never generates `TypeInner::Never`, which has no values.
+    //
     // Deliberately never generates `TypeInner::Enum`.
     // Enum values serialize as bare strings that only resolve against a program's declarations
     // (`UnresolvedValues::resolve`), so the self-contained witness JSON round-trip target (`parse_witness_json_rtt`)
@@ -206,6 +223,9 @@ impl crate::ArbitraryRec for ResolvedType {
     }
 }
 
+/// ## Panics
+///
+/// Panics if the type mentions [`TypeInner::Never`].
 impl From<&ResolvedType> for StructuralType {
     fn from(value: &ResolvedType) -> Self {
         let mut output = vec![];
@@ -238,6 +258,11 @@ impl From<&ResolvedType> for StructuralType {
                 }
                 TypeInner::Enum(info) => {
                     output.push(StructuralType::balanced_sum(info.structural_variants()));
+                }
+                TypeInner::Never => {
+                    panic!(
+                        "the never type has no structural type; check `is_never` before lowering"
+                    )
                 }
             }
         }
