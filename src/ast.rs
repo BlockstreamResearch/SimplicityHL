@@ -9,7 +9,7 @@ use simplicity::jet::{Core, Elements, Jet};
 
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
 use crate::driver::{CRATE_STR, MAIN_STR};
-use crate::error::{Diagnostic, Error, Span, WithSpan};
+use crate::error::{Diagnostic, DiagnosticManager, Error, Span, WithSpan};
 use crate::jet::{source_type, target_type, JetHL};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::parse::{MatchPattern, UseDecl, Visibility};
@@ -735,6 +735,8 @@ struct Scope {
     is_main: bool,
     call_tracker: CallTracker,
     jet_hinter: Box<dyn JetHinter>,
+    /// Errors reported during analysis that did not stop it.
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl Default for Scope {
@@ -758,6 +760,7 @@ impl Scope {
             is_main: false,
             call_tracker: CallTracker::default(),
             jet_hinter,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -1284,17 +1287,18 @@ impl Scope {
         }
     }
 
-    /// Consume the scope and return its contents:
-    ///
-    /// 1. The map of parameter types.
-    /// 2. The map of witness types.
-    /// 3. The function call tracker.
-    pub fn destruct(self) -> (Parameters, WitnessTypes, CallTracker) {
-        (
-            Parameters::from(self.parameters),
-            WitnessTypes::from(self.witnesses),
-            self.call_tracker,
-        )
+    /// Consume the scope and build the analyzed program with the given `main` body.
+    pub(crate) fn try_into_program(self, main: Expression) -> Option<Program> {
+        if !self.diagnostics.is_empty() {
+            return None;
+        }
+
+        Some(Program {
+            main,
+            parameters: Parameters::from(self.parameters),
+            witness_types: WitnessTypes::from(self.witnesses),
+            call_tracker: Arc::new(self.call_tracker),
+        })
     }
 
     /// Insert a custom function into the global map.
@@ -1352,10 +1356,15 @@ trait AbstractSyntaxTree: Sized {
 }
 
 impl Program {
+    /// Analyze the given parse tree.
+    ///
+    /// Errors are added to `diagnostics`. Returns `None` if any error was
+    /// reported: a program with errors must never be compiled.
     pub fn analyze(
         from: &parse::Program,
         jet_hinter: Box<dyn JetHinter>,
-    ) -> Result<Self, Diagnostic> {
+        diagnostics: &mut DiagnosticManager,
+    ) -> Option<Self> {
         let unit = ResolvedType::unit();
         let mut scope = Scope::new(jet_hinter);
 
@@ -1363,26 +1372,35 @@ impl Program {
             .items()
             .iter()
             .map(|s| Item::analyze(s, &unit, &mut scope))
-            .collect::<Result<Vec<Item>, Diagnostic>>()?;
+            .collect::<Result<Vec<Item>, Diagnostic>>();
+
+        let items = match items {
+            Ok(items) => items,
+            Err(error) => {
+                diagnostics.push(error);
+                return None;
+            }
+        };
+
         debug_assert!(scope.is_outside_function());
         debug_assert!(
             scope.module_path.is_empty(),
             "Unclosed module scopes remain"
         );
 
-        let (parameters, witness_types, call_tracker) = scope.destruct();
-        let main = Self::extract_single_main(&items)
-            // If we find a duplicate of main function
-            .map_err(|err| err.with_span(from.into()))?
-            .ok_or(Error::MainRequired)
-            .with_span(from)?;
+        let main = match Self::extract_single_main(&items) {
+            Ok(Some(main)) => main,
+            Ok(None) => {
+                diagnostics.push(Error::MainRequired.with_span(from.into()));
+                return None;
+            }
+            Err(error) => {
+                diagnostics.push(error.with_span(from.into()));
+                return None;
+            }
+        };
 
-        Ok(Self {
-            main,
-            parameters,
-            witness_types,
-            call_tracker: Arc::new(call_tracker),
-        })
+        scope.try_into_program(main)
     }
 
     fn extract_single_main(items: &[Item]) -> Result<Option<Expression>, Error> {
@@ -2617,8 +2635,12 @@ mod span_tests {
     }
 }"#;
         let parsed = parse::Program::parse_from_str(source).expect("program parses");
-        let program =
-            Program::analyze(&parsed, Box::new(ElementsJetHinter)).expect("program analyzes");
+        let program = Program::analyze(
+            &parsed,
+            Box::new(ElementsJetHinter),
+            &mut DiagnosticManager::new(),
+        )
+        .expect("program analyzes");
 
         let ExpressionInner::Block(_, Some(last)) = program.main().inner() else {
             panic!("main body should end in a match");
@@ -2651,8 +2673,12 @@ fn main() {
     }
 }"#;
         let parsed = parse::Program::parse_from_str(source).expect("program parses");
-        let program =
-            Program::analyze(&parsed, Box::new(ElementsJetHinter)).expect("program analyzes");
+        let program = Program::analyze(
+            &parsed,
+            Box::new(ElementsJetHinter),
+            &mut DiagnosticManager::new(),
+        )
+        .expect("program analyzes");
 
         let ExpressionInner::Block(_, Some(last)) = program.main().inner() else {
             panic!("main body should end in an enum match");
@@ -2718,9 +2744,19 @@ mod scope_resolution_tests {
             return Err(diagnostics.render_to_string());
         };
 
-        Program::analyze(&driver_program, Box::new(ElementsJetHinter))
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        match Program::analyze(
+            &driver_program,
+            Box::new(ElementsJetHinter),
+            &mut diagnostics,
+        ) {
+            Some(_) => Ok(()),
+            None => Err(diagnostics
+                .diagnostics()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")),
+        }
     }
 
     #[test]

@@ -114,20 +114,19 @@ impl TemplateAst {
             return Err(diagnostics);
         };
 
-        // TODO: Add multierror to analyze
-        match ast::Program::analyze(&resolved_program, jet_hinter.clone_box()) {
-            Ok(simfony) => Ok(Self {
-                simfony,
-                file,
-                jet_hinter,
-                diagnostics,
-                resolved_program,
-            }),
-            Err(e) => {
-                diagnostics.push(e);
-                Err(diagnostics)
-            }
-        }
+        let Some(simfony) =
+            ast::Program::analyze(&resolved_program, jet_hinter.clone_box(), &mut diagnostics)
+        else {
+            return Err(diagnostics);
+        };
+
+        Ok(Self {
+            simfony,
+            file,
+            jet_hinter,
+            diagnostics,
+            resolved_program,
+        })
     }
 
     /// Parse the template of a SimplicityHL program.
@@ -161,19 +160,19 @@ impl TemplateAst {
             return Err(diagnostics);
         };
 
-        match ast::Program::analyze(&resolved_program, jet_hinter.clone_box()) {
-            Ok(simfony) => Ok(Self {
-                simfony,
-                file,
-                jet_hinter,
-                diagnostics,
-                resolved_program,
-            }),
-            Err(e) => {
-                diagnostics.push(e);
-                Err(diagnostics)
-            }
-        }
+        let Some(simfony) =
+            ast::Program::analyze(&resolved_program, jet_hinter.clone_box(), &mut diagnostics)
+        else {
+            return Err(diagnostics);
+        };
+
+        Ok(Self {
+            simfony,
+            file,
+            jet_hinter,
+            diagnostics,
+            resolved_program,
+        })
     }
 
     /// Access the parameters of the program.
