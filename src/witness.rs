@@ -371,12 +371,20 @@ mod tests {
     assert!(jet::eq_32(witness::A, witness::A));
 }"#;
         let parse_program = parse::Program::parse_from_str(s).expect("parsing works");
-        match ast::Program::analyze(&parse_program, Box::new(ElementsJetHinter::new()))
-            .map_err(Error::from)
-        {
-            Ok(_) => panic!("Witness reuse was falsely accepted"),
-            Err(Error::WitnessReused { .. }) => {}
-            Err(error) => panic!("Unexpected error: {error}"),
+        let mut diagnostics = DiagnosticManager::new();
+        let program = ast::Program::analyze(
+            &parse_program,
+            Box::new(ElementsJetHinter::new()),
+            &mut diagnostics,
+        );
+        assert!(program.is_none(), "Witness reuse was falsely accepted");
+
+        match diagnostics.diagnostics() {
+            [diagnostic] => match diagnostic.error() {
+                Error::WitnessReused { .. } => {}
+                error => panic!("Unexpected error: {error}"),
+            },
+            diagnostics => panic!("Expected exactly one error, found {diagnostics:?}"),
         }
     }
 

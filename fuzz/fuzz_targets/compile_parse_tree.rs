@@ -4,6 +4,7 @@
 fn do_test(data: &[u8]) {
     use arbitrary::Arbitrary;
     use simplicityhl::ast::ElementsJetHinter;
+    use simplicityhl::error::DiagnosticManager;
 
     use simplicityhl::{ast, named, parse, ArbitraryOfType, Arguments, WitnessNameToValueMap as _};
 
@@ -12,15 +13,20 @@ fn do_test(data: &[u8]) {
         Ok(x) => x,
         Err(_) => return,
     };
-    let ast_program =
-        match ast::Program::analyze(&parse_program, Box::new(ElementsJetHinter::new())) {
-            Ok(x) => x,
-            Err(_) => return,
-        };
+
+    let Some(ast_program) = ast::Program::analyze(
+        &parse_program,
+        Box::new(ElementsJetHinter::new()),
+        &mut DiagnosticManager::new(),
+    ) else {
+        return;
+    };
+
     let arguments = match Arguments::arbitrary_of_type(&mut u, ast_program.parameters()) {
         Ok(arguments) => arguments,
         Err(..) => return,
     };
+
     let simplicity_named_construct = ast_program
         .compile(
             arguments.shallow_clone(),
