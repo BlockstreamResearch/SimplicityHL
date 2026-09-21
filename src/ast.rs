@@ -2753,6 +2753,168 @@ fn main() {
 }
 
 #[cfg(test)]
+mod multi_error_tests {
+    use crate::test_utils::assert_errors;
+
+    #[test]
+    fn tuple_elements() {
+        assert_errors(
+            "fn main() { let pair: (u32, u32) = (x, y); }",
+            &["Variable `x` is not defined", "Variable `y` is not defined"],
+        );
+    }
+
+    #[test]
+    fn array_length_and_elements() {
+        assert_errors(
+            "fn main() { let array: [u32; 3] = [x, y]; }",
+            &[
+                "Expected expression of type `[u32; 3]`; found something else",
+                "Variable `x` is not defined",
+                "Variable `y` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn call_output_type_and_arguments() {
+        assert_errors(
+            "fn main() { let sum: bool = jet::add_32(a, b); }",
+            &[
+                "Expected expression of type `bool`, found type `(bool, u32)`",
+                "Variable `a` is not defined",
+                "Variable `b` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn nested_errors_are_reported_once() {
+        assert_errors(
+            "fn main() { let pair: (u32, u32) = (jet::add_32(a, 1), b); }",
+            &[
+                "Expected expression of type `u32`, found type `(bool, u32)`",
+                "Variable `a` is not defined",
+                "Variable `b` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn match_arms() {
+        assert_errors(
+            "fn main() {
+                let input: Either<u32, u32> = Left(1);
+                let result: u32 = match input {
+                    Left(l: u32) => left_var,
+                    Right(r: u32) => right_var,
+                };
+            }",
+            &[
+                "Variable `left_var` is not defined",
+                "Variable `right_var` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn enum_match_misspelled_variants_are_not_reported_as_missing() {
+        assert_errors(
+            "enum Color { Red, Green, Blue }
+            fn main() {
+                let c: Color = Color::Red;
+                match c {
+                    Color::Rd => {},
+                    Color::Gren => {},
+                    Color::Blue => {},
+                }
+            }",
+            &[
+                "Grammar error: variant 'Rd' is not defined in enum 'Color'",
+                "Grammar error: variant 'Gren' is not defined in enum 'Color'",
+            ],
+        );
+    }
+
+    #[test]
+    fn enum_match_arms() {
+        assert_errors(
+            "enum Color { Red, Green }
+            fn main() {
+                let c: Color = Color::Red;
+                let n: u32 = match c {
+                    Color::Red => x,
+                    Color::Green => y,
+                };
+            }",
+            &["Variable `x` is not defined", "Variable `y` is not defined"],
+        );
+    }
+
+    #[test]
+    fn main_visibility_and_inputs() {
+        // The body is not analyzed: it could use the parameters,
+        // which would only repeat the error about inputs.
+        assert_errors(
+            "pub fn main(a: u32) -> u32 { undefined }",
+            &[
+                "Main function cannot be public",
+                "Main function takes no input parameters",
+            ],
+        );
+    }
+
+    #[test]
+    fn main_visibility_and_body() {
+        assert_errors(
+            "pub fn main() { let a: u32 = undefined; }",
+            &[
+                "Main function cannot be public",
+                "Variable `undefined` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn enum_duplicate_variants() {
+        assert_errors(
+            "enum Color { Red, Red, Green, Green }
+            fn main() {}",
+            &[
+                "Grammar error: enum 'Color' has duplicate variant name 'Red'",
+                "Grammar error: enum 'Color' has duplicate variant name 'Green'",
+            ],
+        );
+    }
+
+    #[test]
+    fn enum_payload_types() {
+        assert_errors(
+            "enum Shape { Circle(Radius), Square(Side) }
+            fn main() {}",
+            &[
+                "Type alias `Radius` is not defined",
+                "Type alias `Side` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn failed_check_does_not_stop_the_next_statement() {
+        assert_errors(
+            "fn main() {
+                let b: bool = jet::add_32(1, 2);
+                let c: u32 = z;
+            }",
+            &[
+                "Expected expression of type `bool`, found type `(bool, u32)`",
+                "Variable `z` is not defined",
+            ],
+        );
+    }
+}
+
+#[cfg(test)]
 mod scope_balance_tests {
     use super::*;
 
