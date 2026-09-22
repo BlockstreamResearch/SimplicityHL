@@ -8,7 +8,7 @@ use either::Either;
 use simplicity::node::{CoreConstructible as _, JetConstructible as _};
 use simplicity::{types, Cmr, FailEntropy};
 
-use self::builtins::array_fold;
+use self::builtins::{array_fold, raw_hash};
 use crate::array::{BTreeSlice, Partition};
 use crate::ast::{
     Call, CallName, EnumMatch, Expression, ExpressionInner, JetHinter, Match, Program,
@@ -23,6 +23,8 @@ use crate::template_program::{TemplateProgram, TemplateProgramWitness};
 use crate::types::{StructuralType, TypeDeconstructible};
 use crate::value::{StructuralValue, Value};
 use crate::witness::{Arguments, WitnessNameToValueMap as _};
+
+pub(crate) use self::builtins::{RawHashJets, RawHashJetsError};
 
 type ProgNode<'brand> = Arc<named::ConstructNode<'brand>>;
 
@@ -467,6 +469,10 @@ impl Call {
                 let body = function.body().compile(&mut function_scope)?;
                 let fold_body = array_fold(*size, body.as_ref()).with_span(self)?;
                 args.comp(&fold_body).with_span(self)
+            }
+            CallName::RawHash(_, jets) => {
+                let body = raw_hash(scope.ctx(), jets).with_span(self)?;
+                scope.with_debug_symbol(args, &body, self)
             }
             CallName::ForWhile(function, bit_width) => {
                 let mut function_scope = scope.child(function.params_pattern());
