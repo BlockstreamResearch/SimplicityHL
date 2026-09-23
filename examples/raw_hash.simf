@@ -1,0 +1,33 @@
+fn main() {
+    let all_widths: u256 = raw_hash::<(u8, u16, u32, u64, u128, u256)>((
+        0x2a,
+        0x1234,
+        0xdeadbeef,
+        0x0102030405060708,
+        0x101112131415161718191a1b1c1d1e1f,
+        0x202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f,
+    ));
+
+    let ctx: Ctx8 = jet::sha_256_ctx_8_init();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_1(ctx, 0x2a);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_2(ctx, 0x1234);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_4(ctx, 0xdeadbeef);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_8(ctx, 0x0102030405060708);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_16(ctx, 0x101112131415161718191a1b1c1d1e1f);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(
+        ctx,
+        0x202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f,
+    );
+    assert!(jet::eq_256(all_widths, jet::sha_256_ctx_8_finalize(ctx)));
+
+    assert!(jet::eq_256(
+        all_widths,
+        0x4f055562a480230d6eb4d5b8e76868d228755fa1e025d930e8c98664942afc83
+    ));
+
+    let ordered: u256 = raw_hash::<(u16, u16, u16, u16, u16)>((1, 2, 3, 4, 5));
+    assert!(jet::eq_256(
+        ordered,
+        0xa952577e7fb3a2f24c293362b4979876d15343cb9bedf0e999fe96b534faf7ef
+    ));
+}
