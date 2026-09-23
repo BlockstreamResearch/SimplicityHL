@@ -1119,6 +1119,13 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn raw_hash() {
+        TestCase::program_file_with_unstable("./examples/raw_hash.simf", UnstableFeatures::all())
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
     fn regression_153() {
         TestCase::program_file("./examples/array_fold_2n.simf")
             .with_witness_values(WitnessValues::default())
@@ -1513,6 +1520,11 @@ fn main() {
         #[test]
         fn presigned_vault_regression() {
             regression_test("presigned_vault");
+        }
+
+        #[test]
+        fn raw_hash_regression() {
+            regression_test_with_features("raw_hash", crate::UnstableFeatures::all());
         }
 
         #[test]
