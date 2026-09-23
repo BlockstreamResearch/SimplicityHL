@@ -1,9 +1,10 @@
 /*
  * LAST WILL
  *
- * The inheritor can spend the coins if the owner doesn't move the them for 180
- * days. The owner has to repeat the covenant when he moves the coins with his
- * hot key. The owner can break out of the covenant with his cold key.
+ * The inheritor can spend the coins if the owner doesn't move them for 25,920
+ * blocks (about 18 days on Liquid). The owner has to repeat the covenant when
+ * he moves the coins with his hot key. The owner can break out of the covenant
+ * with his cold key.
  *
  * Requires -Z enums to run this example.
  */
