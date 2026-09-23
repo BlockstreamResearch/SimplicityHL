@@ -2,10 +2,11 @@
 
 ## Added
 
-* Add the uninhabited type `TypeInner::Never` with `ResolvedType::never` and `ResolvedType::is_never`. It has no values and no structural type; it will be used for error recovery during analysis.
+* Add the uninhabited type `TypeInner::Never` with `ResolvedType::never` and `ResolvedType::is_never`. It has no values and no structural type; it will be used for error recovery during analysis. [#418](https://github.com/BlockstreamResearch/SimplicityHL/pull/418)
 
 ## Changed
 
+* Report all errors in tuple, array and list elements, call arguments, match arms, enum payloads. [#420](https://github.com/BlockstreamResearch/SimplicityHL/pull/420)
 * Deduplicate identical compiler diagnostics and present multi-file diagnostics in deterministic dependency and source order. [#413](https://github.com/BlockstreamResearch/SimplicityHL/pull/413)
 
 # 0.7.2 - 2026-08-25
@@ -13,7 +14,7 @@
 ## Added
 
 * Add `simc --project-root <path>` to anchor `crate::` imports and unscoped `--dep` aliases at an explicit project root while allowing the entry file to live in a nested directory. [#392](https://github.com/BlockstreamResearch/SimplicityHL/pull/392)
-  * The entry file must be contained within the selected root. Omitting the option preserves the existing entry-directory behavior. 
+* The entry file must be contained within the selected root. Omitting the option preserves the existing entry-directory behavior.
 * Add a security policy with instructions for privately reporting vulnerabilities. [#393](https://github.com/BlockstreamResearch/SimplicityHL/pull/393)
 
 ## Changed

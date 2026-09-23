@@ -1657,6 +1657,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_array_with_wrong_length_fails() {
+        let ty = ResolvedType::array(UIntType::U32.into(), 3);
+        let result = Value::parse_from_str("[1, 2]", &ty);
+        assert!(
+            result.is_err(),
+            "array of the wrong length was accepted: {result:?}"
+        );
+    }
+
+    #[test]
+    fn parse_list_exceeding_bound_fails() {
+        // A list of bound 2 holds fewer than 2 elements.
+        let ty = ResolvedType::list(UIntType::U32.into(), NonZeroPow2Usize::TWO);
+        let result = Value::parse_from_str("list![1, 2]", &ty);
+        assert!(
+            result.is_err(),
+            "list exceeding its bound was accepted: {result:?}"
+        );
+    }
+
+    #[test]
     fn reconstruct_never_fails() {
         let unit = StructuralValue::from(&Value::unit());
         assert_eq!(None, Value::reconstruct(&unit, &ResolvedType::never()));

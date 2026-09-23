@@ -4,6 +4,36 @@ use std::time;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::ast::ElementsJetHinter;
+use crate::{TemplateAst, UnstableFeatures};
+
+/// Compile `src` up to and including analysis, with all unstable features enabled.
+/// Return the message of every reported error, in the order they are presented to the user.
+pub fn analysis_errors(src: &str) -> Vec<String> {
+    match TemplateAst::new_with_unstable(
+        src,
+        &UnstableFeatures::all(),
+        Box::new(ElementsJetHinter::new()),
+    ) {
+        Ok(_) => Vec::new(),
+        Err(diagnostics) => diagnostics
+            .presentation_order()
+            .into_iter()
+            .map(ToString::to_string)
+            .collect(),
+    }
+}
+
+/// Assert that compiling `src` reports exactly the `expected` errors, in order.
+#[track_caller]
+pub fn assert_errors(src: &str, expected: &[&str]) {
+    assert_eq!(
+        analysis_errors(src),
+        expected,
+        "unexpected errors for program:\n{src}"
+    );
+}
+
 /// A global counter used to guarantee unique directory names for temporary workspaces.
 ///
 /// Because `cargo test` runs tests in parallel, relying solely on system timestamps

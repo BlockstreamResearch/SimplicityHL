@@ -764,6 +764,51 @@ impl Scope {
         }
     }
 
+    /// Record an error without stopping analysis.
+    ///
+    /// A failure that was already reported is not recorded again.
+    fn report(&mut self, failure: impl Into<Failure>) {
+        if let Failure::New(diagnostic) = failure.into() {
+            self.diagnostics.push(diagnostic);
+        }
+    }
+
+    /// Report the error of a failed check that does not prevent building the node.
+    fn report_err(&mut self, result: Result<(), Diagnostic>) {
+        if let Err(error) = result {
+            self.report(error);
+        }
+    }
+
+    /// Analyze every item, even if some of them fail.
+    ///
+    /// Every error is reported as soon as it is found. If any item fails,
+    /// the caller receives [`Failure::Reported`] and stops as before.
+    fn analyze_all<A, T>(
+        &mut self,
+        items: impl IntoIterator<Item = A>,
+        mut analyze: impl FnMut(A, &mut Self) -> Result<T, Failure>,
+    ) -> Result<Vec<T>, Failure> {
+        let mut results = Vec::new();
+        let mut failed = false;
+
+        for item in items {
+            match analyze(item, self) {
+                Ok(result) => results.push(result),
+                Err(failure) => {
+                    self.report(failure);
+                    failed = true;
+                }
+            }
+        }
+
+        if failed {
+            Err(Failure::Reported)
+        } else {
+            Ok(results)
+        }
+    }
+
     /// Scope for parsing values from witness and argument files: empty,
     /// except that enum constructions may name an enum by its declared name.
     fn for_value_parsing() -> Self {
@@ -1288,17 +1333,24 @@ impl Scope {
     }
 
     /// Consume the scope and build the analyzed program with the given `main` body.
-    pub(crate) fn try_into_program(self, main: Expression) -> Option<Program> {
-        if !self.diagnostics.is_empty() {
-            return None;
+    pub(crate) fn try_into_program(
+        mut self,
+        main: Result<Expression, Failure>,
+        diagnostics: &mut DiagnosticManager,
+    ) -> Option<Program> {
+        let main = main.map_err(|failure| self.report(failure));
+        match main {
+            Ok(main) if self.diagnostics.is_empty() => Some(Program {
+                main,
+                parameters: Parameters::from(self.parameters),
+                witness_types: WitnessTypes::from(self.witnesses),
+                call_tracker: Arc::new(self.call_tracker),
+            }),
+            _ => {
+                diagnostics.extend(self.diagnostics);
+                None
+            }
         }
-
-        Some(Program {
-            main,
-            parameters: Parameters::from(self.parameters),
-            witness_types: WitnessTypes::from(self.witnesses),
-            call_tracker: Arc::new(self.call_tracker),
-        })
     }
 
     /// Insert a custom function into the global map.
@@ -1341,6 +1393,21 @@ impl Scope {
     }
 }
 
+/// Why the analysis of a node failed.
+#[derive(Debug)]
+enum Failure {
+    /// A new error that was not reported yet.
+    New(Diagnostic),
+    /// The error was already reported to the scope.
+    Reported,
+}
+
+impl From<Diagnostic> for Failure {
+    fn from(diagnostic: Diagnostic) -> Self {
+        Self::New(diagnostic)
+    }
+}
+
 /// Part of the abstract syntax tree that can be generated from a precursor in the parse tree.
 trait AbstractSyntaxTree: Sized {
     /// Component of the parse tree.
@@ -1351,8 +1418,7 @@ trait AbstractSyntaxTree: Sized {
     ///
     /// Check if the analyzed expression is of the expected type.
     /// Statements return no values so their expected type is always unit.
-    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope)
-        -> Result<Self, Diagnostic>;
+    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, Failure>;
 }
 
 impl Program {
@@ -1365,42 +1431,31 @@ impl Program {
         jet_hinter: Box<dyn JetHinter>,
         diagnostics: &mut DiagnosticManager,
     ) -> Option<Self> {
-        let unit = ResolvedType::unit();
         let mut scope = Scope::new(jet_hinter);
+        let main = Self::analyze_main(from, &mut scope);
+        scope.try_into_program(main, diagnostics)
+    }
 
+    /// Analyze every item and return the body of the single main function.
+    fn analyze_main(from: &parse::Program, scope: &mut Scope) -> Result<Expression, Failure> {
+        let unit = ResolvedType::unit();
         let items = from
             .items()
             .iter()
-            .map(|s| Item::analyze(s, &unit, &mut scope))
-            .collect::<Result<Vec<Item>, Diagnostic>>();
-
-        let items = match items {
-            Ok(items) => items,
-            Err(error) => {
-                diagnostics.push(error);
-                return None;
-            }
-        };
-
+            .map(|s| Item::analyze(s, &unit, scope))
+            .collect::<Result<Vec<Item>, Failure>>()?;
         debug_assert!(scope.is_outside_function());
         debug_assert!(
             scope.module_path.is_empty(),
             "Unclosed module scopes remain"
         );
 
-        let main = match Self::extract_single_main(&items) {
-            Ok(Some(main)) => main,
-            Ok(None) => {
-                diagnostics.push(Error::MainRequired.with_span(from.into()));
-                return None;
-            }
-            Err(error) => {
-                diagnostics.push(error.with_span(from.into()));
-                return None;
-            }
-        };
-
-        scope.try_into_program(main)
+        let main = Self::extract_single_main(&items)
+            // If we find a duplicate of main function
+            .with_span(from)?
+            .ok_or(Error::MainRequired)
+            .with_span(from)?;
+        Ok(main)
     }
 
     fn extract_single_main(items: &[Item]) -> Result<Option<Expression>, Error> {
@@ -1431,11 +1486,7 @@ impl Program {
 impl AbstractSyntaxTree for Item {
     type From = parse::Item;
 
-    fn analyze(
-        from: &Self::From,
-        ty: &ResolvedType,
-        scope: &mut Scope,
-    ) -> Result<Self, Diagnostic> {
+    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, Failure> {
         assert!(ty.is_unit(), "Items cannot return anything");
         assert!(
             scope.is_outside_function(),
@@ -1458,39 +1509,36 @@ impl AbstractSyntaxTree for Item {
                 if decl.variants().is_empty() {
                     // A sum of zero types would be uninhabited, which
                     // Simplicity's type algebra cannot express.
-                    return Err(Error::Grammar {
+                    Err(Error::Grammar {
                         msg: format!("enum '{}' must have at least one variant", decl.name()),
                     })
-                    .with_span(decl);
+                    .with_span(decl)?;
                 }
 
                 let mut seen_names = HashSet::new();
-                for v in decl.variants() {
-                    if !seen_names.insert(v.name()) {
-                        return Err(Error::Grammar {
-                            msg: format!(
-                                "enum '{}' has duplicate variant name '{}'",
-                                decl.name(),
-                                v.name()
-                            ),
-                        })
-                        .with_span(decl);
+                scope.analyze_all(decl.variants(), |v, _scope| {
+                    if seen_names.insert(v.name()) {
+                        return Ok(());
                     }
-                }
-
-                let variants = decl
-                    .variants()
-                    .iter()
-                    .map(|v| {
-                        let payload = v
-                            .payload()
-                            .iter()
-                            .map(|ty| scope.resolve(ty))
-                            .collect::<Result<Arc<[ResolvedType]>, Error>>()
-                            .with_span(v)?;
-                        Ok(EnumVariantInfo::new(v.name().clone(), payload))
+                    Err(Error::Grammar {
+                        msg: format!(
+                            "enum '{}' has duplicate variant name '{}'",
+                            decl.name(),
+                            v.name()
+                        ),
                     })
-                    .collect::<Result<Arc<[EnumVariantInfo]>, Diagnostic>>()?;
+                    .with_span(v)
+                    .map_err(Failure::from)
+                })?;
+
+                let variants = scope
+                    .analyze_all(decl.variants(), |v, scope| {
+                        let payload = scope.analyze_all(v.payload(), |ty, scope| {
+                            Ok(scope.resolve(ty).with_span(v)?)
+                        })?;
+                        Ok(EnumVariantInfo::new(v.name().clone(), Arc::from(payload)))
+                    })
+                    .map(Arc::from)?;
                 scope
                     .insert_enum(decl.name().clone(), decl.visibility().clone(), variants)
                     .with_span(decl)?;
@@ -1518,11 +1566,7 @@ impl AbstractSyntaxTree for Item {
 impl AbstractSyntaxTree for Function {
     type From = parse::Function;
 
-    fn analyze(
-        from: &Self::From,
-        ty: &ResolvedType,
-        scope: &mut Scope,
-    ) -> Result<Self, Diagnostic> {
+    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, Failure> {
         assert!(ty.is_unit(), "Function definitions cannot return anything");
         assert!(
             scope.is_outside_function(),
@@ -1569,18 +1613,19 @@ impl AbstractSyntaxTree for Function {
             return Ok(Self::Custom);
         }
 
-        if !from.params().is_empty() {
-            return Err(Error::MainNoInputs).with_span(from);
+        if matches!(from.visibility(), Visibility::Public) {
+            scope.report(Error::MainCannotBePublic.with_span(*from.span()));
         }
+
+        if !from.params().is_empty() {
+            return Err(Error::MainNoInputs).with_span(from)?;
+        }
+
         if let Some(aliased) = from.ret() {
             let resolved = scope.resolve(aliased).with_span(from)?;
             if !resolved.is_unit() {
-                return Err(Error::MainNoOutput).with_span(from);
+                return Err(Error::MainNoOutput).with_span(from)?;
             }
-        }
-
-        if matches!(from.visibility(), Visibility::Public) {
-            return Err(Error::MainCannotBePublic).with_span(from);
         }
 
         let body = scope.in_main(|scope| Expression::analyze(from.body(), ty, scope))?;
@@ -1591,11 +1636,7 @@ impl AbstractSyntaxTree for Function {
 impl AbstractSyntaxTree for Statement {
     type From = parse::Statement;
 
-    fn analyze(
-        from: &Self::From,
-        ty: &ResolvedType,
-        scope: &mut Scope,
-    ) -> Result<Self, Diagnostic> {
+    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, Failure> {
         assert!(ty.is_unit(), "Statements cannot return anything");
         match from {
             parse::Statement::Assignment(assignment) => {
@@ -1611,11 +1652,7 @@ impl AbstractSyntaxTree for Statement {
 impl AbstractSyntaxTree for Assignment {
     type From = parse::Assignment;
 
-    fn analyze(
-        from: &Self::From,
-        ty: &ResolvedType,
-        scope: &mut Scope,
-    ) -> Result<Self, Diagnostic> {
+    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, Failure> {
         assert!(ty.is_unit(), "Assignments cannot return anything");
         // The assignment is a statement that returns nothing.
         //
@@ -1649,7 +1686,14 @@ impl Expression {
         // Value files carry no scope, so enum constructions may name the
         // enum by its declared name here — and only here.
         let mut empty_scope = Scope::for_value_parsing();
-        Self::analyze(from, ty, &mut empty_scope)
+        let expression = Self::analyze(from, ty, &mut empty_scope)
+            .map_err(|failure| empty_scope.report(failure));
+
+        // Value parsing has no diagnostic manager: return the first error analysis found.
+        match empty_scope.diagnostics.into_iter().next() {
+            Some(error) => Err(error),
+            None => Ok(expression.expect("every failure is reported to the scope")),
+        }
     }
 }
 
@@ -1664,10 +1708,10 @@ fn analyze_enum_construction(
     construction: &parse::EnumConstruction,
     ty: &ResolvedType,
     scope: &mut Scope,
-) -> Result<EnumConstruction, Diagnostic> {
+) -> Result<EnumConstruction, Failure> {
     let span = *construction.span();
     let Some(info) = ty.as_enum() else {
-        return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }).with_span(span);
+        return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }).with_span(span)?;
     };
 
     // The written name must be the expected enum's.
@@ -1680,23 +1724,21 @@ fn analyze_enum_construction(
             let alias = AliasName::from_ident(single);
             match scope.get_alias(&alias) {
                 Ok(resolved) if &resolved == ty => true,
-                Ok(resolved) => {
-                    return Err(Error::ExpressionTypeMismatch {
-                        expected: ty.clone(),
-                        found: resolved,
-                    })
-                    .with_span(span);
-                }
+                Ok(resolved) => Err(Error::ExpressionTypeMismatch {
+                    expected: ty.clone(),
+                    found: resolved,
+                })
+                .with_span(span)?,
                 Err(_) => scope.unscoped_enum_names && written == info.name(),
             }
         }
         _ => false,
     };
     if !names_expected_enum {
-        return Err(Error::Grammar {
+        Err(Error::Grammar {
             msg: format!("`{written}` does not name enum `{}`", info.name()),
         })
-        .with_span(span);
+        .with_span(span)?;
     }
 
     let (variant_index, variant) = info
@@ -1704,7 +1746,7 @@ fn analyze_enum_construction(
         .ok_or_else(|| enum_variant_error(construction.variant().as_str(), info))
         .with_span(span)?;
     if construction.args().len() != variant.payload().len() {
-        return Err(Error::Grammar {
+        Err(Error::Grammar {
             msg: format!(
                 "variant `{}` of enum `{}` carries {} payload value(s), found {}",
                 construction.variant(),
@@ -1713,15 +1755,15 @@ fn analyze_enum_construction(
                 construction.args().len()
             ),
         })
-        .with_span(span);
+        .with_span(span)?;
     }
 
-    let payload = construction
-        .args()
-        .iter()
-        .zip(variant.payload())
-        .map(|(arg, payload_ty)| Expression::analyze(arg, payload_ty, scope).map(Arc::new))
-        .collect::<Result<Arc<[Arc<Expression>]>, Diagnostic>>()?;
+    let payload = scope
+        .analyze_all(
+            construction.args().iter().zip(variant.payload()),
+            |(arg, payload_ty), scope| Expression::analyze(arg, payload_ty, scope).map(Arc::new),
+        )
+        .map(Arc::from)?;
 
     Ok(EnumConstruction {
         variant_index,
@@ -1794,11 +1836,7 @@ fn enum_variant_error(found: &str, info: &EnumInfo) -> Error {
 impl AbstractSyntaxTree for Expression {
     type From = parse::Expression;
 
-    fn analyze(
-        from: &Self::From,
-        ty: &ResolvedType,
-        scope: &mut Scope,
-    ) -> Result<Self, Diagnostic> {
+    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, Failure> {
         match from.inner() {
             parse::ExpressionInner::Single(single) => {
                 let ast_single = SingleExpression::analyze(single, ty, scope)?;
@@ -1809,24 +1847,26 @@ impl AbstractSyntaxTree for Expression {
                 })
             }
             parse::ExpressionInner::Block(statements, expression) => {
-                let (ast_statements, ast_expression) = scope.in_block(|scope| {
-                    let ast_statements = statements
-                        .iter()
-                        .map(|s| Statement::analyze(s, &ResolvedType::unit(), scope))
-                        .collect::<Result<Arc<[Statement]>, Diagnostic>>()?;
-                    let ast_expression = match expression {
-                        Some(expression) => Expression::analyze(expression, ty, scope)
-                            .map(Arc::new)
-                            .map(Some),
-                        None if ty.is_unit() => Ok(None),
-                        None => Err(Error::ExpressionTypeMismatch {
-                            expected: ty.clone(),
-                            found: ResolvedType::unit(),
-                        })
-                        .with_span(from),
-                    }?;
-                    Ok((ast_statements, ast_expression))
-                })?;
+                let (ast_statements, ast_expression) =
+                    scope.in_block(|scope| -> Result<_, Failure> {
+                        let ast_statements = statements
+                            .iter()
+                            .map(|s| Statement::analyze(s, &ResolvedType::unit(), scope))
+                            .collect::<Result<Arc<[Statement]>, Failure>>()?;
+                        let ast_expression = match expression {
+                            Some(expression) => Expression::analyze(expression, ty, scope)
+                                .map(Arc::new)
+                                .map(Some),
+                            None if ty.is_unit() => Ok(None),
+                            None => Err(Error::ExpressionTypeMismatch {
+                                expected: ty.clone(),
+                                found: ResolvedType::unit(),
+                            })
+                            .with_span(from)
+                            .map_err(Failure::from),
+                        }?;
+                        Ok((ast_statements, ast_expression))
+                    })?;
 
                 Ok(Self {
                     ty: ty.clone(),
@@ -1841,19 +1881,15 @@ impl AbstractSyntaxTree for Expression {
 impl AbstractSyntaxTree for SingleExpression {
     type From = parse::SingleExpression;
 
-    fn analyze(
-        from: &Self::From,
-        ty: &ResolvedType,
-        scope: &mut Scope,
-    ) -> Result<Self, Diagnostic> {
+    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, Failure> {
         let inner = match from.inner() {
             parse::SingleExpressionInner::Boolean(bit) => {
                 if !ty.is_boolean() {
-                    return Err(Error::ExpressionTypeMismatch {
+                    Err(Error::ExpressionTypeMismatch {
                         expected: ty.clone(),
                         found: ResolvedType::boolean(),
                     })
-                    .with_span(from);
+                    .with_span(from)?;
                 }
                 SingleExpressionInner::Constant(Value::from(*bit))
             }
@@ -1899,11 +1935,11 @@ impl AbstractSyntaxTree for SingleExpression {
                     })
                     .with_span(from)?;
                 if ty != bound_ty {
-                    return Err(Error::ExpressionTypeMismatch {
+                    Err(Error::ExpressionTypeMismatch {
                         expected: ty.clone(),
                         found: bound_ty.clone(),
                     })
-                    .with_span(from);
+                    .with_span(from)?;
                 }
                 scope.insert_variable(identifier.clone(), ty.clone());
                 SingleExpressionInner::Variable(identifier.clone())
@@ -1919,13 +1955,16 @@ impl AbstractSyntaxTree for SingleExpression {
                     .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
                     .with_span(from)?;
                 if tuple.len() != types.len() {
-                    return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }).with_span(from);
+                    return Err(Error::ExpressionUnexpectedType { ty: ty.clone() })
+                        .with_span(from)?;
                 }
-                tuple
-                    .iter()
-                    .zip(types.iter())
-                    .map(|(el_parse, el_ty)| Expression::analyze(el_parse, el_ty, scope))
-                    .collect::<Result<Arc<[Expression]>, Diagnostic>>()
+
+                scope
+                    .analyze_all(
+                        tuple.iter().zip(types.iter()),
+                        |(el_parse, el_ty), scope| Expression::analyze(el_parse, el_ty, scope),
+                    )
+                    .map(Arc::from)
                     .map(SingleExpressionInner::Tuple)?
             }
             parse::SingleExpressionInner::Array(array) => {
@@ -1933,13 +1972,21 @@ impl AbstractSyntaxTree for SingleExpression {
                     .as_array()
                     .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
                     .with_span(from)?;
+
+                // The element type is known even if the size is wrong,
+                // so the elements are analyzed either way.
                 if array.len() != size {
-                    return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }).with_span(from);
+                    scope.report(
+                        Error::ExpressionUnexpectedType { ty: ty.clone() }
+                            .with_span(*from.as_ref()),
+                    );
                 }
-                array
-                    .iter()
-                    .map(|el_parse| Expression::analyze(el_parse, el_ty, scope))
-                    .collect::<Result<Arc<[Expression]>, Diagnostic>>()
+
+                scope
+                    .analyze_all(array.iter(), |el_parse, scope| {
+                        Expression::analyze(el_parse, el_ty, scope)
+                    })
+                    .map(Arc::from)
                     .map(SingleExpressionInner::Array)?
             }
             parse::SingleExpressionInner::List(list) => {
@@ -1947,12 +1994,17 @@ impl AbstractSyntaxTree for SingleExpression {
                     .as_list()
                     .ok_or(Error::ExpressionUnexpectedType { ty: ty.clone() })
                     .with_span(from)?;
+
                 if bound.get() <= list.len() {
-                    return Err(Error::ExpressionUnexpectedType { ty: ty.clone() }).with_span(from);
+                    scope.report(
+                        Error::ExpressionUnexpectedType { ty: ty.clone() }
+                            .with_span(*from.as_ref()),
+                    );
                 }
-                list.iter()
-                    .map(|e| Expression::analyze(e, el_ty, scope))
-                    .collect::<Result<Arc<[Expression]>, Diagnostic>>()
+
+                scope
+                    .analyze_all(list.iter(), |e, scope| Expression::analyze(e, el_ty, scope))
+                    .map(Arc::from)
                     .map(SingleExpressionInner::List)?
             }
             parse::SingleExpressionInner::Either(either) => {
@@ -2009,11 +2061,7 @@ impl AbstractSyntaxTree for SingleExpression {
 impl AbstractSyntaxTree for EnumMatch {
     type From = parse::EnumMatch;
 
-    fn analyze(
-        from: &Self::From,
-        ty: &ResolvedType,
-        scope: &mut Scope,
-    ) -> Result<Self, Diagnostic> {
+    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, Failure> {
         let arms = from.arms();
         let span = *from.span();
         debug_assert!(!arms.is_empty(), "the parser rejects empty enum matches");
@@ -2026,37 +2074,37 @@ impl AbstractSyntaxTree for EnumMatch {
                      top level, so match arms name them by a single identifier"
                 ),
             })
-            .with_span(span);
+            .with_span(span)
+            .map_err(Failure::from);
         };
         let alias = AliasName::from_ident(single);
         let enum_ty = scope.get_alias(&alias).with_span(span)?;
         let info = match enum_ty.as_enum() {
             Some(info) => info.clone(),
-            None => {
-                return Err(Error::Grammar {
-                    msg: format!(
-                        "`{enum_name}` is not an enum, so match arms of the form \
+            None => Err(Error::Grammar {
+                msg: format!(
+                    "`{enum_name}` is not an enum, so match arms of the form \
                          `{enum_name}::Variant` cannot apply to it"
-                    ),
-                })
-                .with_span(span)
-            }
+                ),
+            })
+            .with_span(span)?,
         };
 
         // One slot per variant, in declaration order.
         // the order of the leaves of the enum's balanced sum.
         let mut arms_by_index: Vec<Option<&parse::EnumMatchArm>> =
             vec![None; info.variants().len()];
-        for arm in arms {
+
+        scope.analyze_all(arms, |arm, _scope| {
             if arm.enum_path() != arms[0].enum_path() {
-                return Err(Error::Grammar {
+                Err(Error::Grammar {
                     msg: format!(
                         "all match arms must use the same enum; expected '{}', found '{}'",
                         enum_name,
                         arm.enum_path_string()
                     ),
                 })
-                .with_span(span);
+                .with_span(arm)?;
             }
             let (index, _) = info
                 .variant(arm.variant())
@@ -2067,16 +2115,18 @@ impl AbstractSyntaxTree for EnumMatch {
                         enum_name
                     ),
                 })
-                .with_span(span)?;
+                .with_span(arm)?;
             let slot = &mut arms_by_index[index];
             if slot.is_some() {
-                return Err(Error::Grammar {
+                Err(Error::Grammar {
                     msg: format!("duplicate arm for variant '{}'", arm.variant()),
                 })
-                .with_span(span);
+                .with_span(arm)?;
             }
+
             *slot = Some(arm);
-        }
+            Ok(())
+        })?;
 
         // One collect: Some(arms) iff every variant is covered.
         let covered: Option<Vec<&parse::EnumMatchArm>> = arms_by_index.iter().copied().collect();
@@ -2095,7 +2145,8 @@ impl AbstractSyntaxTree for EnumMatch {
                     missing.join(", ")
                 ),
             })
-            .with_span(span);
+            .with_span(span)
+            .map_err(Failure::from);
         };
 
         // Analyze the scrutinee against the nominal enum type, so that
@@ -2103,27 +2154,29 @@ impl AbstractSyntaxTree for EnumMatch {
         // this enum's variants is a type error.
         let scrutinee = Expression::analyze(from.scrutinee(), &enum_ty, scope).map(Arc::new)?;
 
-        let arm_asts = covered
-            .into_iter()
-            .zip(info.variants())
-            .map(|(arm, variant)| {
-                let arm_span = *arm.span();
-                let pattern = analyze_enum_arm_bindings(arm, variant, scope, arm_span)?;
-                scope.in_match_arm(|scope| {
-                    let payload_ty = variant.payload_type();
-                    let typed_variables = pattern.is_of_type(payload_ty).with_span(arm_span)?;
-                    for (identifier, variable_ty) in typed_variables {
-                        scope.insert_variable(identifier, variable_ty);
-                    }
-                    let body = Expression::analyze(arm.expression(), ty, scope).map(Arc::new)?;
-                    Ok(EnumMatchArm {
-                        pattern,
-                        body,
-                        span: arm_span,
+        let arm_asts = scope
+            .analyze_all(
+                covered.into_iter().zip(info.variants()),
+                |(arm, variant), scope| {
+                    let arm_span = *arm.span();
+                    let pattern = analyze_enum_arm_bindings(arm, variant, scope, arm_span)?;
+                    scope.in_match_arm(|scope| {
+                        let payload_ty = variant.payload_type();
+                        let typed_variables = pattern.is_of_type(payload_ty).with_span(arm_span)?;
+                        for (identifier, variable_ty) in typed_variables {
+                            scope.insert_variable(identifier, variable_ty);
+                        }
+                        let body =
+                            Expression::analyze(arm.expression(), ty, scope).map(Arc::new)?;
+                        Ok(EnumMatchArm {
+                            pattern,
+                            body,
+                            span: arm_span,
+                        })
                     })
-                })
-            })
-            .collect::<Result<Arc<[EnumMatchArm]>, Diagnostic>>()?;
+                },
+            )
+            .map(Arc::from)?;
 
         Ok(Self {
             scrutinee,
@@ -2183,11 +2236,7 @@ fn analyze_enum_arm_bindings(
 impl AbstractSyntaxTree for Call {
     type From = parse::Call;
 
-    fn analyze(
-        from: &Self::From,
-        ty: &ResolvedType,
-        scope: &mut Scope,
-    ) -> Result<Self, Diagnostic> {
+    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, Failure> {
         fn check_argument_types(
             parse_args: &[parse::Expression],
             expected_tys: &[ResolvedType],
@@ -2220,16 +2269,16 @@ impl AbstractSyntaxTree for Call {
             parse_args: &[parse::Expression],
             args_tys: &[ResolvedType],
             scope: &mut Scope,
-        ) -> Result<Arc<[Expression]>, Diagnostic> {
-            let args = parse_args
-                .iter()
-                .zip(args_tys.iter())
-                .map(|(arg_parse, arg_ty)| Expression::analyze(arg_parse, arg_ty, scope))
-                .collect::<Result<Arc<[Expression]>, Diagnostic>>()?;
-            Ok(args)
+        ) -> Result<Arc<[Expression]>, Failure> {
+            scope
+                .analyze_all(
+                    parse_args.iter().zip(args_tys.iter()),
+                    |(arg_parse, arg_ty), scope| Expression::analyze(arg_parse, arg_ty, scope),
+                )
+                .map(Arc::from)
         }
 
-        let name = CallName::analyze(from, ty, scope)?;
+        let name = CallName::analyze(from, scope)?;
         let args = match name.clone() {
             CallName::Jet(jet) => {
                 let args_tys = source_type(&*jet)
@@ -2238,13 +2287,15 @@ impl AbstractSyntaxTree for Call {
                     .collect::<Result<Vec<ResolvedType>, AliasName>>()
                     .map_err(|alias| Error::UndefinedAlias { name: alias })
                     .with_span(from)?;
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
                 let out_ty = target_type(&*jet)
                     .resolve_builtin()
                     .map_err(|alias| Error::UndefinedAlias { name: alias })
                     .with_span(from)?;
-                check_output_type(&out_ty, ty).with_span(from)?;
+                scope.report_err(check_output_type(&out_ty, ty).with_span(from));
+
+                check_argument_types(from.args(), &args_tys).with_span(from)?;
                 scope.track_call(from, TrackedCallName::Jet);
+
                 analyze_arguments(from.args(), &args_tys, scope)?
             }
             CallName::UnwrapLeft(right_ty) => {
@@ -2265,9 +2316,10 @@ impl AbstractSyntaxTree for Call {
             }
             CallName::IsNone(some_ty) => {
                 let args_tys = [ResolvedType::option(some_ty)];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
                 let out_ty = ResolvedType::boolean();
-                check_output_type(&out_ty, ty).with_span(from)?;
+                scope.report_err(check_output_type(&out_ty, ty).with_span(from));
+
+                check_argument_types(from.args(), &args_tys).with_span(from)?;
                 analyze_arguments(from.args(), &args_tys, scope)?
             }
             CallName::Unwrap => {
@@ -2278,10 +2330,12 @@ impl AbstractSyntaxTree for Call {
             }
             CallName::Assert => {
                 let args_tys = [ResolvedType::boolean()];
-                check_argument_types(from.args(), &args_tys).with_span(from)?;
                 let out_ty = ResolvedType::unit();
-                check_output_type(&out_ty, ty).with_span(from)?;
+                scope.report_err(check_output_type(&out_ty, ty).with_span(from));
+
+                check_argument_types(from.args(), &args_tys).with_span(from)?;
                 scope.track_call(from, TrackedCallName::Assert);
+
                 analyze_arguments(from.args(), &args_tys, scope)?
             }
             CallName::Panic => {
@@ -2307,11 +2361,13 @@ impl AbstractSyntaxTree for Call {
                 if !cast_preserves_enum_identity(&source, ty)
                     || StructuralType::from(&source) != StructuralType::from(ty)
                 {
-                    return Err(Error::InvalidCast {
-                        source,
-                        target: ty.clone(),
-                    })
-                    .with_span(from);
+                    scope.report(
+                        Error::InvalidCast {
+                            source: source.clone(),
+                            target: ty.clone(),
+                        }
+                        .with_span(*from.as_ref()),
+                    );
                 }
 
                 let args_tys = [source];
@@ -2325,9 +2381,10 @@ impl AbstractSyntaxTree for Call {
                     .map(FunctionParam::ty)
                     .cloned()
                     .collect::<Vec<ResolvedType>>();
-                check_argument_types(from.args(), &args_ty).with_span(from)?;
                 let out_ty = function.body().ty();
-                check_output_type(out_ty, ty).with_span(from)?;
+                scope.report_err(check_output_type(out_ty, ty).with_span(from));
+
+                check_argument_types(from.args(), &args_ty).with_span(from)?;
                 analyze_arguments(from.args(), &args_ty, scope)?
             }
             CallName::Fold(function, bound) => {
@@ -2345,9 +2402,10 @@ impl AbstractSyntaxTree for Call {
                     .clone();
                 let args_ty = [list_ty, accumulator_ty];
 
-                check_argument_types(from.args(), &args_ty).with_span(from)?;
                 let out_ty = function.body().ty();
-                check_output_type(out_ty, ty).with_span(from)?;
+                scope.report_err(check_output_type(out_ty, ty).with_span(from));
+
+                check_argument_types(from.args(), &args_ty).with_span(from)?;
                 analyze_arguments(from.args(), &args_ty, scope)?
             }
             CallName::ArrayFold(function, size) => {
@@ -2365,9 +2423,10 @@ impl AbstractSyntaxTree for Call {
                     .clone();
                 let args_ty = [array_ty, accumulator_ty];
 
-                check_argument_types(from.args(), &args_ty).with_span(from)?;
                 let out_ty = function.body().ty();
-                check_output_type(out_ty, ty).with_span(from)?;
+                scope.report_err(check_output_type(out_ty, ty).with_span(from));
+
+                check_argument_types(from.args(), &args_ty).with_span(from)?;
                 analyze_arguments(from.args(), &args_ty, scope)?
             }
             CallName::ForWhile(function, _bit_width) => {
@@ -2390,9 +2449,10 @@ impl AbstractSyntaxTree for Call {
                     .clone();
                 let args_ty = [accumulator_ty, context_ty];
 
-                check_argument_types(from.args(), &args_ty).with_span(from)?;
                 let out_ty = function.body().ty();
-                check_output_type(out_ty, ty).with_span(from)?;
+                scope.report_err(check_output_type(out_ty, ty).with_span(from));
+
+                check_argument_types(from.args(), &args_ty).with_span(from)?;
                 analyze_arguments(from.args(), &args_ty, scope)?
             }
         };
@@ -2405,15 +2465,9 @@ impl AbstractSyntaxTree for Call {
     }
 }
 
-impl AbstractSyntaxTree for CallName {
+impl CallName {
     // Take parse::Call, so we have access to the span for pretty errors
-    type From = parse::Call;
-
-    fn analyze(
-        from: &Self::From,
-        _ty: &ResolvedType,
-        scope: &mut Scope,
-    ) -> Result<Self, Diagnostic> {
+    fn analyze(from: &parse::Call, scope: &mut Scope) -> Result<Self, Diagnostic> {
         match from.name() {
             parse::CallName::Jet(name) => match scope.jet_hinter.parse_jet(name.as_inner()) {
                 Some(jet) if !jet.is_disabled() => Ok(Self::Jet(jet)),
@@ -2499,36 +2553,33 @@ impl AbstractSyntaxTree for CallName {
 impl AbstractSyntaxTree for Match {
     type From = parse::Match;
 
-    fn analyze(
-        from: &Self::From,
-        ty: &ResolvedType,
-        scope: &mut Scope,
-    ) -> Result<Self, Diagnostic> {
+    fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, Failure> {
         let scrutinee_ty = from.scrutinee_type();
         let scrutinee_ty = scope.resolve(&scrutinee_ty).with_span(from)?;
         let scrutinee =
             Expression::analyze(from.scrutinee(), &scrutinee_ty, scope).map(Arc::new)?;
 
-        let ast_l = scope.in_match_arm(|scope| {
-            if let Some((pat_l, ty_l)) = from.left().pattern().as_typed_pattern() {
-                let ty_l = scope.resolve(ty_l).with_span(from.left())?;
-                let typed_variables = pat_l.is_of_type(&ty_l).with_span(from.left())?;
-                for (identifier, ty) in typed_variables {
-                    scope.insert_variable(identifier, ty);
+        let analyze_arm = |arm: &parse::MatchArm, scope: &mut Scope| {
+            scope.in_match_arm(|scope| {
+                if let Some((pattern, arm_ty)) = arm.pattern().as_typed_pattern() {
+                    let arm_ty = scope.resolve(arm_ty).with_span(arm)?;
+                    let typed_variables = pattern.is_of_type(&arm_ty).with_span(arm)?;
+
+                    for (identifier, ty) in typed_variables {
+                        scope.insert_variable(identifier, ty);
+                    }
                 }
-            }
-            Expression::analyze(from.left().expression(), ty, scope).map(Arc::new)
-        })?;
-        let ast_r = scope.in_match_arm(|scope| {
-            if let Some((pat_r, ty_r)) = from.right().pattern().as_typed_pattern() {
-                let ty_r = scope.resolve(ty_r).with_span(from.right())?;
-                let typed_variables = pat_r.is_of_type(&ty_r).with_span(from.right())?;
-                for (identifier, ty) in typed_variables {
-                    scope.insert_variable(identifier, ty);
-                }
-            }
-            Expression::analyze(from.right().expression(), ty, scope).map(Arc::new)
-        })?;
+                Expression::analyze(arm.expression(), ty, scope).map(Arc::new)
+            })
+        };
+
+        // Each arm declares the types of its bindings, so the arms are independent:
+        // analyze both and report the errors of each.
+        let ast_l = analyze_arm(from.left(), scope).map_err(|failure| scope.report(failure));
+        let ast_r = analyze_arm(from.right(), scope).map_err(|failure| scope.report(failure));
+        let (Ok(ast_l), Ok(ast_r)) = (ast_l, ast_r) else {
+            return Err(Failure::Reported)?;
+        };
 
         Ok(Self {
             scrutinee,
@@ -2697,6 +2748,168 @@ fn main() {
         assert_eq!(
             match_.arms()[1].span().to_slice(source),
             Some("Choice::Second => {},")
+        );
+    }
+}
+
+#[cfg(test)]
+mod multi_error_tests {
+    use crate::test_utils::assert_errors;
+
+    #[test]
+    fn tuple_elements() {
+        assert_errors(
+            "fn main() { let pair: (u32, u32) = (x, y); }",
+            &["Variable `x` is not defined", "Variable `y` is not defined"],
+        );
+    }
+
+    #[test]
+    fn array_length_and_elements() {
+        assert_errors(
+            "fn main() { let array: [u32; 3] = [x, y]; }",
+            &[
+                "Expected expression of type `[u32; 3]`; found something else",
+                "Variable `x` is not defined",
+                "Variable `y` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn call_output_type_and_arguments() {
+        assert_errors(
+            "fn main() { let sum: bool = jet::add_32(a, b); }",
+            &[
+                "Expected expression of type `bool`, found type `(bool, u32)`",
+                "Variable `a` is not defined",
+                "Variable `b` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn nested_errors_are_reported_once() {
+        assert_errors(
+            "fn main() { let pair: (u32, u32) = (jet::add_32(a, 1), b); }",
+            &[
+                "Expected expression of type `u32`, found type `(bool, u32)`",
+                "Variable `a` is not defined",
+                "Variable `b` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn match_arms() {
+        assert_errors(
+            "fn main() {
+                let input: Either<u32, u32> = Left(1);
+                let result: u32 = match input {
+                    Left(l: u32) => left_var,
+                    Right(r: u32) => right_var,
+                };
+            }",
+            &[
+                "Variable `left_var` is not defined",
+                "Variable `right_var` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn enum_match_misspelled_variants_are_not_reported_as_missing() {
+        assert_errors(
+            "enum Color { Red, Green, Blue }
+            fn main() {
+                let c: Color = Color::Red;
+                match c {
+                    Color::Rd => {},
+                    Color::Gren => {},
+                    Color::Blue => {},
+                }
+            }",
+            &[
+                "Grammar error: variant 'Rd' is not defined in enum 'Color'",
+                "Grammar error: variant 'Gren' is not defined in enum 'Color'",
+            ],
+        );
+    }
+
+    #[test]
+    fn enum_match_arms() {
+        assert_errors(
+            "enum Color { Red, Green }
+            fn main() {
+                let c: Color = Color::Red;
+                let n: u32 = match c {
+                    Color::Red => x,
+                    Color::Green => y,
+                };
+            }",
+            &["Variable `x` is not defined", "Variable `y` is not defined"],
+        );
+    }
+
+    #[test]
+    fn main_visibility_and_inputs() {
+        // The body is not analyzed: it could use the parameters,
+        // which would only repeat the error about inputs.
+        assert_errors(
+            "pub fn main(a: u32) -> u32 { undefined }",
+            &[
+                "Main function cannot be public",
+                "Main function takes no input parameters",
+            ],
+        );
+    }
+
+    #[test]
+    fn main_visibility_and_body() {
+        assert_errors(
+            "pub fn main() { let a: u32 = undefined; }",
+            &[
+                "Main function cannot be public",
+                "Variable `undefined` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn enum_duplicate_variants() {
+        assert_errors(
+            "enum Color { Red, Red, Green, Green }
+            fn main() {}",
+            &[
+                "Grammar error: enum 'Color' has duplicate variant name 'Red'",
+                "Grammar error: enum 'Color' has duplicate variant name 'Green'",
+            ],
+        );
+    }
+
+    #[test]
+    fn enum_payload_types() {
+        assert_errors(
+            "enum Shape { Circle(Radius), Square(Side) }
+            fn main() {}",
+            &[
+                "Type alias `Radius` is not defined",
+                "Type alias `Side` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn failed_check_does_not_stop_the_next_statement() {
+        assert_errors(
+            "fn main() {
+                let b: bool = jet::add_32(1, 2);
+                let c: u32 = z;
+            }",
+            &[
+                "Expected expression of type `bool`, found type `(bool, u32)`",
+                "Variable `z` is not defined",
+            ],
         );
     }
 }
