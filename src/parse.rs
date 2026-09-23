@@ -30,7 +30,9 @@ use crate::str::{
     SymbolName,
 };
 use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
-use crate::unstable::{impl_require_feature, RequireFeature, UnstableFeature, UnstableFeatures};
+use crate::unstable::{
+    impl_require_feature, FeatureRequirement, RequireFeature, UnstableFeature, UnstableFeatures,
+};
 use crate::version::SimcDirective;
 use crate::TemplateProgramWitness;
 
@@ -494,7 +496,18 @@ impl Call {
 
 impl_eq_hash!(Call; name, args);
 
-impl_require_feature!(Call {recurse: name, args; });
+// Hand-written because `raw_hash` is gated per call name, while the macro
+// can gate only an entire type, and `CallName` has no span of its own.
+impl RequireFeature for Call {
+    fn feature_requirements(&self, out: &mut Vec<FeatureRequirement>) {
+        if let CallName::RawHash(_) = self.name {
+            out.push(FeatureRequirement::new(UnstableFeature::RawHash, self.span));
+        }
+
+        self.name.feature_requirements(out);
+        self.args.feature_requirements(out);
+    }
+}
 
 /// Name of a call.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]

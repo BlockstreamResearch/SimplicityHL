@@ -33,6 +33,9 @@ pub enum UnstableFeature {
     /// Enum syntax: `enum` declarations and `EnumName::Variant` match
     /// expressions. Enable with `simc -Z enums`.
     Enums,
+    /// Raw-hash syntax: the `raw_hash::<T>(tuple)` builtin, which hashes a
+    /// tuple of unsigned integers. Enable with `simc -Z raw_hash`.
+    RawHash,
 }
 
 impl UnstableFeature {
@@ -46,7 +49,7 @@ impl UnstableFeature {
     /// Append the new variant here, bump the count in
     /// `all_contains_every_variant` ( in the `tests` module below), then
     /// gate the syntax via [`RequireFeature`].
-    pub const ALL: &'static [Self] = &[Self::Imports, Self::Enums];
+    pub const ALL: &'static [Self] = &[Self::Imports, Self::Enums, Self::RawHash];
 
     /// Human-readable description shown next to the feature's name under
     /// `simc --help`.
@@ -57,6 +60,9 @@ impl UnstableFeature {
             }
             Self::Enums => {
                 "Enum syntax: 'enum' declarations and 'EnumName::Variant' match expressions"
+            }
+            Self::RawHash => {
+                "Raw-hash syntax: the 'raw_hash::<T>(tuple)' builtin for hashing a tuple of unsigned integers"
             }
         }
     }
@@ -220,6 +226,7 @@ impl fmt::Display for UnstableFeature {
         match self {
             Self::Imports => write!(f, "imports"),
             Self::Enums => write!(f, "enums"),
+            Self::RawHash => write!(f, "raw_hash"),
         }
     }
 }
@@ -233,6 +240,7 @@ impl FromStr for UnstableFeature {
         match s {
             "imports" => Ok(UnstableFeature::Imports),
             "enums" => Ok(UnstableFeature::Enums),
+            "raw_hash" => Ok(UnstableFeature::RawHash),
             _ => Err(format!("Unknown unstable feature: '{s}'")),
         }
     }
@@ -355,7 +363,7 @@ mod tests {
         // the variant to `ALL`. Pins that `ALL` stays complete.
         assert_eq!(
             all_features.len(),
-            2,
+            3,
             "update this count when adding a feature"
         );
 
