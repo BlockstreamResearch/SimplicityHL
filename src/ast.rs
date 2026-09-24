@@ -660,6 +660,29 @@ pub trait JetHinter: std::fmt::Debug + Send + Sync {
 
     /// Clones the `JetHinter` into a boxed trait object.
     fn clone_box(&self) -> Box<dyn JetHinter>;
+
+    // TODO: These return `Option` because a jet set need not contain the SHA-256
+    // context jets; an external jet library may define any jets it likes. Once
+    // rust-simplicity requires every jet set to provide the essential jets, these
+    // can become infallible like `construct_verify`. See
+    // https://github.com/BlockstreamResearch/SimplicityHL/pull/423#issuecomment-5798922942
+
+    /// Constructs an instance of the `sha_256_ctx_8_init` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_init(&self) -> Option<Box<dyn JetHL>>;
+    /// Constructs an instance of the `sha_256_ctx_8_add_1` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_add_1(&self) -> Option<Box<dyn JetHL>>;
+    /// Constructs an instance of the `sha_256_ctx_8_add_2` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_add_2(&self) -> Option<Box<dyn JetHL>>;
+    /// Constructs an instance of the `sha_256_ctx_8_add_4` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_add_4(&self) -> Option<Box<dyn JetHL>>;
+    /// Constructs an instance of the `sha_256_ctx_8_add_8` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_add_8(&self) -> Option<Box<dyn JetHL>>;
+    /// Constructs an instance of the `sha_256_ctx_8_add_16` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_add_16(&self) -> Option<Box<dyn JetHL>>;
+    /// Constructs an instance of the `sha_256_ctx_8_add_32` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_add_32(&self) -> Option<Box<dyn JetHL>>;
+    /// Constructs an instance of the `sha_256_ctx_8_finalize` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_finalize(&self) -> Option<Box<dyn JetHL>>;
 }
 
 macro_rules! impl_jet_hinter {
@@ -692,6 +715,31 @@ macro_rules! impl_jet_hinter {
 
             fn clone_box(&self) -> Box<dyn JetHinter> {
                 Box::new(Self)
+            }
+
+            fn construct_sha_256_ctx_8_init(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Init))
+            }
+            fn construct_sha_256_ctx_8_add_1(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Add1))
+            }
+            fn construct_sha_256_ctx_8_add_2(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Add2))
+            }
+            fn construct_sha_256_ctx_8_add_4(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Add4))
+            }
+            fn construct_sha_256_ctx_8_add_8(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Add8))
+            }
+            fn construct_sha_256_ctx_8_add_16(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Add16))
+            }
+            fn construct_sha_256_ctx_8_add_32(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Add32))
+            }
+            fn construct_sha_256_ctx_8_finalize(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Finalize))
             }
         }
     };
