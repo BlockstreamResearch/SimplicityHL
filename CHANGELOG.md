@@ -1,13 +1,50 @@
 # Unreleased
 
+# 0.8.0 - 2026-09-23
+
+## Breaking Changes
+
+* Rename the source-level `TemplateProgram` to `TemplateAst`.
+  `TemplateProgram` now represents the intermediate compiled program returned by `ast::Program::compile`.
+  Replace `str::WitnessName` with `TemplateProgramWitness`, using separate constructors for witnesses and parameters.
+  `Arguments`, `WitnessValues`, `WitnessTypes` and `Parameters` now use `TemplateProgramWitness` keys.
+  Import `WitnessNameToValueMap` for value-map methods and replace `Arguments::from(map)` and `WitnessValues::from(map)` with `from_map`. [#388](https://github.com/BlockstreamResearch/SimplicityHL/pull/388)
+* String-wrapper `as_inner()` methods now return `&Arc<str>`.
+  Use `as_str()` for `&str`.
+  `UnresolvedValues` now uses `Identifier` keys. [#388](https://github.com/BlockstreamResearch/SimplicityHL/pull/388)
+* Change `ast::Program::analyze` to accept `&mut DiagnosticManager` and return `Option<Program>`.
+  Analysis failures are recorded in the supplied manager. [#418](https://github.com/BlockstreamResearch/SimplicityHL/pull/418)
+* Remove `UIntType::try_from` conversions from `&ResolvedType` and `&StructuralType`. [#407](https://github.com/BlockstreamResearch/SimplicityHL/pull/407)
+* Upgrade the re-exported `simplicity` crate to `simplicity-lang` 0.9.0 and `elements` to 0.27.0.
+  Downstream callers must update to the new hash and witness APIs.
+  Hash constructors use `from_byte_array` instead of `from_slice` or `all_zeros`, hex decoding uses `hex::decode_to_vec`, and transaction witnesses use `elements::Witness`.
+  `Final::two_two_n` is now fallible, with `two_two_n_fixed` for constant sizes.
+  Custom `CoreConstructible` implementations must provide `arrow()` and `jet()`.
+  See the [rust-simplicity release notes](https://github.com/BlockstreamResearch/rust-simplicity/blob/simplicity-lang-0.9.0/CHANGELOG.md) for further upstream API changes.
+* Compiler directives restricted to 0.7, such as `simc "0.7"`, reject this release.
+  Update the declared range after checking compatibility with 0.8.0.
+
 ## Added
 
-* Add the uninhabited type `TypeInner::Never` with `ResolvedType::never` and `ResolvedType::is_never`. It has no values and no structural type; it will be used for error recovery during analysis. [#418](https://github.com/BlockstreamResearch/SimplicityHL/pull/418)
+* Add `as_str()` to string wrappers and `TemplateProgramWitness` for borrowing the inner `&str`. [#388](https://github.com/BlockstreamResearch/SimplicityHL/pull/388)
+* Add the uninhabited type `TypeInner::Never` with `ResolvedType::never` and `ResolvedType::is_never`.
+  It has no values and no structural type. [#417](https://github.com/BlockstreamResearch/SimplicityHL/pull/417)
+* Add `DiagnosticManager::presentation_order()` for callers that need diagnostics in the same order as rendered output.
+  `diagnostics()` retains insertion order. [#413](https://github.com/BlockstreamResearch/SimplicityHL/pull/413)
 
 ## Changed
 
-* Report all errors in tuple, array and list elements, call arguments, match arms, enum payloads. [#420](https://github.com/BlockstreamResearch/SimplicityHL/pull/420)
+* Report all errors in tuple, array and list elements, call arguments, match arms and enum payloads. [#420](https://github.com/BlockstreamResearch/SimplicityHL/pull/420)
+* Replace the deprecated relative-distance timelock jet in the last-will example with explicit transaction-version and input-sequence checks.
+  Clarify that its 25,920-block delay is about 18 days on Liquid. [#395](https://github.com/BlockstreamResearch/SimplicityHL/pull/395)
 * Deduplicate identical compiler diagnostics and present multi-file diagnostics in deterministic dependency and source order. [#413](https://github.com/BlockstreamResearch/SimplicityHL/pull/413)
+* Parse nested block bodies in linear time instead of exponential time. [#410](https://github.com/BlockstreamResearch/SimplicityHL/pull/410)
+
+## Fixed
+
+* Correct the `gej_ge_add_ex` documentation to describe the ratio of the result's z-coordinate to the input's z-coordinate. [#419](https://github.com/BlockstreamResearch/SimplicityHL/pull/419)
+* Restore analysis scopes after errors in blocks, functions, match arms and modules. [#406](https://github.com/BlockstreamResearch/SimplicityHL/pull/406)
+* Make each `use` declaration atomic so a failed import cannot leave partially imported names or visibility changes. [#416](https://github.com/BlockstreamResearch/SimplicityHL/pull/416)
 
 # 0.7.2 - 2026-08-25
 
