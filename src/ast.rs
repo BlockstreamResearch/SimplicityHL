@@ -7,6 +7,7 @@ use either::Either;
 use miniscript::iter::{Tree, TreeLike};
 use simplicity::jet::{Core, Elements, Jet};
 
+use crate::compile::{RawHashJets, RawHashJetsError};
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
 use crate::driver::{CRATE_STR, MAIN_STR};
 use crate::error::{Diagnostic, DiagnosticManager, Error, Span, WithSpan};
@@ -317,6 +318,9 @@ pub enum CallName {
     ArrayFold(CustomFunction, NonZeroUsize),
     /// Loop over the given function a bounded number of times until it returns success.
     ForWhile(CustomFunction, Pow2Usize),
+    /// SHA-256 of the concatenated bytes of a tuple of unsigned integers of the given type,
+    /// using the given jets.
+    RawHash(ResolvedType, RawHashJets),
 }
 
 // Manually implemented because the 1.74 (MSRV) derive expands to a body that
@@ -338,6 +342,7 @@ impl PartialEq for CallName {
             (Self::Fold(a, b), Self::Fold(c, d)) => a == c && b == d,
             (Self::ArrayFold(a, b), Self::ArrayFold(c, d)) => a == c && b == d,
             (Self::ForWhile(a, b), Self::ForWhile(c, d)) => a == c && b == d,
+            (Self::RawHash(a, b), Self::RawHash(c, d)) => a == c && b == d,
             _ => false,
         }
     }
@@ -660,6 +665,29 @@ pub trait JetHinter: std::fmt::Debug + Send + Sync {
 
     /// Clones the `JetHinter` into a boxed trait object.
     fn clone_box(&self) -> Box<dyn JetHinter>;
+
+    // TODO: These return `Option` because a jet set need not contain the SHA-256
+    // context jets; an external jet library may define any jets it likes. Once
+    // rust-simplicity requires every jet set to provide the essential jets, these
+    // can become infallible like `construct_verify`. See
+    // https://github.com/BlockstreamResearch/SimplicityHL/pull/423#issuecomment-5798922942
+
+    /// Constructs an instance of the `sha_256_ctx_8_init` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_init(&self) -> Option<Box<dyn JetHL>>;
+    /// Constructs an instance of the `sha_256_ctx_8_add_1` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_add_1(&self) -> Option<Box<dyn JetHL>>;
+    /// Constructs an instance of the `sha_256_ctx_8_add_2` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_add_2(&self) -> Option<Box<dyn JetHL>>;
+    /// Constructs an instance of the `sha_256_ctx_8_add_4` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_add_4(&self) -> Option<Box<dyn JetHL>>;
+    /// Constructs an instance of the `sha_256_ctx_8_add_8` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_add_8(&self) -> Option<Box<dyn JetHL>>;
+    /// Constructs an instance of the `sha_256_ctx_8_add_16` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_add_16(&self) -> Option<Box<dyn JetHL>>;
+    /// Constructs an instance of the `sha_256_ctx_8_add_32` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_add_32(&self) -> Option<Box<dyn JetHL>>;
+    /// Constructs an instance of the `sha_256_ctx_8_finalize` jet, if this jet set has it.
+    fn construct_sha_256_ctx_8_finalize(&self) -> Option<Box<dyn JetHL>>;
 }
 
 macro_rules! impl_jet_hinter {
@@ -692,6 +720,31 @@ macro_rules! impl_jet_hinter {
 
             fn clone_box(&self) -> Box<dyn JetHinter> {
                 Box::new(Self)
+            }
+
+            fn construct_sha_256_ctx_8_init(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Init))
+            }
+            fn construct_sha_256_ctx_8_add_1(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Add1))
+            }
+            fn construct_sha_256_ctx_8_add_2(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Add2))
+            }
+            fn construct_sha_256_ctx_8_add_4(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Add4))
+            }
+            fn construct_sha_256_ctx_8_add_8(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Add8))
+            }
+            fn construct_sha_256_ctx_8_add_16(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Add16))
+            }
+            fn construct_sha_256_ctx_8_add_32(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Add32))
+            }
+            fn construct_sha_256_ctx_8_finalize(&self) -> Option<Box<dyn JetHL>> {
+                Some(Box::new($jet_type::Sha256Ctx8Finalize))
             }
         }
     };
@@ -2429,6 +2482,18 @@ impl AbstractSyntaxTree for Call {
                 check_argument_types(from.args(), &args_ty).with_span(from)?;
                 analyze_arguments(from.args(), &args_ty, scope)?
             }
+            CallName::RawHash(tuple_ty, _) => {
+                // A raw hash has the signature:
+                //   raw_hash::<T>(tuple: T) -> u256
+                // where
+                //   T is a tuple of u8, u16, u32, u64, u128 or u256
+                let args_tys = [tuple_ty];
+                check_argument_types(from.args(), &args_tys).with_span(from)?;
+
+                let out_ty = ResolvedType::u256();
+                check_output_type(&out_ty, ty).with_span(from)?;
+                analyze_arguments(from.args(), &args_tys, scope)?
+            }
             CallName::ForWhile(function, _bit_width) => {
                 // A for-while loop has the signature:
                 //   for_while::<f>(initial_accumulator: A, readonly_context: C) -> Either<B, A>
@@ -2485,6 +2550,33 @@ impl CallName {
                 scope.resolve(some_ty).map(Self::IsNone).with_span(from)
             }
             parse::CallName::Unwrap => Ok(Self::Unwrap),
+            parse::CallName::RawHash(tuple_ty) => {
+                let tuple_ty = scope.resolve(tuple_ty).with_span(from)?;
+
+                // Every element must be an integer with a `sha_256_ctx_8_add_N` jet.
+                let widths = tuple_ty
+                    .as_tuple()
+                    .and_then(|elements| {
+                        elements
+                            .iter()
+                            .map(|element| element.as_integer())
+                            .collect::<Option<Vec<UIntType>>>()
+                    })
+                    .ok_or(Error::RawHashUnsupportedType {
+                        ty: tuple_ty.clone(),
+                    })
+                    .with_span(from)?;
+
+                match RawHashJets::new(scope.jet_hinter.as_ref(), widths) {
+                    Ok(jets) => Ok(Self::RawHash(tuple_ty, jets)),
+                    Err(RawHashJetsError::UnsupportedWidth(_)) => {
+                        Err(Error::RawHashUnsupportedType { ty: tuple_ty }).with_span(from)
+                    }
+                    Err(RawHashJetsError::Unavailable) => {
+                        Err(Error::RawHashJetsUnavailable).with_span(from)
+                    }
+                }
+            }
             parse::CallName::Assert => Ok(Self::Assert),
             parse::CallName::Panic => Ok(Self::Panic),
             parse::CallName::Debug => Ok(Self::Debug),

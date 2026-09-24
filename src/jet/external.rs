@@ -218,6 +218,38 @@ impl JetHinter for ExternalJetHinter {
         Box::new(ExternalJetHinter)
     }
 
+    fn construct_sha_256_ctx_8_init(&self) -> Option<Box<dyn JetHL>> {
+        self.parse_jet("sha_256_ctx_8_init")
+    }
+
+    fn construct_sha_256_ctx_8_add_1(&self) -> Option<Box<dyn JetHL>> {
+        self.parse_jet("sha_256_ctx_8_add_1")
+    }
+
+    fn construct_sha_256_ctx_8_add_2(&self) -> Option<Box<dyn JetHL>> {
+        self.parse_jet("sha_256_ctx_8_add_2")
+    }
+
+    fn construct_sha_256_ctx_8_add_4(&self) -> Option<Box<dyn JetHL>> {
+        self.parse_jet("sha_256_ctx_8_add_4")
+    }
+
+    fn construct_sha_256_ctx_8_add_8(&self) -> Option<Box<dyn JetHL>> {
+        self.parse_jet("sha_256_ctx_8_add_8")
+    }
+
+    fn construct_sha_256_ctx_8_add_16(&self) -> Option<Box<dyn JetHL>> {
+        self.parse_jet("sha_256_ctx_8_add_16")
+    }
+
+    fn construct_sha_256_ctx_8_add_32(&self) -> Option<Box<dyn JetHL>> {
+        self.parse_jet("sha_256_ctx_8_add_32")
+    }
+
+    fn construct_sha_256_ctx_8_finalize(&self) -> Option<Box<dyn JetHL>> {
+        self.parse_jet("sha_256_ctx_8_finalize")
+    }
+
     fn conjure(&self, jet: &dyn Jet) -> Option<Box<dyn JetHL>> {
         let container = external_jet_lib();
         (container.conjure)(jet)

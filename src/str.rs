@@ -125,6 +125,7 @@ impl From<SymbolName> for FunctionName {
 pub(crate) const FUNCTION_RESERVED: &[&str] = &[
     "unwrap_left",
     "unwrap_right",
+    "array_fold",
     "for_while",
     "is_none",
     "unwrap",
@@ -134,6 +135,7 @@ pub(crate) const FUNCTION_RESERVED: &[&str] = &[
     "into",
     "fold",
     "dbg",
+    "raw_hash",
 ];
 
 pub(crate) const ALIAS_RESERVED: &[&str] = &[
