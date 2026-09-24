@@ -225,7 +225,7 @@ impl FromStr for UIntType {
 /// declaration order.
 ///
 /// An enum with `n` variants is represented as a balanced sum of its `n`
-/// variant payload types (see [`BTreeSlice`] for the tree shape), so a value
+/// variant payload types (see [`BTreeSlice`](crate::array::BTreeSlice) for the tree shape), so a value
 /// of the type is exactly one of the `n` variants: an undeclared variant is
 /// unrepresentable. A variant's position among the declared variants
 /// determines its leaf in the sum; there is no separate discriminant.

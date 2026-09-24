@@ -11,8 +11,9 @@ rust-version = "1.79.0"
 default-run = "simc"
 
 [package.metadata.rbmt.lint]
-# Existing transitive split: derive_arbitrary uses syn 1 while serde/wasm tooling uses syn 2.
-allowed_duplicates = ["syn"]
+# Bitcoin still uses older hash/hex crates than Elements and Simplicity.
+# derive_arbitrary, wasm tooling and serde use different syn majors.
+allowed_duplicates = ["bitcoin_hashes", "hex-conservative", "syn"]
 
 [lib]
 name = "simplicityhl"
@@ -38,7 +39,7 @@ fmt = []
 base64 = "0.21.2"
 serde = { version = "1.0.188", features = ["derive"], optional = true }
 serde_json = { version = "1.0.105", optional = true }
-simplicity-lang = { version = "0.8.0" }
+simplicity-lang = { version = "0.9.0" }
 miniscript = "12.3.1"
 either = "1.12.0"
 itertools = "0.13.0"

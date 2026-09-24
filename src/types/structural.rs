@@ -58,15 +58,15 @@ impl fmt::Display for StructuralType {
 impl From<UIntType> for StructuralType {
     fn from(value: UIntType) -> Self {
         let inner = match value {
-            UIntType::U1 => Final::two_two_n(0),
-            UIntType::U2 => Final::two_two_n(1),
-            UIntType::U4 => Final::two_two_n(2),
-            UIntType::U8 => Final::two_two_n(3),
-            UIntType::U16 => Final::two_two_n(4),
-            UIntType::U32 => Final::two_two_n(5),
-            UIntType::U64 => Final::two_two_n(6),
-            UIntType::U128 => Final::two_two_n(7),
-            UIntType::U256 => Final::two_two_n(8),
+            UIntType::U1 => Final::two_two_n_fixed::<0>(),
+            UIntType::U2 => Final::two_two_n_fixed::<1>(),
+            UIntType::U4 => Final::two_two_n_fixed::<2>(),
+            UIntType::U8 => Final::two_two_n_fixed::<3>(),
+            UIntType::U16 => Final::two_two_n_fixed::<4>(),
+            UIntType::U32 => Final::two_two_n_fixed::<5>(),
+            UIntType::U64 => Final::two_two_n_fixed::<6>(),
+            UIntType::U128 => Final::two_two_n_fixed::<7>(),
+            UIntType::U256 => Final::two_two_n_fixed::<8>(),
         };
         Self(inner)
     }

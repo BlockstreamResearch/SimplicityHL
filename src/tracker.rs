@@ -375,7 +375,6 @@ mod tests {
 
     use crate::ast::ElementsJetHinter;
     use crate::elements::confidential::Asset;
-    use crate::elements::hashes::Hash;
     use crate::elements::pset::Input;
     use crate::elements::{AssetId, OutPoint, Script, Txid};
     use crate::{Arguments, TemplateAst, WitnessValues};
@@ -431,7 +430,7 @@ mod tests {
 
     fn create_test_env() -> ElementsEnv<Arc<elements::Transaction>> {
         let mut tx = PartiallySignedTransaction::new_v2();
-        let outpoint = OutPoint::new(Txid::from_slice(&[2; 32]).unwrap(), 33);
+        let outpoint = OutPoint::new(Txid::from_byte_array([2; 32]), 33);
         tx.add_input(Input::from_prevout(outpoint));
 
         ElementsEnv::new(
@@ -445,7 +444,7 @@ mod tests {
             Cmr::from_byte_array([0; 32]),
             ControlBlock::from_slice(&[0xc0; 33]).unwrap(),
             None,
-            BlockHash::all_zeros(),
+            BlockHash::from_byte_array([0; 32]),
         )
     }
 

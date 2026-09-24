@@ -6,6 +6,10 @@ rust-version = "1.79.0"
 description = "Generator of Rust code as interface between SimplicityHL and Rust."
 publish = false
 
+[package.metadata.rbmt.lint]
+# Bitcoin/Elements use different hash and hex majors, serde/wasm use different syn majors.
+allowed_duplicates = ["bitcoin_hashes", "hex-conservative", "syn"]
+
 [dependencies]
 simplicityhl = { path = ".." , features = ["docs"]}
 
