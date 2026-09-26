@@ -1,7 +1,6 @@
 use std::str::FromStr;
 
 use elements::encode::{deserialize, serialize_hex};
-use elements::hex::FromHex;
 use elementsd::bitcoincore_rpc::jsonrpc::serde_json::Value;
 use elementsd::bitcoind::bitcoincore_rpc::RpcApi;
 use elementsd::ElementsD;
@@ -77,7 +76,7 @@ impl Call for ElementsD {
             .unwrap()
             .to_string();
 
-        let tx_bytes = Vec::<u8>::from_hex(&tx_hex).unwrap();
+        let tx_bytes = elements::hex::decode_to_vec(&tx_hex).unwrap();
         deserialize(&tx_bytes).unwrap()
     }
 

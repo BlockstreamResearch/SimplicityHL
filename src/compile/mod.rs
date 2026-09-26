@@ -5,7 +5,7 @@ mod builtins;
 use std::sync::Arc;
 
 use either::Either;
-use simplicity::node::{CoreConstructible as _, JetConstructible as _};
+use simplicity::node::CoreConstructible as _;
 use simplicity::{types, Cmr, FailEntropy};
 
 use self::builtins::array_fold;

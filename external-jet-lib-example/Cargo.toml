@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.79.0"
 
+[package.metadata.rbmt.lint]
+# Bitcoin/Elements use different hash and hex majors, serde/wasm use different syn majors.
+allowed_duplicates = ["bitcoin_hashes", "hex-conservative", "syn"]
+
 [[bin]]
 name = "external-lib-consumer"
 path = "src/main.rs"

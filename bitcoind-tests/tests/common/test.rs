@@ -1,6 +1,5 @@
 use std::str::FromStr;
 
-use elements::hashes::Hash;
 use elements::pset::PartiallySignedTransaction as Psbt;
 use elements::{confidential, secp256k1_zkp as secp256k1};
 use elementsd::ElementsD;
@@ -212,12 +211,12 @@ impl<'a> TestCase<'a> {
             .satisfy(witness_values)
             .expect("program should be satisfiable");
         let (program_bytes, witness_bytes) = satisfied_program.redeem().to_vec_with_witness();
-        psbt.inputs_mut()[0].final_script_witness = Some(vec![
+        psbt.inputs_mut()[0].final_script_witness = Some(elements::Witness::from(vec![
             witness_bytes,
             program_bytes,
             script_ver.0.into_bytes(),
             control_block.serialize(),
-        ]);
+        ]));
         let tx = psbt
             .extract_tx()
             .expect("transaction should be extractable");

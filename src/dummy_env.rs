@@ -3,11 +3,10 @@
 use std::sync::Arc;
 
 use elements::{confidential, taproot::ControlBlock, AssetIssuance};
-use hashes::Hash;
+use simplicity::elements;
 use simplicity::elements::{AssetId, TxOut};
 use simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
 use simplicity::Cmr;
-use simplicity::{elements, hashes};
 
 /// Return a dummy Elements environment.
 pub fn dummy() -> ElementsEnv<Arc<elements::Transaction>> {
@@ -69,7 +68,7 @@ pub fn dummy_with_tx(tx: elements::Transaction) -> ElementsEnv<Arc<elements::Tra
         Cmr::from_byte_array([0; 32]),
         ControlBlock::from_slice(&ctrl_blk).unwrap(),
         None,
-        elements::BlockHash::all_zeros(),
+        elements::BlockHash::from_byte_array([0; 32]),
     )
 }
 

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use either::Either;
-use hashes::{sha256, Hash, HashEngine};
+use hashes::{sha256, HashEngine};
 use simplicity::{hashes, Cmr};
 
 use crate::error::Span;
