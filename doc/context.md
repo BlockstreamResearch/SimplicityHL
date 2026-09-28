@@ -135,3 +135,11 @@ Then Γ ⊩ `b.unwrap_left()`: B
 If Γ ⊩ `c`: B + C
 
 Then Γ ⊩ `c.unwrap_right()`: C
+
+## Raw hash
+
+If Ti ∈ { 𝟚^8, 𝟚^16, 𝟚^32, 𝟚^64, 𝟚^128, 𝟚^256 } for each 1 ≤ i ≤ n
+
+If Γ ⊩ `t`: T1 × ⋯ × Tn
+
+Then Γ ⊩ `raw_hash::<(T1, …, Tn)>(t)`: 𝟚^256

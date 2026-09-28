@@ -967,6 +967,10 @@ pub enum Error {
         declared: ResolvedType,
         assigned: ResolvedType,
     },
+    RawHashUnsupportedType {
+        ty: ResolvedType,
+    },
+    RawHashJetsUnavailable,
 }
 
 #[rustfmt::skip]
@@ -1227,6 +1231,14 @@ impl fmt::Display for Error {
             Error::ArgumentTypeMismatch { name, declared, assigned } => write!(
                 f,
                 "Parameter `{name}` was declared with type `{declared}` but its assigned argument is of type `{assigned}`"
+            ),
+            Error::RawHashJetsUnavailable => write!(
+                f,
+                "`raw_hash` requires the SHA-256 context jets, which this jet set does not provide"
+            ),
+            Error::RawHashUnsupportedType { ty } => write!(
+                f,
+                "`raw_hash` expects a tuple of `u8`, `u16`, `u32`, `u64`, `u128` or `u256`, found `{ty}`"
             ),
         }
     }

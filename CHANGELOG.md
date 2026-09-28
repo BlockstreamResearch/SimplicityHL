@@ -1,5 +1,10 @@
 # Unreleased
 
+## Added
+
+* Add the unstable `raw_hash::<T>(tuple)` builtin, which hashes a tuple of unsigned integers (`u8`, `u16`, `u32`, `u64`, `u128`, `u256`) with SHA-256, using one `sha_256_ctx_8_add_N` jet per element in source order. Enable with `-Z raw_hash`.  
+**Use with care:** the digest commits only to the bytes, not to the type, so `(u8, u8)` and `u16` hash identically. See `doc/unstable-features.md`. [#423](https://github.com/BlockstreamResearch/SimplicityHL/pull/423)
+
 # 0.8.0 - 2026-09-23
 
 ## Breaking Changes

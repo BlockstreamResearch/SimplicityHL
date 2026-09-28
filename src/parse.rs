@@ -30,7 +30,9 @@ use crate::str::{
     SymbolName,
 };
 use crate::types::{AliasedType, BuiltinAlias, TypeConstructible, UIntType};
-use crate::unstable::{impl_require_feature, RequireFeature, UnstableFeature, UnstableFeatures};
+use crate::unstable::{
+    impl_require_feature, FeatureRequirement, RequireFeature, UnstableFeature, UnstableFeatures,
+};
 use crate::version::SimcDirective;
 use crate::TemplateProgramWitness;
 
@@ -494,7 +496,18 @@ impl Call {
 
 impl_eq_hash!(Call; name, args);
 
-impl_require_feature!(Call {recurse: name, args; });
+// Hand-written because `raw_hash` is gated per call name, while the macro
+// can gate only an entire type, and `CallName` has no span of its own.
+impl RequireFeature for Call {
+    fn feature_requirements(&self, out: &mut Vec<FeatureRequirement>) {
+        if let CallName::RawHash(_) = self.name {
+            out.push(FeatureRequirement::new(UnstableFeature::RawHash, self.span));
+        }
+
+        self.name.feature_requirements(out);
+        self.args.feature_requirements(out);
+    }
+}
 
 /// Name of a call.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -526,6 +539,8 @@ pub enum CallName {
     ArrayFold(FunctionName, NonZeroUsize),
     /// Loop over the given function a bounded number of times until it returns success.
     ForWhile(FunctionName),
+    /// SHA-256 of the concatenated bytes of a tuple of unsigned integers of the given type.
+    RawHash(AliasedType),
 }
 
 impl_require_feature!(CallName {
@@ -543,6 +558,7 @@ impl_require_feature!(CallName {
         Fold(_, _),
         ArrayFold(_, _),
         ForWhile(_),
+        RawHash(ty),
 });
 
 /// A type alias.
@@ -1610,6 +1626,7 @@ impl fmt::Display for CallName {
             CallName::Fold(name, bound) => write!(f, "fold::<{name}, {bound}>"),
             CallName::ArrayFold(name, size) => write!(f, "array_fold::<{name}, {size}>"),
             CallName::ForWhile(name) => write!(f, "for_while::<{name}>"),
+            CallName::RawHash(ty) => write!(f, "raw_hash::<{ty}>"),
         }
     }
 }
@@ -2370,6 +2387,7 @@ impl ChumskyParse for CallName {
         let unwrap_left = builtin_generic_ty("unwrap_left", CallName::UnwrapLeft);
         let unwrap_right = builtin_generic_ty("unwrap_right", CallName::UnwrapRight);
         let is_none = builtin_generic_ty("is_none", CallName::IsNone);
+        let raw_hash = builtin_generic_ty("raw_hash", CallName::RawHash);
 
         let fold = just(Token::Ident("fold"))
             .ignore_then(turbofish_start.clone())
@@ -2458,6 +2476,7 @@ impl ChumskyParse for CallName {
             fold,
             array_fold,
             for_while,
+            raw_hash,
             simple_builtins,
             jet,
             custom_func,
