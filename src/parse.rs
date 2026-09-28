@@ -496,6 +496,114 @@ impl_eq_hash!(Call; name, args);
 
 impl_require_feature!(Call {recurse: name, args; });
 
+/// A `chain!` expression: one value threaded through a sequence of steps under
+/// a named hole.
+///
+/// ```text
+/// chain!(ctx = jet::sha_256_ctx_8_init(),
+///     jet::sha_256_ctx_8_add_32(ctx, tag),
+///     jet::sha_256_ctx_8_finalize(ctx))
+/// ```
+///
+/// The first step is the seed: it binds the hole and cannot read it, since the
+/// hole is not in scope until something has produced a value. Later steps see
+/// the previous step's value, shadowing as a repeated `let` would. The final
+/// step is the value of the whole expression, so it is typed by wherever the
+/// chain appears rather than by the hole.
+#[derive(Clone, Debug)]
+pub struct Chain {
+    steps: Arc<[ChainStep]>,
+    span: Span,
+}
+
+impl Chain {
+    /// Access the steps of the chain, seed first.
+    pub fn steps(&self) -> &[ChainStep] {
+        self.steps.as_ref()
+    }
+
+    /// Access the name of the hole, which the seed step declares.
+    ///
+    /// `None` only for a malformed chain whose seed carries no binding; the
+    /// parser reports that, so later stages do not observe it.
+    pub fn hole(&self) -> Option<&Identifier> {
+        self.steps.first()?.binding().map(ChainBinding::hole)
+    }
+
+    /// Access the span of the chain.
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl_eq_hash!(Chain; steps);
+
+impl_require_feature!(Chain {
+    requires: UnstableFeature::Chain, span: span;
+    recurse: steps;
+});
+
+/// One step of a [`Chain`].
+#[derive(Clone, Debug)]
+pub struct ChainStep {
+    binding: Option<ChainBinding>,
+    expression: Expression,
+    span: Span,
+}
+
+impl ChainStep {
+    /// Access the hole re-declaration written on this step, if any.
+    ///
+    /// Required on the seed. On a later step it pins a type that cannot be read
+    /// off the step's callee.
+    pub fn binding(&self) -> Option<&ChainBinding> {
+        self.binding.as_ref()
+    }
+
+    /// Access the expression that this step evaluates.
+    pub fn expression(&self) -> &Expression {
+        &self.expression
+    }
+
+    /// Access the span of the step.
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl_eq_hash!(ChainStep; binding, expression);
+
+impl_require_feature!(ChainStep { recurse: binding, expression; });
+
+/// A hole re-declaration on a chain step: `ctx = <expr>` or `ctx: Ctx8 = <expr>`.
+#[derive(Clone, Debug)]
+pub struct ChainBinding {
+    hole: Identifier,
+    ty: Option<AliasedType>,
+    span: Span,
+}
+
+impl ChainBinding {
+    /// Access the name being bound, which must match the chain's hole.
+    pub fn hole(&self) -> &Identifier {
+        &self.hole
+    }
+
+    /// Access the type annotation, if the binding carries one.
+    pub fn ty(&self) -> Option<&AliasedType> {
+        self.ty.as_ref()
+    }
+
+    /// Access the span of the binding.
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl_eq_hash!(ChainBinding; hole, ty);
+
+impl_require_feature!(ChainBinding { recurse: ty; });
+
 /// Name of a call.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -770,12 +878,18 @@ pub enum ExpressionInner {
     /// Then, the block returns the value of its final expression.
     /// The block returns nothing (unit) if there is no final expression.
     Block(Arc<[Statement]>, Option<Arc<Expression>>),
+    /// A chain expression threads a value through a sequence of steps.
+    ///
+    /// Lowered to the equivalent block of shadowing assignments during AST
+    /// analysis, so nothing below `ast.rs` sees a chain.
+    Chain(Chain),
 }
 
 impl_require_feature!(ExpressionInner {
     variants:
         Single(single),
         Block(statements, maybe_expr),
+        Chain(chain),
 });
 
 /// A single expression directly returns a value.
@@ -1339,6 +1453,7 @@ impl fmt::Display for Module {
 pub enum ExprTree<'a> {
     Expression(&'a Expression),
     Block(&'a [Statement], &'a Option<Arc<Expression>>),
+    Chain(&'a Chain),
     Statement(&'a Statement),
     Assignment(&'a Assignment),
     Single(&'a SingleExpression),
@@ -1358,7 +1473,15 @@ impl TreeLike for ExprTree<'_> {
                     Tree::Unary(Self::Block(statements, maybe_expr))
                 }
                 ExpressionInner::Single(single) => Tree::Unary(Self::Single(single)),
+                ExpressionInner::Chain(chain) => Tree::Unary(Self::Chain(chain)),
             },
+            Self::Chain(chain) => Tree::Nary(
+                chain
+                    .steps()
+                    .iter()
+                    .map(|step| Self::Expression(step.expression()))
+                    .collect(),
+            ),
             Self::Block(statements, maybe_expr) => Tree::Nary(
                 statements
                     .iter()
@@ -1441,6 +1564,25 @@ impl fmt::Display for ExprTree<'_> {
                     0 => write!(f, "let {}: {} = ", assignment.pattern(), assignment.ty())?,
                     n => debug_assert_eq!(n, 1),
                 },
+                Self::Chain(chain) => {
+                    if data.n_children_yielded == 0 {
+                        write!(f, "chain!(")?;
+                    } else if !data.is_complete {
+                        write!(f, ", ")?;
+                    }
+                    if data.is_complete {
+                        write!(f, ")")?;
+                    } else if let Some(binding) = chain
+                        .steps()
+                        .get(data.n_children_yielded)
+                        .and_then(ChainStep::binding)
+                    {
+                        match binding.ty() {
+                            Some(ty) => write!(f, "{}: {} = ", binding.hole(), ty)?,
+                            None => write!(f, "{} = ", binding.hole())?,
+                        }
+                    }
+                }
                 Self::Single(single) => match single.inner() {
                     S::Boolean(bit) => write!(f, "{bit}")?,
                     S::Binary(binary) => write!(f, "0b{binary}")?,
@@ -1851,6 +1993,60 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
 {
     just(tok.clone()).recover_with(via_parser(empty().to(tok)))
+}
+
+/// Enforce the shape rules the `chain!` grammar cannot express: a seed that
+/// binds the hole, at least one step after it, one hole name throughout, and no
+/// binding on the final step.
+///
+/// Checked here rather than during analysis so the lowering can assume a
+/// well-formed chain.
+fn validate_chain(chain: &Chain, emit: &mut impl FnMut(Diagnostic)) {
+    let steps = chain.steps();
+
+    // A chain of one step is just that expression; of none, nothing at all.
+    if steps.len() < 2 {
+        emit(Error::ChainTooShort { steps: steps.len() }.with_span(*chain.span()));
+        return;
+    }
+
+    let Some(hole) = chain.hole() else {
+        emit(
+            Error::ChainMissingSeed
+                .with_span(*steps[0].span())
+                .with_help("write the seed as `<name> = <expression>`"),
+        );
+        return;
+    };
+
+    let last_index = steps.len() - 1;
+    for (index, step) in steps.iter().enumerate() {
+        let Some(binding) = step.binding() else {
+            continue;
+        };
+
+        if binding.hole() != hole {
+            emit(
+                Error::ChainHoleMismatch {
+                    expected: hole.clone(),
+                    found: binding.hole().clone(),
+                }
+                .with_span(*binding.span()),
+            );
+        }
+
+        // Nothing reads the hole after the last step, so binding there is a
+        // mistake.
+        if index == last_index {
+            emit(
+                Error::ChainFinalStepBound
+                    .with_span(*binding.span())
+                    .with_help(
+                        "the last step is typed by the chain's surroundings; drop the binding",
+                    ),
+            );
+        }
+    }
 }
 
 /// Parser with error recovery for expressions, which would always contains given delimiters.
@@ -2671,9 +2867,55 @@ impl ChumskyParse for Expression {
                 .map(|(stmts, end_expr)| ExpressionInner::Block(stmts, end_expr))
             };
 
+            let chain = {
+                // The binding is optional, so it must not consume input when
+                // absent: plain `just`, not the recovering variant, which would
+                // manufacture a token and make an unbound step look malformed.
+                let binding = Identifier::parser()
+                    .then(
+                        just(Token::Colon)
+                            .ignore_then(AliasedType::parser())
+                            .or_not(),
+                    )
+                    .then_ignore(just(Token::Eq))
+                    .map_with(|(hole, ty), e| ChainBinding {
+                        hole,
+                        ty,
+                        span: e.span(),
+                    });
+
+                let step =
+                    binding
+                        .or_not()
+                        .then(expr.clone())
+                        .map_with(|(binding, expression), e| ChainStep {
+                            binding,
+                            expression,
+                            span: e.span(),
+                        });
+
+                just(Token::Macro("chain!"))
+                    .ignore_then(delimited_with_recovery(
+                        step.separated_by(just(Token::Comma))
+                            .allow_trailing()
+                            .collect::<Vec<_>>(),
+                        Token::LParen,
+                        Token::RParen,
+                        |_| Vec::new(),
+                    ))
+                    .map_with(|steps, e| Chain {
+                        steps: Arc::from(steps),
+                        span: e.span(),
+                    })
+                    .validate(|chain, _e, emit| {
+                        validate_chain(&chain, &mut |diagnostic| emit.emit(diagnostic));
+                        ExpressionInner::Chain(chain)
+                    })
+            };
+
             let single = SingleExpression::parser(expr.clone()).map(ExpressionInner::Single);
 
-            choice((block, single))
+            choice((block, chain, single))
                 .map_with(|inner, e| Expression {
                     inner,
                     span: e.span(),
@@ -3231,6 +3473,24 @@ impl AsRef<Span> for Call {
     }
 }
 
+impl AsRef<Span> for Chain {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl AsRef<Span> for ChainStep {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl AsRef<Span> for ChainBinding {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
+
 impl AsRef<Span> for Match {
     fn as_ref(&self) -> &Span {
         &self.span
@@ -3386,15 +3646,55 @@ impl<'a> arbitrary::Arbitrary<'a> for Module {
 }
 
 #[cfg(feature = "arbitrary")]
+impl crate::ArbitraryRec for Chain {
+    fn arbitrary_rec(u: &mut arbitrary::Unstructured, budget: usize) -> arbitrary::Result<Self> {
+        use arbitrary::Arbitrary;
+
+        // Only well-formed shapes: malformed ones are the parser's business,
+        // and generating them here would make every sample die at the shape
+        // check without reaching the lowering.
+        //
+        // Non-final steps are always annotated, skipping output type synthesis.
+        // An unannotated step must be a call to be typed, and a random
+        // expression almost never is.
+        let hole = Identifier::arbitrary(u)?;
+        let trailing = u.int_in_range(1..=3)?;
+
+        let mut steps = Vec::with_capacity(trailing + 1);
+        for _ in 0..trailing {
+            steps.push(ChainStep {
+                binding: Some(ChainBinding {
+                    hole: hole.clone(),
+                    ty: Some(AliasedType::arbitrary_rec(u, budget)?),
+                    span: Span::DUMMY,
+                }),
+                expression: Expression::arbitrary_rec(u, budget)?,
+                span: Span::DUMMY,
+            });
+        }
+        steps.push(ChainStep {
+            binding: None,
+            expression: Expression::arbitrary_rec(u, budget)?,
+            span: Span::DUMMY,
+        });
+
+        Ok(Self {
+            steps: Arc::from(steps),
+            span: Span::DUMMY,
+        })
+    }
+}
+
+#[cfg(feature = "arbitrary")]
 impl crate::ArbitraryRec for Expression {
     fn arbitrary_rec(u: &mut arbitrary::Unstructured, budget: usize) -> arbitrary::Result<Self> {
         use arbitrary::Arbitrary;
 
         let inner = match budget.checked_sub(1) {
             None => SingleExpression::arbitrary_rec(u, budget).map(ExpressionInner::Single),
-            Some(new_budget) => match bool::arbitrary(u)? {
-                false => SingleExpression::arbitrary_rec(u, budget).map(ExpressionInner::Single),
-                true => {
+            Some(new_budget) => match u.int_in_range(0..=2)? {
+                0 => SingleExpression::arbitrary_rec(u, budget).map(ExpressionInner::Single),
+                1 => {
                     let len = u.int_in_range(0..=3)?;
                     let statements = (0..len)
                         .map(|_| Statement::arbitrary_rec(u, new_budget))
@@ -3407,6 +3707,7 @@ impl crate::ArbitraryRec for Expression {
                     };
                     Ok(ExpressionInner::Block(statements, maybe_single))
                 }
+                _ => Chain::arbitrary_rec(u, new_budget).map(ExpressionInner::Chain),
             },
         }?;
         Ok(Self {

@@ -1,5 +1,9 @@
 # Unreleased
 
+## Added
+
+* Add the `chain!` expression, gated behind `simc -Z chain` (or `UnstableFeature::Chain`): threads a value through a sequence of steps under a named hole, so pipelines read top-to-bottom instead of inside-out. Compiles to the `let` chain written in its place; see `examples/chain.simf` and `examples/chain_sighash_modes.simf`.
+
 # 0.8.0 - 2026-09-23
 
 ## Breaking Changes
@@ -46,6 +50,15 @@
 * Restore analysis scopes after errors in blocks, functions, match arms and modules. [#406](https://github.com/BlockstreamResearch/SimplicityHL/pull/406)
 * Make each `use` declaration atomic so a failed import cannot leave partially imported names or visibility changes. [#416](https://github.com/BlockstreamResearch/SimplicityHL/pull/416)
 
+%%%%%%% diff from: nkpmmlrt f5f86606 "ast: compute a call's output type in one place" (parents of rebased revision)
+\\\\\\\        to: kvsxssql e01b149b "feat: add the chain! expression behind -Z chain" (rebased revision)
++# Unreleased
++
++## Added
++
++* Add the `chain!` expression, gated behind `simc -Z chain` (or `UnstableFeature::Chain`): threads a value through a sequence of steps under a named hole, so pipelines read top-to-bottom instead of inside-out. Compiles to the `let` chain written in its place; see `examples/chain.simf` and `examples/chain_sighash_modes.simf`.
++
+>>>>>>> conflict 1 of 1 ends
 # 0.7.2 - 2026-08-25
 
 ## Added

@@ -9,7 +9,7 @@ use simplicity::jet::{Core, Elements, Jet};
 
 use crate::debug::{CallTracker, DebugSymbols, TrackedCallName};
 use crate::driver::{CRATE_STR, MAIN_STR};
-use crate::error::{Diagnostic, DiagnosticManager, Error, Span, WithSpan};
+use crate::error::{ChainStepObstacle, Diagnostic, DiagnosticManager, Error, Span, WithSpan};
 use crate::jet::{source_type, target_type, JetHL};
 use crate::num::{NonZeroPow2Usize, Pow2Usize};
 use crate::parse::{MatchPattern, UseDecl, Visibility};
@@ -1874,6 +1874,15 @@ impl AbstractSyntaxTree for Expression {
                     span: *from.as_ref(),
                 })
             }
+            parse::ExpressionInner::Chain(chain) => {
+                let (statements, tail) = scope.in_block(|scope| analyze_chain(chain, ty, scope))?;
+
+                Ok(Self {
+                    ty: ty.clone(),
+                    inner: ExpressionInner::Block(statements, Some(Arc::new(tail))),
+                    span: *from.as_ref(),
+                })
+            }
         }
     }
 }
@@ -2265,6 +2274,78 @@ fn call_output_type(name: &CallName) -> Result<Option<ResolvedType>, Error> {
         | CallName::Panic => None,
     };
     Ok(output)
+}
+
+/// Lower the steps of a `chain!` into the assignments and tail of the block it
+/// desugars to. Called with a block scope already open.
+fn analyze_chain(
+    chain: &parse::Chain,
+    ty: &ResolvedType,
+    scope: &mut Scope,
+) -> Result<(Arc<[Statement]>, Expression), Failure> {
+    // Unreachable from source; the parser rejects both shapes. Reported rather
+    // than asserted because a parse tree can also be built directly, as the
+    // fuzzer does.
+    let Some(hole) = chain.hole() else {
+        return Err(Error::ChainMissingSeed).with_span(chain)?;
+    };
+    let Some((last, leading)) = chain.steps().split_last() else {
+        return Err(Error::ChainTooShort { steps: 0 }).with_span(chain)?;
+    };
+
+    let mut statements = Vec::with_capacity(leading.len());
+    for step in leading {
+        let step_ty = chain_step_type(step, hole, scope)?;
+        let expression = Expression::analyze(step.expression(), &step_ty, scope)?;
+        // Bind after analysing, so the hole inside the step still names the
+        // previous value. Same shadowing as `let ctx: Ctx8 = f(ctx);`.
+        scope.insert_variable(hole.clone(), step_ty);
+        statements.push(Statement::Assignment(Assignment {
+            pattern: Pattern::Identifier(hole.clone()),
+            // The step's span, not the chain's, so errors point at the line.
+            span: *step.span(),
+            expression,
+        }));
+    }
+
+    // The final step is the chain's value, so it is checked against the chain's
+    // surroundings rather than the hole. A `Ctx8` chain can end in a `u256`.
+    let tail = Expression::analyze(last.expression(), ty, scope)?;
+    Ok((Arc::from(statements), tail))
+}
+
+/// The type a chain step produces: its annotation, or what its callee reports.
+fn chain_step_type(
+    step: &parse::ChainStep,
+    hole: &Identifier,
+    scope: &mut Scope,
+) -> Result<ResolvedType, Failure> {
+    if let Some(annotation) = step.binding().and_then(parse::ChainBinding::ty) {
+        return Ok(scope.resolve(annotation).with_span(step)?);
+    }
+
+    let annotate = |obstacle| {
+        Err(Failure::from(
+            Error::ChainStepNotInferable { obstacle }
+                .with_span(*step.span())
+                .with_help(format!("annotate the step, as in `{hole}: <Type> = ...`")),
+        ))
+    };
+
+    let parse::ExpressionInner::Single(single) = step.expression().inner() else {
+        return annotate(ChainStepObstacle::NotACall);
+    };
+    let parse::SingleExpressionInner::Call(call) = single.inner() else {
+        return annotate(ChainStepObstacle::NotACall);
+    };
+
+    // Resolving the callee here costs only the lookup, and cannot disagree with
+    // the resolution `Call::analyze` performs later.
+    let name = CallName::analyze(call, scope)?;
+    match call_output_type(&name).with_span(step)? {
+        Some(output) => Ok(output),
+        None => annotate(ChainStepObstacle::ContextTypedCall),
+    }
 }
 
 impl AbstractSyntaxTree for Call {

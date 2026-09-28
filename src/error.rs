@@ -967,6 +967,42 @@ pub enum Error {
         declared: ResolvedType,
         assigned: ResolvedType,
     },
+    ChainTooShort {
+        steps: usize,
+    },
+    ChainMissingSeed,
+    ChainHoleMismatch {
+        expected: Identifier,
+        found: Identifier,
+    },
+    ChainFinalStepBound,
+    ChainStepNotInferable {
+        obstacle: ChainStepObstacle,
+    },
+}
+
+/// Why a `chain!` step's output type could not be read off the step itself.
+///
+/// Carried by [`Error::ChainStepNotInferable`] so the message names the reason
+/// rather than reporting every failure identically.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChainStepObstacle {
+    /// A call that takes its type from its context rather than its callee:
+    /// `unwrap`, `unwrap_left`, `unwrap_right`, a cast, `dbg!` or `panic!`.
+    ContextTypedCall,
+    /// Not a call at all: a literal, a variable, a tuple, a `match`.
+    NotACall,
+}
+
+impl fmt::Display for ChainStepObstacle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ContextTypedCall => {
+                write!(f, "this call takes its type from its surroundings")
+            }
+            Self::NotACall => write!(f, "this step is not a call"),
+        }
+    }
 }
 
 #[rustfmt::skip]
@@ -1115,6 +1151,26 @@ impl fmt::Display for Error {
             Error::MainCannotBeAlias => write!(
                 f,
                 "Main function cannot be alias",
+            ),
+            Error::ChainTooShort { steps } => write!(
+                f,
+                "A `chain!` needs a seed and at least one step after it, but this one has {steps}"
+            ),
+            Error::ChainMissingSeed => write!(
+                f,
+                "The first step of a `chain!` must bind the hole, as in `chain!(ctx = ...)`"
+            ),
+            Error::ChainHoleMismatch { expected, found } => write!(
+                f,
+                "This `chain!` threads `{expected}`, so a step cannot rebind `{found}`"
+            ),
+            Error::ChainFinalStepBound => write!(
+                f,
+                "The last step of a `chain!` is its value, so binding the hole there has no effect"
+            ),
+            Error::ChainStepNotInferable { obstacle } => write!(
+                f,
+                "Cannot infer the type of this `chain!` step, because {obstacle}"
             ),
             Error::FunctionRedefined { name } => write!(
                 f,

@@ -18,13 +18,16 @@ use crate::error::{Diagnostic, DiagnosticManager, Error, Span};
 ///    - add a parse arm to `FromStr`.
 /// 4. Gate the syntax itself by pushing a [`FeatureRequirement`] from the
 ///    relevant AST node's [`RequireFeature`] impl.
+/// 5. If the feature needs more explanation than its `--help` line, add a
+///    section to `doc/unstable-features.md`.
 ///
 /// # Stabilizing a feature
 ///
 /// Delete the variant. The compiler will then flag every arm in
 /// `fmt::Display`, `FromStr`, [`Self::description`], every entry in
 /// [`Self::ALL`], and every [`FeatureRequirement::new`] call that
-/// referenced the variant; follow the errors to clean up.
+/// referenced the variant; follow the errors to clean up. Its section in
+/// `doc/unstable-features.md`, if it has one, must be moved by hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UnstableFeature {
     /// Import-system syntax: `use` imports, `mod` modules, `as` import
@@ -33,6 +36,9 @@ pub enum UnstableFeature {
     /// Enum syntax: `enum` declarations and `EnumName::Variant` match
     /// expressions. Enable with `simc -Z enums`.
     Enums,
+    /// `chain!` syntax: thread a value through a sequence of steps under a
+    /// named hole. Enable with `simc -Z chain`.
+    Chain,
 }
 
 impl UnstableFeature {
@@ -46,7 +52,7 @@ impl UnstableFeature {
     /// Append the new variant here, bump the count in
     /// `all_contains_every_variant` ( in the `tests` module below), then
     /// gate the syntax via [`RequireFeature`].
-    pub const ALL: &'static [Self] = &[Self::Imports, Self::Enums];
+    pub const ALL: &'static [Self] = &[Self::Imports, Self::Enums, Self::Chain];
 
     /// Human-readable description shown next to the feature's name under
     /// `simc --help`.
@@ -57,6 +63,9 @@ impl UnstableFeature {
             }
             Self::Enums => {
                 "Enum syntax: 'enum' declarations and 'EnumName::Variant' match expressions"
+            }
+            Self::Chain => {
+                "'chain!' syntax: thread a value through a sequence of steps under a named hole"
             }
         }
     }
@@ -220,6 +229,7 @@ impl fmt::Display for UnstableFeature {
         match self {
             Self::Imports => write!(f, "imports"),
             Self::Enums => write!(f, "enums"),
+            Self::Chain => write!(f, "chain"),
         }
     }
 }
@@ -233,6 +243,7 @@ impl FromStr for UnstableFeature {
         match s {
             "imports" => Ok(UnstableFeature::Imports),
             "enums" => Ok(UnstableFeature::Enums),
+            "chain" => Ok(UnstableFeature::Chain),
             _ => Err(format!("Unknown unstable feature: '{s}'")),
         }
     }
@@ -355,7 +366,7 @@ mod tests {
         // the variant to `ALL`. Pins that `ALL` stays complete.
         assert_eq!(
             all_features.len(),
-            2,
+            3,
             "update this count when adding a feature"
         );
 
