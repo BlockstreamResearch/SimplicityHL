@@ -2233,6 +2233,40 @@ fn analyze_enum_arm_bindings(
     Ok(pattern)
 }
 
+/// What a call returns, judging only by what is being called.
+///
+/// Usually the callee decides. `jet::sha_256_ctx_8_init()` is a `Ctx8` wherever
+/// it appears, so [`Call::analyze`] can compare that against the type its
+/// context wants.
+///
+/// A few calls work the other way round. `unwrap(x)` returns whatever the
+/// surrounding code expects, and `x` is then *required* to be an `Option` of
+/// that -- so asking what it returns, on its own, has no answer. Same for
+/// `unwrap_left`, `unwrap_right`, casts, `dbg!` and `panic!`. Those give
+/// `None`.
+fn call_output_type(name: &CallName) -> Result<Option<ResolvedType>, Error> {
+    let output = match name {
+        CallName::Jet(jet) => Some(
+            target_type(&**jet)
+                .resolve_builtin()
+                .map_err(|alias| Error::UndefinedAlias { name: alias })?,
+        ),
+        CallName::Custom(function)
+        | CallName::Fold(function, _)
+        | CallName::ArrayFold(function, _)
+        | CallName::ForWhile(function, _) => Some(function.body().ty().clone()),
+        CallName::IsNone(_) => Some(ResolvedType::boolean()),
+        CallName::Assert => Some(ResolvedType::unit()),
+        CallName::Unwrap
+        | CallName::UnwrapLeft(_)
+        | CallName::UnwrapRight(_)
+        | CallName::TypeCast(_)
+        | CallName::Debug
+        | CallName::Panic => None,
+    };
+    Ok(output)
+}
+
 impl AbstractSyntaxTree for Call {
     type From = parse::Call;
 
@@ -2279,6 +2313,14 @@ impl AbstractSyntaxTree for Call {
         }
 
         let name = CallName::analyze(from, scope)?;
+
+        // Output types fixed by the callee are checked here, in one place. Like
+        // the per-arm checks this replaces, it reports and carries on, so the
+        // rest of the expression still yields its own errors.
+        if let Some(out_ty) = call_output_type(&name).with_span(from)? {
+            scope.report_err(check_output_type(&out_ty, ty).with_span(from));
+        }
+
         let args = match name.clone() {
             CallName::Jet(jet) => {
                 let args_tys = source_type(&*jet)
@@ -2287,12 +2329,6 @@ impl AbstractSyntaxTree for Call {
                     .collect::<Result<Vec<ResolvedType>, AliasName>>()
                     .map_err(|alias| Error::UndefinedAlias { name: alias })
                     .with_span(from)?;
-                let out_ty = target_type(&*jet)
-                    .resolve_builtin()
-                    .map_err(|alias| Error::UndefinedAlias { name: alias })
-                    .with_span(from)?;
-                scope.report_err(check_output_type(&out_ty, ty).with_span(from));
-
                 check_argument_types(from.args(), &args_tys).with_span(from)?;
                 scope.track_call(from, TrackedCallName::Jet);
 
@@ -2316,9 +2352,6 @@ impl AbstractSyntaxTree for Call {
             }
             CallName::IsNone(some_ty) => {
                 let args_tys = [ResolvedType::option(some_ty)];
-                let out_ty = ResolvedType::boolean();
-                scope.report_err(check_output_type(&out_ty, ty).with_span(from));
-
                 check_argument_types(from.args(), &args_tys).with_span(from)?;
                 analyze_arguments(from.args(), &args_tys, scope)?
             }
@@ -2330,9 +2363,6 @@ impl AbstractSyntaxTree for Call {
             }
             CallName::Assert => {
                 let args_tys = [ResolvedType::boolean()];
-                let out_ty = ResolvedType::unit();
-                scope.report_err(check_output_type(&out_ty, ty).with_span(from));
-
                 check_argument_types(from.args(), &args_tys).with_span(from)?;
                 scope.track_call(from, TrackedCallName::Assert);
 
@@ -2381,9 +2411,6 @@ impl AbstractSyntaxTree for Call {
                     .map(FunctionParam::ty)
                     .cloned()
                     .collect::<Vec<ResolvedType>>();
-                let out_ty = function.body().ty();
-                scope.report_err(check_output_type(out_ty, ty).with_span(from));
-
                 check_argument_types(from.args(), &args_ty).with_span(from)?;
                 analyze_arguments(from.args(), &args_ty, scope)?
             }
@@ -2402,9 +2429,6 @@ impl AbstractSyntaxTree for Call {
                     .clone();
                 let args_ty = [list_ty, accumulator_ty];
 
-                let out_ty = function.body().ty();
-                scope.report_err(check_output_type(out_ty, ty).with_span(from));
-
                 check_argument_types(from.args(), &args_ty).with_span(from)?;
                 analyze_arguments(from.args(), &args_ty, scope)?
             }
@@ -2422,9 +2446,6 @@ impl AbstractSyntaxTree for Call {
                     .ty()
                     .clone();
                 let args_ty = [array_ty, accumulator_ty];
-
-                let out_ty = function.body().ty();
-                scope.report_err(check_output_type(out_ty, ty).with_span(from));
 
                 check_argument_types(from.args(), &args_ty).with_span(from)?;
                 analyze_arguments(from.args(), &args_ty, scope)?
@@ -2448,9 +2469,6 @@ impl AbstractSyntaxTree for Call {
                     .ty()
                     .clone();
                 let args_ty = [accumulator_ty, context_ty];
-
-                let out_ty = function.body().ty();
-                scope.report_err(check_output_type(out_ty, ty).with_span(from));
 
                 check_argument_types(from.args(), &args_ty).with_span(from)?;
                 analyze_arguments(from.args(), &args_ty, scope)?
@@ -4231,5 +4249,85 @@ mod transactional_use_tests {
                 .get(&ModuleName::from_str_unchecked("Renamed")),
             Some((_, Visibility::Public))
         ));
+    }
+}
+
+#[cfg(test)]
+mod call_output_type_tests {
+    use super::*;
+
+    /// The resolved form of the `Ctx8` alias, as the SHA-256 jets report it.
+    fn ctx8() -> ResolvedType {
+        AliasedType::builtin(crate::types::BuiltinAlias::Ctx8)
+            .resolve_builtin()
+            .expect("Ctx8 is a builtin alias")
+    }
+
+    fn jet(name: &str) -> CallName {
+        CallName::Jet(
+            ElementsJetHinter::new()
+                .parse_jet(name)
+                .unwrap_or_else(|| panic!("jet {name} should exist")),
+        )
+    }
+
+    /// The SHA-256 context jets, whose output types callers are most likely to
+    /// need without an expected type to hand.
+    #[test]
+    fn sighash_jets_report_their_output_type() {
+        let cases = [
+            ("sha_256_ctx_8_init", ctx8()),
+            ("sha_256_ctx_8_add_4", ctx8()),
+            ("sha_256_ctx_8_add_32", ctx8()),
+            ("sha_256_ctx_8_finalize", ResolvedType::from(UIntType::U256)),
+            ("genesis_block_hash", ResolvedType::from(UIntType::U256)),
+            ("outputs_hash", ResolvedType::from(UIntType::U256)),
+            ("current_index", ResolvedType::from(UIntType::U32)),
+            ("version", ResolvedType::from(UIntType::U32)),
+        ];
+
+        for (name, expected) in cases {
+            let observed = call_output_type(&jet(name))
+                .unwrap_or_else(|e| panic!("jet {name} should resolve: {e}"));
+            assert_eq!(
+                observed,
+                Some(expected),
+                "jet {name} should report its output type"
+            );
+        }
+    }
+
+    /// Context-typed calls have nothing to read off the callee.
+    #[test]
+    fn context_typed_calls_report_no_output_type() {
+        let context_typed = [
+            CallName::Unwrap,
+            CallName::UnwrapLeft(ResolvedType::unit()),
+            CallName::UnwrapRight(ResolvedType::unit()),
+            CallName::TypeCast(ResolvedType::unit()),
+            CallName::Debug,
+            CallName::Panic,
+        ];
+
+        for name in context_typed {
+            assert_eq!(
+                call_output_type(&name).unwrap(),
+                None,
+                "{name:?} takes its output type from context"
+            );
+        }
+    }
+
+    /// `is_none` and `assert!` are context-independent despite not being jets.
+    #[test]
+    fn fixed_output_calls_report_their_output_type() {
+        assert_eq!(
+            call_output_type(&CallName::IsNone(ResolvedType::unit())).unwrap(),
+            Some(ResolvedType::boolean())
+        );
+        assert_eq!(
+            call_output_type(&CallName::Assert).unwrap(),
+            Some(ResolvedType::unit())
+        );
     }
 }
