@@ -64,6 +64,8 @@ mod lossless_test {
         array_fold_2n_lossless: "array_fold_2n.simf",
         array_fold_lossless: "array_fold.simf",
         cat_lossless: "cat.simf",
+        chain_lossless: "chain.simf",
+        chain_sighash_modes_lossless: "chain_sighash_modes.simf",
         ctv_lossless: "ctv.simf",
         escrow_with_delay_lossless: "escrow_with_delay.simf",
         hash_loop_lossless: "hash_loop.simf",

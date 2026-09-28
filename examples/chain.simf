@@ -1,0 +1,39 @@
+/*
+ * SIGHASH_ALL | SIGHASH_ANYONECANPAY, written with `chain!` instead of a run of
+ * shadowing `let` bindings. Requires `simc -Z chain`.
+ *
+ * `chain!` threads one value through a sequence of steps under a named hole.
+ * The seed binds the hole with `=` and cannot read it; every later step sees
+ * the previous step's value.
+ *
+ * The last step is the chain's value, so it takes its type from the chain's
+ * surroundings. That is how a chain of `Ctx8` ends in the `u256` that `msg`
+ * expects.
+ *
+ * No step is annotated: a step's type is read off its callee, and these are all
+ * jet calls. A step typed by its context instead -- `unwrap`, `dbg!`, a cast --
+ * must be written `ctx: Ctx8 = <expr>`.
+ */
+fn main() {
+    let msg: u256 = chain!(ctx = jet::sha_256_ctx_8_init(),
+        // Blockchain
+        jet::sha_256_ctx_8_add_32(ctx, jet::genesis_block_hash()),
+        jet::sha_256_ctx_8_add_32(ctx, jet::genesis_block_hash()),
+        // Transaction
+        jet::sha_256_ctx_8_add_4(ctx, jet::version()),
+        jet::sha_256_ctx_8_add_4(ctx, jet::lock_time()),
+        jet::sha_256_ctx_8_add_32(ctx, jet::tap_env_hash()),
+        // Current input
+        jet::sha_256_ctx_8_add_32(ctx, unwrap(jet::input_hash(jet::current_index()))),
+        jet::sha_256_ctx_8_add_32(ctx, unwrap(jet::input_utxo_hash(jet::current_index()))),
+        // All outputs
+        jet::sha_256_ctx_8_add_32(ctx, jet::outputs_hash()),
+        jet::sha_256_ctx_8_add_32(ctx, jet::issuances_hash()),
+        jet::sha_256_ctx_8_add_32(ctx, jet::output_surjection_proofs_hash()),
+        // No current index
+        // Message
+        jet::sha_256_ctx_8_finalize(ctx));
+
+    let pk: Pubkey = 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798;
+    jet::bip_0340_verify((pk, msg), witness::SIG);
+}

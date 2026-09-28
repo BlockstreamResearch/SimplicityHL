@@ -1235,6 +1235,32 @@ pub(crate) mod tests {
             .assert_run_success();
     }
 
+    /// The same digest as `sighash_all_anyonecanpay`, written with `chain!`.
+    /// `tests/chain.rs` pins the lowering; this runs the result.
+    #[test]
+    #[cfg(feature = "serde")]
+    fn chain() {
+        TestCase::program_file_with_unstable(
+            "./examples/chain.simf",
+            UnstableFeatures::new([UnstableFeature::Chain]),
+        )
+        .with_witness_file("./examples/chain.wit")
+        .assert_run_success();
+    }
+
+    /// Six signature-hash modes composed from shared segments. Exercises chains
+    /// whose steps are custom functions and whose type changes partway through.
+    #[test]
+    #[cfg(feature = "serde")]
+    fn chain_sighash_modes() {
+        TestCase::program_file_with_unstable(
+            "./examples/chain_sighash_modes.simf",
+            UnstableFeatures::new([UnstableFeature::Chain]),
+        )
+        .with_witness_values(WitnessValues::default())
+        .assert_run_success();
+    }
+
     #[test]
     #[cfg(feature = "serde")]
     fn sighash_all_anyprevout() {

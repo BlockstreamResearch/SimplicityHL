@@ -325,8 +325,14 @@ fn to_token<'src, const PRESERVE: bool>(
             Token::BinLiteral(Binary::from_str_unchecked(text.as_ref()))
         });
 
-    let macros =
-        choice((just("assert!"), just("panic!"), just("dbg!"), just("list!"))).map(Token::Macro);
+    let macros = choice((
+        just("assert!"),
+        just("panic!"),
+        just("dbg!"),
+        just("list!"),
+        just("chain!"),
+    ))
+    .map(Token::Macro);
 
     let keyword = text::ident().map(|s| match s {
         "pub" => Token::Pub,
