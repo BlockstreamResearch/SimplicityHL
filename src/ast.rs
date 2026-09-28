@@ -352,7 +352,9 @@ impl PartialEq for CallName {
 #[derive(Clone, Debug)]
 pub struct CustomFunction {
     params: Arc<[FunctionParam]>,
-    body: Arc<Expression>,
+    ret: ResolvedType,
+    /// `None` if the analysis of the body failed.
+    body: Option<Arc<Expression>>,
     span: Span,
 }
 
@@ -362,9 +364,25 @@ impl CustomFunction {
         &self.params
     }
 
+    /// Access the declared return type of the function.
+    pub fn ret(&self) -> &ResolvedType {
+        &self.ret
+    }
+
     /// Access the body of the function.
+    ///
+    /// ## Panics
+    ///
+    /// Panics if the analysis of the body failed. This cannot happen for a function
+    /// of an analyzed [`Program`], because a program with errors is never built.
     pub fn body(&self) -> &Expression {
-        &self.body
+        self.analyzed_body()
+            .expect("programs with errors are never built")
+    }
+
+    /// Access the body of the function, if its analysis succeeded.
+    fn analyzed_body(&self) -> Option<&Expression> {
+        self.body.as_deref()
     }
 
     /// Access the span of the complete function declaration.
@@ -384,7 +402,7 @@ impl CustomFunction {
     }
 }
 
-impl_eq_hash!(CustomFunction; params, body);
+impl_eq_hash!(CustomFunction; params, ret, analyzed_body);
 
 /// Parameter of a function.
 #[derive(Clone, Debug)]
@@ -1518,24 +1536,29 @@ impl Program {
 
     /// Analyze every item and return the body of the single main function.
     fn analyze_main(from: &parse::Program, scope: &mut Scope) -> Result<Expression, Failure> {
-        let unit = ResolvedType::unit();
-        let items = from
-            .items()
-            .iter()
-            .map(|s| Item::analyze(s, &unit, scope))
-            .collect::<Result<Vec<Item>, Failure>>()?;
+        let items = Item::analyze_items(from.items(), scope)?;
         debug_assert!(scope.is_outside_function());
         debug_assert!(
             scope.module_path.is_empty(),
             "Unclosed module scopes remain"
         );
 
-        let main = Self::extract_single_main(&items)
-            // If we find a duplicate of main function
-            .with_span(from)?
-            .ok_or(Error::MainRequired)
-            .with_span(from)?;
-        Ok(main)
+        // If we find a duplicate of main function
+        match Self::extract_single_main(&items).with_span(from)? {
+            Some(main) => Ok(main),
+            // `main` is defined, but its failure was already reported
+            None if Self::defines_main(from.items()) => Err(Failure::Reported),
+            None => Err(Error::MainRequired).with_span(from)?,
+        }
+    }
+
+    /// Check if the items define a main function, including inside modules.
+    fn defines_main(items: &[parse::Item]) -> bool {
+        items.iter().any(|item| match item {
+            parse::Item::Function(function) => function.name() == MAIN_STR,
+            parse::Item::Module(module) => Self::defines_main(module.items()),
+            _ => false,
+        })
     }
 
     fn extract_single_main(items: &[Item]) -> Result<Option<Expression>, Error> {
@@ -1560,6 +1583,26 @@ impl Program {
         }
 
         Ok(main_expr)
+    }
+}
+
+impl Item {
+    /// Analyze the items of a module in order.
+    fn analyze_items(from: &[parse::Item], scope: &mut Scope) -> Result<Vec<Self>, Failure> {
+        let unit = ResolvedType::unit();
+        let mut items = Vec::with_capacity(from.len());
+
+        for item in from {
+            match Self::analyze(item, &unit, scope) {
+                Ok(item) => items.push(item),
+                Err(failure) if matches!(item, parse::Item::Function(f) if f.name() == MAIN_STR) => {
+                    scope.report(failure);
+                }
+                Err(failure) => return Err(failure),
+            }
+        }
+
+        Ok(items)
     }
 }
 
@@ -1629,13 +1672,7 @@ impl AbstractSyntaxTree for Item {
                 .in_module(
                     module.name().clone(),
                     module.visibility().clone(),
-                    |scope| {
-                        let mut analyzed_children = Vec::new();
-                        for item in module.items() {
-                            analyzed_children.push(Item::analyze(item, ty, scope)?);
-                        }
-                        Ok(Self::Module(analyzed_children))
-                    },
+                    |scope| Item::analyze_items(module.items(), scope).map(Self::Module),
                 )
                 .with_span(module)?,
             parse::Item::Ignored => Ok(Self::Ignored),
@@ -1680,9 +1717,14 @@ impl AbstractSyntaxTree for Function {
                     scope.insert_variable(param.identifier().clone(), param.ty().clone());
                 }
                 Expression::analyze(from.body(), &ret, scope).map(Arc::new)
-            })?;
+            });
+
+            // A broken body does not change the declared signature,
+            // so later items can still call the function.
+            let body = body.map_err(|failure| scope.report(failure)).ok();
             let function = CustomFunction {
                 params,
+                ret,
                 body,
                 span: *from.span(),
             };
@@ -2461,7 +2503,7 @@ impl AbstractSyntaxTree for Call {
                     .map(FunctionParam::ty)
                     .cloned()
                     .collect::<Vec<ResolvedType>>();
-                let out_ty = function.body().ty();
+                let out_ty = function.ret();
                 scope.report_err(check_output_type(out_ty, ty).with_span(from));
 
                 check_argument_types(from.args(), &args_ty).with_span(from)?;
@@ -2482,7 +2524,7 @@ impl AbstractSyntaxTree for Call {
                     .clone();
                 let args_ty = [list_ty, accumulator_ty];
 
-                let out_ty = function.body().ty();
+                let out_ty = function.ret();
                 scope.report_err(check_output_type(out_ty, ty).with_span(from));
 
                 check_argument_types(from.args(), &args_ty).with_span(from)?;
@@ -2503,7 +2545,7 @@ impl AbstractSyntaxTree for Call {
                     .clone();
                 let args_ty = [array_ty, accumulator_ty];
 
-                let out_ty = function.body().ty();
+                let out_ty = function.ret();
                 scope.report_err(check_output_type(out_ty, ty).with_span(from));
 
                 check_argument_types(from.args(), &args_ty).with_span(from)?;
@@ -2541,7 +2583,7 @@ impl AbstractSyntaxTree for Call {
                     .clone();
                 let args_ty = [accumulator_ty, context_ty];
 
-                let out_ty = function.body().ty();
+                let out_ty = function.ret();
                 scope.report_err(check_output_type(out_ty, ty).with_span(from));
 
                 check_argument_types(from.args(), &args_ty).with_span(from)?;
@@ -2617,8 +2659,7 @@ impl CallName {
                 let function = scope.get_function(name).with_span(from)?;
                 // A function that is used in a array fold has the signature:
                 //   fn f(element: E, accumulator: A) -> A
-                if function.params().len() != 2 || function.params()[1].ty() != function.body().ty()
-                {
+                if function.params().len() != 2 || function.params()[1].ty() != function.ret() {
                     Err(Error::FunctionNotFoldable { name: name.clone() }).with_span(from)
                 } else {
                     Ok(Self::ArrayFold(function, *size))
@@ -2628,8 +2669,7 @@ impl CallName {
                 let function = scope.get_function(name).with_span(from)?;
                 // A function that is used in a list fold has the signature:
                 //   fn f(element: E, accumulator: A) -> A
-                if function.params().len() != 2 || function.params()[1].ty() != function.body().ty()
-                {
+                if function.params().len() != 2 || function.params()[1].ty() != function.ret() {
                     Err(Error::FunctionNotFoldable { name: name.clone() }).with_span(from)
                 } else {
                     Ok(Self::Fold(function, *bound))
@@ -2644,7 +2684,7 @@ impl CallName {
                 if function.params().len() != 3 {
                     return Err(Error::FunctionNotLoopable { name: name.clone() }).with_span(from);
                 }
-                match function.body().ty().as_either() {
+                match function.ret().as_either() {
                     Some((_, out_r)) if out_r == function.params().first().unwrap().ty() => {}
                     _ => {
                         return Err(Error::FunctionNotLoopable { name: name.clone() })
@@ -3028,6 +3068,106 @@ mod multi_error_tests {
             &[
                 "Expected expression of type `bool`, found type `(bool, u32)`",
                 "Variable `z` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn every_broken_function_is_reported() {
+        assert_errors(
+            "fn a() -> u32 { x }
+            fn b() -> u32 { y }
+            fn main() {}",
+            &["Variable `x` is not defined", "Variable `y` is not defined"],
+        );
+    }
+
+    #[test]
+    fn wrong_call_of_function_with_broken_body_is_reported() {
+        assert_errors(
+            "fn f(a: u32) -> u32 { x }
+            fn main() { let y: bool = f(true); }",
+            &[
+                "Variable `x` is not defined",
+                "Expected expression of type `bool`, found type `u32`",
+                "Expected expression of type `u32`, found type `bool`",
+            ],
+        );
+    }
+
+    #[test]
+    fn function_with_broken_body_can_still_be_folded() {
+        assert_errors(
+            "fn add(element: u32, acc: u32) -> u32 { x }
+            fn main() {
+                let array: [u32; 3] = [1, 2, 3];
+                let sum: u32 = array_fold::<add, 3>(array, 0);
+            }",
+            &["Variable `x` is not defined"],
+        );
+    }
+
+    #[test]
+    fn function_with_broken_body_can_still_be_imported() {
+        assert_errors(
+            "mod m { pub fn f() -> u32 { x } }
+            use crate::m::f;
+            fn main() { let y: u32 = f(); }",
+            &["Variable `x` is not defined"],
+        );
+    }
+
+    #[test]
+    fn broken_function_in_module_does_not_stop_the_next_item() {
+        assert_errors(
+            "mod m { fn f() -> u32 { x } }
+            fn g() -> u32 { y }
+            fn main() {}",
+            &["Variable `x` is not defined", "Variable `y` is not defined"],
+        );
+    }
+
+    #[test]
+    fn broken_main_does_not_stop_the_next_item() {
+        assert_errors(
+            "fn main() { let a: u32 = x; }
+            fn g() -> u32 { y }",
+            &["Variable `x` is not defined", "Variable `y` is not defined"],
+        );
+    }
+
+    #[test]
+    fn missing_main_is_reported_with_other_errors() {
+        assert_errors(
+            "fn f() -> u32 { x }",
+            &["Main function is required", "Variable `x` is not defined"],
+        );
+    }
+
+    #[test]
+    fn broken_main_in_module_does_not_stop_the_next_item() {
+        assert_errors(
+            "mod entry { fn main() { let x: u32 = missing; } }
+            fn later() -> u32 { later_missing }",
+            &[
+                "Variable `missing` is not defined",
+                "Variable `later_missing` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn broken_main_in_nested_module_does_not_stop_the_next_item() {
+        assert_errors(
+            "mod outer {
+                mod inner { fn main() { let x: u32 = missing; } }
+                fn sibling() -> u32 { sibling_missing }
+            }
+            fn later() -> u32 { later_missing }",
+            &[
+                "Variable `missing` is not defined",
+                "Variable `sibling_missing` is not defined",
+                "Variable `later_missing` is not defined",
             ],
         );
     }
