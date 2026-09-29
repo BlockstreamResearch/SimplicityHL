@@ -1,4 +1,5 @@
 use core::fmt;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use miniscript::iter::{Tree, TreeLike};
@@ -126,9 +127,71 @@ impl ResolvedType {
 
     /// Check whether the type can be lowered to a structural type.
     ///
-    /// Unlike [`Self::contains_never`], this looks inside enum payloads.
+    /// Use this before [`StructuralType::from`], which panics on `!`. Unlike
+    /// [`Self::contains_never`], this looks inside enum payloads.
     pub const fn has_structural_type(&self) -> bool {
         !self.flags.has_never && !self.flags.has_never_in_enum
+    }
+
+    /// Check whether the types are equal, where a type that mentions `!` is equal to every type.
+    pub(crate) fn compatible(&self, other: &Self) -> bool {
+        self.contains_never() || other.contains_never() || self.same_as(other)
+    }
+
+    /// Check whether the types are equal, like `==` but without walking shared parts as trees.
+    ///
+    /// Use this instead of `==`, which takes exponential time on equal types
+    /// built from different aliases
+    pub(crate) fn same_as(&self, other: &Self) -> bool {
+        self.matches_with(other, |one, two| {
+            matches!(
+                one.inner,
+                TypeInner::Boolean | TypeInner::UInt(_) | TypeInner::Enum(_) | TypeInner::Never
+            ) && one == two
+        })
+    }
+
+    /// Check whether the types match, using `leaves_match` for their leaves.
+    ///
+    /// Shared by [`Self::same_as`] and the enum check of casts.
+    pub(crate) fn matches_with(
+        &self,
+        other: &Self,
+        mut leaves_match: impl FnMut(&Self, &Self) -> bool,
+    ) -> bool {
+        let mut seen = HashSet::new();
+        let mut stack = vec![(self, other)];
+
+        while let Some((one, two)) = stack.pop() {
+            if std::ptr::eq(one, two)
+                || !seen.insert((std::ptr::from_ref(one), std::ptr::from_ref(two)))
+            {
+                continue;
+            }
+
+            match (&one.inner, &two.inner) {
+                (TypeInner::Either(l1, r1), TypeInner::Either(l2, r2)) => {
+                    stack.extend([(l1.as_ref(), l2.as_ref()), (r1.as_ref(), r2.as_ref())]);
+                }
+                (TypeInner::Option(i1), TypeInner::Option(i2)) => {
+                    stack.push((i1.as_ref(), i2.as_ref()))
+                }
+                (TypeInner::Tuple(e1), TypeInner::Tuple(e2)) if Arc::ptr_eq(e1, e2) => {}
+                (TypeInner::Tuple(e1), TypeInner::Tuple(e2)) if e1.len() == e2.len() => {
+                    stack.extend(e1.iter().map(Arc::as_ref).zip(e2.iter().map(Arc::as_ref)));
+                }
+                (TypeInner::Array(i1, n1), TypeInner::Array(i2, n2)) if n1 == n2 => {
+                    stack.push((i1.as_ref(), i2.as_ref()));
+                }
+                (TypeInner::List(i1, b1), TypeInner::List(i2, b2)) if b1 == b2 => {
+                    stack.push((i1.as_ref(), i2.as_ref()));
+                }
+                _ if leaves_match(one, two) => {}
+                _ => return false,
+            }
+        }
+
+        true
     }
 }
 
