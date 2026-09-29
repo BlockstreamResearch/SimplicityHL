@@ -252,10 +252,13 @@ impl UnresolvedValues {
 impl ParseFromStr for ResolvedType {
     fn parse_from_str(s: &str) -> Result<Self, Diagnostic> {
         let aliased = AliasedType::parse_from_str(s)?;
-        aliased
-            .resolve_builtin()
-            .map_err(|name| Error::UndefinedAlias { name })
-            .with_span(s)
+        let mut size_parameters = std::collections::HashSet::new();
+        aliased.collect_size_parameters(&mut size_parameters);
+        if let Some(name) = size_parameters.into_iter().next() {
+            return Err(Error::SizeParameterRequiresSpecialization { name }).with_span(s);
+        }
+
+        aliased.resolve_builtin().with_span(s)
     }
 }
 

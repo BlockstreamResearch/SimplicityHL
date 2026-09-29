@@ -356,7 +356,7 @@ fn parse_jet_arguments(jet: &dyn JetHL, input_frame: &mut FrameIter) -> Result<V
 /// Resolves an aliased type to its concrete form.
 fn resolve_jet_type(aliased_type: &AliasedType) -> ResolvedType {
     aliased_type
-        .resolve(|name: &AliasName| Err(name.clone()))
+        .resolve(|name: &AliasName| Err(crate::error::Error::UndefinedAlias { name: name.clone() }))
         .expect("jet types always resolve without aliases")
 }
 
