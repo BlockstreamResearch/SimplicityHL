@@ -17,6 +17,39 @@ fn run_simc_on_source(name: &str, content: &str) -> Output {
         .expect("failed to run simc")
 }
 
+#[cfg(feature = "serde")]
+#[test]
+fn cli_resolves_size_dependent_arguments_in_two_stages() {
+    let source = repo_path("examples/array_fold_param.simf");
+    let arguments = repo_path("examples/array_fold_param.args");
+    let output = Command::new(env!("CARGO_BIN_EXE_simc"))
+        .arg(source)
+        .arg("--args")
+        .arg(arguments)
+        .arg("--abi")
+        .arg("--json")
+        .output()
+        .expect("failed to run simc");
+
+    assert!(
+        output.status.success(),
+        "simc failed\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("[u32; 7]"),
+        "missing concrete ABI: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"SIZE\":\"u32\""),
+        "missing size ABI: {stdout}"
+    );
+}
+
 /// Write each `(relative path, content)` under a unique temp project root (creating
 /// parent directories) and return the root. Used to drive multi-file `--dep` builds.
 fn setup_project(name: &str, files: &[(&str, &str)]) -> PathBuf {
