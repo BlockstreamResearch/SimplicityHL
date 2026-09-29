@@ -66,15 +66,16 @@ impl NonZeroPow2Usize {
 
     /// Create a power of two with nonzero exponent.
     ///
-    /// ## Precondition
-    ///
-    /// The value must be a power of two with nonzero exponent.
+    /// Use this instead of [`Self::new`] when the value is known to be valid.
     ///
     /// ## Panics
     ///
-    /// Panics may occur down the line if the precondition is not satisfied.
+    /// Panics if the value is not a power of two with nonzero exponent.
     pub const fn new_unchecked(n: usize) -> Self {
-        debug_assert!(n.is_power_of_two() && 1 < n);
+        assert!(
+            n.is_power_of_two() && 1 < n,
+            "value must be a power of two greater than 1"
+        );
         Self(n)
     }
 
@@ -82,20 +83,25 @@ impl NonZeroPow2Usize {
     ///
     /// The integer is equal to 2^n for some n > 0. Return n.
     pub const fn log2(self) -> NonZeroU32 {
-        let n = self.0.trailing_zeros();
-        debug_assert!(0 < n);
-        // Safety: 0 < n by definition of NonZeroPow2Usize
-        unsafe { NonZeroU32::new_unchecked(n) }
+        match NonZeroU32::new(self.0.trailing_zeros()) {
+            Some(n) => n,
+            None => unreachable!(),
+        }
     }
 
     /// Multiply the value by two.
     /// Return the next power of two.
     ///
     /// The integer is equal to 2^n for some n > 0. Return 2^(n + 1).
+    ///
+    /// ## Panics
+    ///
+    /// Panics if 2^(n + 1) does not fit in a `usize`.
     pub const fn mul2(self) -> Self {
-        let n = self.0 * 2;
-        debug_assert!(n.is_power_of_two() && 1 < n);
-        Self(n)
+        match self.0.checked_mul(2) {
+            Some(n) => Self(n),
+            None => panic!("power of two overflows usize"),
+        }
     }
 
     /// Divide the value by two.
@@ -147,15 +153,13 @@ impl Pow2Usize {
 
     /// Create a power of two.
     ///
-    /// ## Precondition
-    ///
-    /// The value must be a power of two.
+    /// Use this instead of [`Self::new`] when the value is known to be valid.
     ///
     /// ## Panics
     ///
-    /// Panics may occur down the line if the precondition is not satisfied.
+    /// Panics if the value is not a power of two.
     pub const fn new_unchecked(n: usize) -> Self {
-        debug_assert!(n.is_power_of_two());
+        assert!(n.is_power_of_two(), "value must be a power of two");
         Self(n)
     }
 
@@ -170,10 +174,15 @@ impl Pow2Usize {
     /// Return the next power of two.
     ///
     /// The integer is equal to 2^n for some n ≥ 0. Return 2^(n + 1).
+    ///
+    /// ## Panics
+    ///
+    /// Panics if 2^(n + 1) does not fit in a `usize`.
     pub const fn mul2(self) -> Self {
-        let n = self.0 * 2;
-        debug_assert!(n.is_power_of_two());
-        Self(n)
+        match self.0.checked_mul(2) {
+            Some(n) => Self(n),
+            None => panic!("power of two overflows usize"),
+        }
     }
 
     /// Divide the value by two.
@@ -451,5 +460,36 @@ mod tests {
         }
         assert_eq!(pow, NonZeroPow2Usize::TWO);
         assert!(pow.checked_div2().is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "power of two greater than 1")]
+    fn nonzero_pow2_new_unchecked_rejects_non_power() {
+        // Used to be accepted in release builds, and log2 then produced a zero NonZeroU32.
+        NonZeroPow2Usize::new_unchecked(3);
+    }
+
+    #[test]
+    #[should_panic(expected = "power of two greater than 1")]
+    fn nonzero_pow2_new_unchecked_rejects_one() {
+        NonZeroPow2Usize::new_unchecked(1);
+    }
+
+    #[test]
+    #[should_panic(expected = "overflows usize")]
+    fn nonzero_pow2_mul2_rejects_overflow() {
+        NonZeroPow2Usize::new_unchecked(1 << (usize::BITS - 1)).mul2();
+    }
+
+    #[test]
+    #[should_panic(expected = "power of two")]
+    fn pow2_new_unchecked_rejects_non_power() {
+        Pow2Usize::new_unchecked(3);
+    }
+
+    #[test]
+    #[should_panic(expected = "overflows usize")]
+    fn pow2_mul2_rejects_overflow() {
+        Pow2Usize::new_unchecked(1 << (usize::BITS - 1)).mul2();
     }
 }
