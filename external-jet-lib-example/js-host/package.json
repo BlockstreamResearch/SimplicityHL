@@ -1,0 +1,8 @@
+{
+  "name": "simplicityhl-wasm-host-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "run": "node run.mjs"
+  }
+}

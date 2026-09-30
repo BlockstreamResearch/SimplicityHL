@@ -75,7 +75,7 @@ jobs:
       - name: Checkout Toolchain
         uses: dtolnay/rust-toolchain@stable
       - run: rustup target add wasm32-unknown-unknown
-      - run: cargo check --target wasm32-unknown-unknown
+      - run: cargo check --target wasm32-unknown-unknown --features external-jets
 
   Fuzz:
     name: Check Fuzz
@@ -125,3 +125,29 @@ jobs:
 
       - name: "Run external-lib-consumer with compiled dylib"
         run: ./target/debug/external-lib-consumer ./target/debug/libexternal_jet_lib_example.so
+
+  ExternalJetLibWasm:
+    name: External Jet Library (wasm)
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Checkout repo"
+        uses: actions/checkout@v4
+
+      - name: "Select toolchain"
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: "Setup Node.js"
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: "Build external jet plugin for wasm"
+        run: cargo build --locked -p external-jet-lib-example --target wasm32-unknown-unknown --lib
+
+      - name: "Build compiler-wasm for wasm"
+        run: cargo build --locked -p external-jet-lib-example --target wasm32-unknown-unknown --bin compiler-wasm
+
+      - name: "Run the JS host against both modules"
+        run: node external-jet-lib-example/js-host/run.mjs
