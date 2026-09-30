@@ -1,13 +1,17 @@
 use core::fmt;
 use core::str::FromStr;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use miniscript::iter::{Tree, TreeLike};
 
 use super::{ResolvedType, TypeConstructible, TypeDeconstructible, TypeInner, UIntType};
+use crate::error::Error;
 use crate::num::NonZeroPow2Usize;
+use crate::size::{make_mut_slice, SizeExpression, SizeResolver};
 use crate::str::AliasName;
 use crate::unstable::impl_require_feature;
+use crate::TemplateProgramWitness;
 
 /// SimplicityHL type with type aliases.
 #[derive(PartialEq, Eq, Hash, Clone)]
@@ -22,6 +26,10 @@ enum AliasedInner {
     Alias(AliasName),
     /// Builtin type alias.
     Builtin(BuiltinAlias),
+    /// Array whose length may be supplied during template specialization.
+    Array(Arc<AliasedType>, SizeExpression<usize>),
+    /// List whose bound may be supplied during template specialization.
+    List(Arc<AliasedType>, SizeExpression<NonZeroPow2Usize>),
     /// Type primitive.
     Inner(TypeInner<Arc<AliasedType>>),
 }
@@ -57,6 +65,94 @@ pub enum BuiltinAlias {
 }
 
 impl AliasedType {
+    pub(crate) fn parameterized_array(element: Self, name: TemplateProgramWitness) -> Self {
+        Self(AliasedInner::Array(
+            Arc::new(element),
+            SizeExpression::parameter(name),
+        ))
+    }
+
+    pub(crate) fn parameterized_list(element: Self, name: TemplateProgramWitness) -> Self {
+        Self(AliasedInner::List(
+            Arc::new(element),
+            SizeExpression::parameter(name),
+        ))
+    }
+
+    pub(crate) fn collect_size_parameters(&self, output: &mut HashSet<TemplateProgramWitness>) {
+        match &self.0 {
+            AliasedInner::Array(element, size) => {
+                if let Some(name) = size.as_parameter() {
+                    output.insert(name.clone());
+                }
+                element.collect_size_parameters(output);
+            }
+            AliasedInner::List(element, bound) => {
+                if let Some(name) = bound.as_parameter() {
+                    output.insert(name.clone());
+                }
+                element.collect_size_parameters(output);
+            }
+            AliasedInner::Inner(inner) => match inner {
+                TypeInner::Either(left, right) => {
+                    left.collect_size_parameters(output);
+                    right.collect_size_parameters(output);
+                }
+                TypeInner::Option(element) => element.collect_size_parameters(output),
+                TypeInner::Tuple(elements) => {
+                    for element in elements.iter() {
+                        element.collect_size_parameters(output);
+                    }
+                }
+                TypeInner::Array(element, _) | TypeInner::List(element, _) => {
+                    element.collect_size_parameters(output);
+                }
+                TypeInner::Boolean | TypeInner::UInt(_) | TypeInner::Enum(_) | TypeInner::Never => {
+                }
+            },
+            AliasedInner::Alias(_) | AliasedInner::Builtin(_) => {}
+        }
+    }
+
+    pub(crate) fn specialize_sizes(&mut self, resolver: &SizeResolver<'_>) -> Result<(), Error> {
+        match &mut self.0 {
+            AliasedInner::Array(element, size) => {
+                Arc::make_mut(element).specialize_sizes(resolver)?;
+                if let Some(name) = size.as_parameter() {
+                    *size = SizeExpression::literal(resolver.array(name)?);
+                }
+            }
+            AliasedInner::List(element, bound) => {
+                Arc::make_mut(element).specialize_sizes(resolver)?;
+                if let Some(name) = bound.as_parameter() {
+                    *bound = SizeExpression::literal(resolver.list(name)?);
+                }
+            }
+            AliasedInner::Inner(inner) => match inner {
+                TypeInner::Either(left, right) => {
+                    Arc::make_mut(left).specialize_sizes(resolver)?;
+                    Arc::make_mut(right).specialize_sizes(resolver)?;
+                }
+                TypeInner::Option(element) => {
+                    Arc::make_mut(element).specialize_sizes(resolver)?;
+                }
+                TypeInner::Tuple(elements) => {
+                    for element in make_mut_slice(elements) {
+                        Arc::make_mut(element).specialize_sizes(resolver)?;
+                    }
+                }
+                TypeInner::Array(element, _) | TypeInner::List(element, _) => {
+                    Arc::make_mut(element).specialize_sizes(resolver)?;
+                }
+                TypeInner::Boolean | TypeInner::UInt(_) | TypeInner::Enum(_) | TypeInner::Never => {
+                }
+            },
+            AliasedInner::Alias(_) | AliasedInner::Builtin(_) => {}
+        }
+
+        Ok(())
+    }
+
     /// Access a user-defined alias.
     pub const fn as_alias(&self) -> Option<&AliasName> {
         match &self.0 {
@@ -84,9 +180,9 @@ impl AliasedType {
     }
 
     /// Resolve all aliases in the type based on the given map of `aliases` to types.
-    pub fn resolve<F, E>(&self, mut get_alias: F) -> Result<ResolvedType, E>
+    pub fn resolve<F>(&self, mut get_alias: F) -> Result<ResolvedType, Error>
     where
-        F: FnMut(&AliasName) -> Result<ResolvedType, E>,
+        F: FnMut(&AliasName) -> Result<ResolvedType, Error>,
     {
         let mut output = vec![];
         for data in self.post_order_iter() {
@@ -98,6 +194,30 @@ impl AliasedType {
                 AliasedInner::Builtin(builtin) => {
                     let resolved = builtin.resolve();
                     output.push(resolved);
+                }
+                AliasedInner::Array(_, size) => {
+                    let element = output.pop().unwrap();
+                    let size = match size {
+                        SizeExpression::Literal(size) => *size,
+                        SizeExpression::Parameter(name) => {
+                            return Err(Error::SizeParameterRequiresSpecialization {
+                                name: name.clone(),
+                            });
+                        }
+                    };
+                    output.push(ResolvedType::array(element, size));
+                }
+                AliasedInner::List(_, bound) => {
+                    let element = output.pop().unwrap();
+                    let bound = match bound {
+                        SizeExpression::Literal(bound) => *bound,
+                        SizeExpression::Parameter(name) => {
+                            return Err(Error::SizeParameterRequiresSpecialization {
+                                name: name.clone(),
+                            });
+                        }
+                    };
+                    output.push(ResolvedType::list(element, bound));
                 }
                 AliasedInner::Inner(inner) => match inner {
                     TypeInner::Either(_, _) => {
@@ -138,8 +258,8 @@ impl AliasedType {
     }
 
     /// Resolve all aliases in the type based on the builtin type aliases only.
-    pub fn resolve_builtin(&self) -> Result<ResolvedType, AliasName> {
-        self.resolve(|name: &AliasName| Err(name.clone()))
+    pub fn resolve_builtin(&self) -> Result<ResolvedType, Error> {
+        self.resolve(|name: &AliasName| Err(Error::UndefinedAlias { name: name.clone() }))
     }
 }
 
@@ -151,6 +271,8 @@ impl_require_feature!(AliasedInner {
     variants:
         Alias(_),
         Builtin(_),
+    Array(element, _),
+    List(element, _),
         Inner(inner),
 });
 
@@ -190,17 +312,17 @@ impl TypeConstructible for AliasedType {
     }
 
     fn array(element: Self, size: usize) -> Self {
-        Self(AliasedInner::Inner(TypeInner::Array(
+        Self(AliasedInner::Array(
             Arc::new(element),
-            size,
-        )))
+            SizeExpression::literal(size),
+        ))
     }
 
     fn list(element: Self, bound: NonZeroPow2Usize) -> Self {
-        Self(AliasedInner::Inner(TypeInner::List(
+        Self(AliasedInner::List(
             Arc::new(element),
-            bound,
-        )))
+            SizeExpression::literal(bound),
+        ))
     }
 }
 
@@ -239,14 +361,14 @@ impl TypeDeconstructible for AliasedType {
 
     fn as_array(&self) -> Option<(&Self, usize)> {
         match &self.0 {
-            AliasedInner::Inner(TypeInner::Array(ty, size)) => Some((ty, *size)),
+            AliasedInner::Array(ty, size) => size.as_literal().map(|size| (ty.as_ref(), *size)),
             _ => None,
         }
     }
 
     fn as_list(&self) -> Option<(&Self, NonZeroPow2Usize)> {
         match &self.0 {
-            AliasedInner::Inner(TypeInner::List(ty, bound)) => Some((ty, *bound)),
+            AliasedInner::List(ty, bound) => bound.as_literal().map(|bound| (ty.as_ref(), *bound)),
             _ => None,
         }
     }
@@ -256,6 +378,9 @@ impl TreeLike for &AliasedType {
     fn as_node(&self) -> Tree<Self> {
         match &self.0 {
             AliasedInner::Alias(_) | AliasedInner::Builtin(_) => Tree::Nullary,
+            AliasedInner::Array(element, _) | AliasedInner::List(element, _) => {
+                Tree::Unary(element)
+            }
             AliasedInner::Inner(inner) => match inner {
                 TypeInner::Boolean
                 | TypeInner::UInt(..)
@@ -285,6 +410,16 @@ impl fmt::Display for AliasedType {
             match &data.node.0 {
                 AliasedInner::Alias(alias) => write!(f, "{alias}")?,
                 AliasedInner::Builtin(builtin) => write!(f, "{builtin}")?,
+                AliasedInner::Array(_, size) => match data.n_children_yielded {
+                    0 => write!(f, "[")?,
+                    1 => write!(f, "; {size}]")?,
+                    _ => unreachable!(),
+                },
+                AliasedInner::List(_, bound) => match data.n_children_yielded {
+                    0 => write!(f, "List<")?,
+                    1 => write!(f, ", {bound}>")?,
+                    _ => unreachable!(),
+                },
                 AliasedInner::Inner(inner) => inner.display(f, data.n_children_yielded)?,
             }
         }

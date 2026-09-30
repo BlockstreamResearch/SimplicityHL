@@ -967,6 +967,9 @@ pub enum Error {
         declared: ResolvedType,
         assigned: ResolvedType,
     },
+    SizeParameterRequiresSpecialization {
+        name: TemplateProgramWitness,
+    },
     RawHashUnsupportedType {
         ty: ResolvedType,
     },
@@ -1231,6 +1234,10 @@ impl fmt::Display for Error {
             Error::ArgumentTypeMismatch { name, declared, assigned } => write!(
                 f,
                 "Parameter `{name}` was declared with type `{declared}` but its assigned argument is of type `{assigned}`"
+            ),
+            Error::SizeParameterRequiresSpecialization { name } => write!(
+                f,
+                "Size parameter `{name}` must be specialized before type analysis"
             ),
             Error::RawHashJetsUnavailable => write!(
                 f,

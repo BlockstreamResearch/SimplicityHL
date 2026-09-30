@@ -1529,6 +1529,14 @@ impl Program {
         jet_hinter: Box<dyn JetHinter>,
         diagnostics: &mut DiagnosticManager,
     ) -> Option<Self> {
+        if let Some((name, _)) = from.size_parameters().iter().next() {
+            diagnostics.push(
+                Error::SizeParameterRequiresSpecialization { name: name.clone() }
+                    .with_span(*from.as_ref()),
+            );
+            return None;
+        }
+
         let mut scope = Scope::new(jet_hinter);
         let main = Self::analyze_main(from, &mut scope);
         scope.try_into_program(main, diagnostics)
@@ -2406,13 +2414,9 @@ impl AbstractSyntaxTree for Call {
                 let args_tys = source_type(&*jet)
                     .iter()
                     .map(AliasedType::resolve_builtin)
-                    .collect::<Result<Vec<ResolvedType>, AliasName>>()
-                    .map_err(|alias| Error::UndefinedAlias { name: alias })
+                    .collect::<Result<Vec<ResolvedType>, Error>>()
                     .with_span(from)?;
-                let out_ty = target_type(&*jet)
-                    .resolve_builtin()
-                    .map_err(|alias| Error::UndefinedAlias { name: alias })
-                    .with_span(from)?;
+                let out_ty = target_type(&*jet).resolve_builtin().with_span(from)?;
                 scope.report_err(check_output_type(&out_ty, ty).with_span(from));
 
                 check_argument_types(from.args(), &args_tys).with_span(from)?;
@@ -2662,7 +2666,10 @@ impl CallName {
                 if function.params().len() != 2 || function.params()[1].ty() != function.ret() {
                     Err(Error::FunctionNotFoldable { name: name.clone() }).with_span(from)
                 } else {
-                    Ok(Self::ArrayFold(function, *size))
+                    let size = *size
+                        .as_literal()
+                        .expect("array fold size parameters must be specialized before analysis");
+                    Ok(Self::ArrayFold(function, size))
                 }
             }
             parse::CallName::Fold(name, bound) => {
@@ -2672,7 +2679,10 @@ impl CallName {
                 if function.params().len() != 2 || function.params()[1].ty() != function.ret() {
                     Err(Error::FunctionNotFoldable { name: name.clone() }).with_span(from)
                 } else {
-                    Ok(Self::Fold(function, *bound))
+                    let bound = *bound
+                        .as_literal()
+                        .expect("fold bound parameters must be specialized before analysis");
+                    Ok(Self::Fold(function, bound))
                 }
             }
             parse::CallName::ForWhile(name) => {

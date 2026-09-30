@@ -1,0 +1,10 @@
+fn sum(elt: u32, acc: u32) -> u32 {
+    let (_, acc): (bool, u32) = jet::add_32(elt, acc);
+    acc
+}
+
+fn main() {
+    let arr: [u32; param::SIZE] = param::VALUES;
+    let sum: u32 = array_fold::<sum, param::SIZE>(arr, 0);
+    assert!(jet::eq_32(sum, 28));
+}

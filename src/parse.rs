@@ -1,6 +1,7 @@
 //! This module contains the parsing code to convert the
 //! tokens into an AST.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -25,6 +26,7 @@ use crate::impl_eq_hash;
 use crate::lexer::{Token, Tokens};
 use crate::num::NonZeroPow2Usize;
 use crate::pattern::Pattern;
+use crate::size::{make_mut_slice, SizeExpression, SizeResolver};
 use crate::str::{
     AliasName, Binary, Decimal, FunctionName, Hexadecimal, Identifier, JetName, ModuleName,
     SymbolName,
@@ -35,6 +37,7 @@ use crate::unstable::{
 };
 use crate::version::SimcDirective;
 use crate::TemplateProgramWitness;
+use crate::{Arguments, Parameters, ResolvedType};
 
 #[cfg(feature = "fmt")]
 use crate::lexer::{FmtToken, FmtTokens};
@@ -94,6 +97,40 @@ impl Program {
         &self.items
     }
 
+    /// Collect parameters that determine type or fold sizes before semantic analysis.
+    pub(crate) fn size_parameters(&self) -> Parameters {
+        let mut program = self.clone();
+        let mut collector = SizeParameterCollector::default();
+        walk_program_sizes(&mut program, &mut collector);
+
+        Parameters::from(
+            collector
+                .names
+                .into_iter()
+                .map(|name| (name, ResolvedType::from(UIntType::U32)))
+                .collect::<HashMap<_, _>>(),
+        )
+    }
+
+    /// Resolve all symbolic sizes in a cloned parsed program.
+    pub(crate) fn specialize_sizes(
+        &self,
+        arguments: &Arguments,
+    ) -> Result<Self, DiagnosticManager> {
+        let mut program = self.clone();
+        let mut specializer = SizeSpecializer {
+            resolver: SizeResolver::new(arguments),
+            diagnostics: DiagnosticManager::new(),
+        };
+        walk_program_sizes(&mut program, &mut specializer);
+
+        if specializer.diagnostics.has_errors() {
+            Err(specializer.diagnostics)
+        } else {
+            Ok(program)
+        }
+    }
+
     /// Parse source for formatting while retaining all comments and whitespace.
     #[cfg(feature = "fmt")]
     pub fn parse_with_errors_for_fmt<'src>(
@@ -136,6 +173,236 @@ impl Program {
                 prefix: Span::new(file_id, 0..start),
             })
         }
+    }
+}
+
+trait SizeVisitor {
+    fn visit_type(&mut self, ty: &mut AliasedType, span: Span);
+    fn visit_call_name(&mut self, name: &mut CallName, span: Span);
+}
+
+#[derive(Default)]
+struct SizeParameterCollector {
+    names: HashSet<TemplateProgramWitness>,
+}
+
+impl SizeVisitor for SizeParameterCollector {
+    fn visit_type(&mut self, ty: &mut AliasedType, _span: Span) {
+        ty.collect_size_parameters(&mut self.names);
+    }
+
+    fn visit_call_name(&mut self, name: &mut CallName, span: Span) {
+        match name {
+            CallName::UnwrapLeft(ty)
+            | CallName::UnwrapRight(ty)
+            | CallName::IsNone(ty)
+            | CallName::TypeCast(ty)
+            | CallName::RawHash(ty) => self.visit_type(ty, span),
+            CallName::Fold(_, bound) => {
+                if let Some(name) = bound.as_parameter() {
+                    self.names.insert(name.clone());
+                }
+            }
+            CallName::ArrayFold(_, size) => {
+                if let Some(name) = size.as_parameter() {
+                    self.names.insert(name.clone());
+                }
+            }
+            CallName::Jet(_)
+            | CallName::Unwrap
+            | CallName::Assert
+            | CallName::Panic
+            | CallName::Debug
+            | CallName::Custom(_)
+            | CallName::ForWhile(_) => {}
+        }
+    }
+}
+
+struct SizeSpecializer<'a> {
+    resolver: SizeResolver<'a>,
+    diagnostics: DiagnosticManager,
+}
+
+impl SizeSpecializer<'_> {
+    fn report(&mut self, error: Error, span: Span) {
+        self.diagnostics.push(error.with_span(span));
+    }
+}
+
+impl SizeVisitor for SizeSpecializer<'_> {
+    fn visit_type(&mut self, ty: &mut AliasedType, span: Span) {
+        if let Err(error) = ty.specialize_sizes(&self.resolver) {
+            self.report(error, span);
+        }
+    }
+
+    fn visit_call_name(&mut self, name: &mut CallName, span: Span) {
+        match name {
+            CallName::UnwrapLeft(ty)
+            | CallName::UnwrapRight(ty)
+            | CallName::IsNone(ty)
+            | CallName::TypeCast(ty)
+            | CallName::RawHash(ty) => self.visit_type(ty, span),
+            CallName::Fold(_, bound) => {
+                if let Some(name) = bound.as_parameter().cloned() {
+                    match self.resolver.list(&name) {
+                        Ok(value) => *bound = SizeExpression::literal(value),
+                        Err(error) => self.report(error, span),
+                    }
+                }
+            }
+            CallName::ArrayFold(_, size) => {
+                if let Some(name) = size.as_parameter().cloned() {
+                    match self.resolver.array_fold(&name) {
+                        Ok(value) => *size = SizeExpression::literal(value),
+                        Err(error) => self.report(error, span),
+                    }
+                }
+            }
+            CallName::Jet(_)
+            | CallName::Unwrap
+            | CallName::Assert
+            | CallName::Panic
+            | CallName::Debug
+            | CallName::Custom(_)
+            | CallName::ForWhile(_) => {}
+        }
+    }
+}
+
+fn walk_program_sizes(program: &mut Program, visitor: &mut impl SizeVisitor) {
+    walk_items_sizes(&mut program.items, visitor);
+}
+
+fn walk_items_sizes(items: &mut Arc<[Item]>, visitor: &mut impl SizeVisitor) {
+    for item in make_mut_slice(items) {
+        match item {
+            Item::TypeAlias(alias) => visitor.visit_type(&mut alias.ty, alias.span),
+            Item::Function(function) => {
+                for parameter in make_mut_slice(&mut function.params) {
+                    visitor.visit_type(&mut parameter.ty, parameter.span);
+                }
+                if let Some(ret) = &mut function.ret {
+                    visitor.visit_type(ret, function.span);
+                }
+                walk_expression_sizes(&mut function.body, visitor);
+            }
+            Item::EnumDeclaration(declaration) => {
+                for variant in make_mut_slice(&mut declaration.variants) {
+                    for ty in make_mut_slice(&mut variant.payload) {
+                        visitor.visit_type(ty, variant.span);
+                    }
+                }
+            }
+            Item::Module(module) => walk_items_sizes(&mut module.items, visitor),
+            Item::Use(_) | Item::Ignored => {}
+        }
+    }
+}
+
+fn walk_expression_sizes(expression: &mut Expression, visitor: &mut impl SizeVisitor) {
+    match &mut expression.inner {
+        ExpressionInner::Single(single) => walk_single_sizes(single, visitor),
+        ExpressionInner::Block(statements, result) => {
+            for statement in make_mut_slice(statements) {
+                match statement {
+                    Statement::Assignment(assignment) => {
+                        visitor.visit_type(&mut assignment.ty, assignment.span);
+                        walk_expression_sizes(&mut assignment.expression, visitor);
+                    }
+                    Statement::Expression(expression) => {
+                        walk_expression_sizes(expression, visitor);
+                    }
+                }
+            }
+            if let Some(result) = result {
+                walk_expression_sizes(Arc::make_mut(result), visitor);
+            }
+        }
+    }
+}
+
+fn walk_single_sizes(single: &mut SingleExpression, visitor: &mut impl SizeVisitor) {
+    match &mut single.inner {
+        SingleExpressionInner::Either(value) => match value {
+            Either::Left(expression) | Either::Right(expression) => {
+                walk_expression_sizes(Arc::make_mut(expression), visitor);
+            }
+        },
+        SingleExpressionInner::Option(Some(expression))
+        | SingleExpressionInner::Expression(expression) => {
+            walk_expression_sizes(Arc::make_mut(expression), visitor);
+        }
+        SingleExpressionInner::Call(call) => {
+            visitor.visit_call_name(&mut call.name, call.span);
+            for argument in make_mut_slice(&mut call.args) {
+                walk_expression_sizes(argument, visitor);
+            }
+        }
+        SingleExpressionInner::Match(match_expression) => {
+            walk_expression_sizes(Arc::make_mut(&mut match_expression.scrutinee), visitor);
+            walk_match_pattern_sizes(
+                &mut match_expression.left.pattern,
+                match_expression.left.span,
+                visitor,
+            );
+            walk_expression_sizes(
+                Arc::make_mut(&mut match_expression.left.expression),
+                visitor,
+            );
+            walk_match_pattern_sizes(
+                &mut match_expression.right.pattern,
+                match_expression.right.span,
+                visitor,
+            );
+            walk_expression_sizes(
+                Arc::make_mut(&mut match_expression.right.expression),
+                visitor,
+            );
+        }
+        SingleExpressionInner::EnumMatch(match_expression) => {
+            walk_expression_sizes(Arc::make_mut(&mut match_expression.scrutinee), visitor);
+            for arm in make_mut_slice(&mut match_expression.arms) {
+                for (_, ty) in make_mut_slice(&mut arm.bindings) {
+                    visitor.visit_type(ty, arm.span);
+                }
+                walk_expression_sizes(Arc::make_mut(&mut arm.expression), visitor);
+            }
+        }
+        SingleExpressionInner::EnumConstruction(construction) => {
+            for argument in make_mut_slice(&mut construction.args) {
+                walk_expression_sizes(argument, visitor);
+            }
+        }
+        SingleExpressionInner::Tuple(elements)
+        | SingleExpressionInner::Array(elements)
+        | SingleExpressionInner::List(elements) => {
+            for element in make_mut_slice(elements) {
+                walk_expression_sizes(element, visitor);
+            }
+        }
+        SingleExpressionInner::Option(None)
+        | SingleExpressionInner::Boolean(_)
+        | SingleExpressionInner::Decimal(_)
+        | SingleExpressionInner::Binary(_)
+        | SingleExpressionInner::Hexadecimal(_)
+        | SingleExpressionInner::Witness(_)
+        | SingleExpressionInner::Parameter(_)
+        | SingleExpressionInner::Variable(_) => {}
+    }
+}
+
+fn walk_match_pattern_sizes(
+    pattern: &mut MatchPattern,
+    span: Span,
+    visitor: &mut impl SizeVisitor,
+) {
+    match pattern {
+        MatchPattern::Left(_, ty) | MatchPattern::Right(_, ty) | MatchPattern::Some(_, ty) => {
+            visitor.visit_type(ty, span)
+        }
+        MatchPattern::None | MatchPattern::False | MatchPattern::True => {}
     }
 }
 
@@ -534,9 +801,9 @@ pub enum CallName {
     /// Name of a custom function.
     Custom(FunctionName),
     /// Fold of a bounded list with the given function.
-    Fold(FunctionName, NonZeroPow2Usize),
+    Fold(FunctionName, SizeExpression<NonZeroPow2Usize>),
     /// Fold of an array with the given function.
-    ArrayFold(FunctionName, NonZeroUsize),
+    ArrayFold(FunctionName, SizeExpression<NonZeroUsize>),
     /// Loop over the given function a bounded number of times until it returns success.
     ForWhile(FunctionName),
     /// SHA-256 of the concatenated bytes of a tuple of unsigned integers of the given type.
@@ -1988,12 +2255,23 @@ impl ChumskyParse for AliasedType {
             let array = delimited_with_recovery(
                 ty.clone()
                     .then_ignore(parse_token_with_recovery(Token::Semi))
-                    .then(num.clone())
-                    .map(|(ty, size)| {
-                        let digits =
-                            crate::str::underscore_parsing::strip_digit_separators(size.as_inner());
+                    .then(choice((
+                        select! { Token::Param(s) => TemplateProgramWitness::parameter_from_str(s) }
+                            .map(Either::Right),
+                        num.clone().map(Either::Left),
+                    )))
+                    .map(|(ty, size)| match size {
+                        Either::Left(size) => {
+                            let digits = crate::str::underscore_parsing::strip_digit_separators(
+                                size.as_inner(),
+                            );
 
-                        AliasedType::array(ty, usize::from_str(digits.as_ref()).unwrap_or_default())
+                            AliasedType::array(
+                                ty,
+                                usize::from_str(digits.as_ref()).unwrap_or_default(),
+                            )
+                        }
+                        Either::Right(name) => AliasedType::parameterized_array(ty, name),
                     }),
                 Token::LBracket,
                 Token::RBracket,
@@ -2009,35 +2287,46 @@ impl ChumskyParse for AliasedType {
             let list = just(Token::Ident("List"))
                 .ignore_then(delimited_with_recovery(
                     ty.then_ignore(parse_token_with_recovery(Token::Comma))
-                        .then(num.clone().validate(|num, e, emit| -> NonZeroPow2Usize {
-                            let digits = crate::str::underscore_parsing::strip_digit_separators(
-                                num.as_inner(),
-                            );
+                        .then(choice((
+                            select! { Token::Param(s) => TemplateProgramWitness::parameter_from_str(s) }
+                                .map(Either::Right),
+                            num.clone()
+                                .validate(|num, e, emit| -> NonZeroPow2Usize {
+                                    let digits =
+                                        crate::str::underscore_parsing::strip_digit_separators(
+                                            num.as_inner(),
+                                        );
 
-                            match NonZeroPow2Usize::from_str(digits.as_ref()) {
-                                Ok(number) => number,
-                                Err(err) => {
-                                    emit.emit(
-                                        Error::Grammar {
-                                            msg: format!("Cannot parse list bound: {err}"),
+                                    match NonZeroPow2Usize::from_str(digits.as_ref()) {
+                                        Ok(number) => number,
+                                        Err(err) => {
+                                            emit.emit(
+                                                Error::Grammar {
+                                                    msg: format!(
+                                                        "Cannot parse list bound: {err}"
+                                                    ),
+                                                }
+                                                .with_span(e.span()),
+                                            );
+                                            NonZeroPow2Usize::TWO
                                         }
-                                        .with_span(e.span()),
-                                    );
-                                    // fallback to default value
-                                    NonZeroPow2Usize::TWO
-                                }
-                            }
-                        })),
+                                    }
+                                })
+                                .map(Either::Left),
+                        ))),
                     Token::LAngle,
                     Token::RAngle,
                     |_| {
                         (
                             AliasedType::alias(AliasName::from_str_unchecked("error")),
-                            NonZeroPow2Usize::TWO,
+                            Either::Left(NonZeroPow2Usize::TWO),
                         )
                     },
                 ))
-                .map(|(ty, size)| AliasedType::list(ty, size))
+                .map(|(ty, size)| match size {
+                    Either::Left(bound) => AliasedType::list(ty, bound),
+                    Either::Right(name) => AliasedType::parameterized_list(ty, name),
+                })
                 .labelled("List");
 
             choice((sum_type, option_type, tuple, array, list, atom))
@@ -2393,63 +2682,79 @@ impl ChumskyParse for CallName {
             .ignore_then(turbofish_start.clone())
             .ignore_then(FunctionName::parser())
             .then_ignore(parse_token_with_recovery(Token::Comma))
-            .then(select! { Token::DecLiteral(s) => s }.labelled("list size"))
-            .then_ignore(generics_close.clone())
-            .validate(|(func, bound_str), e, emit| {
-                let digits =
-                    crate::str::underscore_parsing::strip_digit_separators(bound_str.as_inner());
-
-                let bound = match digits.parse::<usize>() {
-                    Ok(num) => match NonZeroPow2Usize::new(num) {
-                        Some(val) => val,
-                        None => {
-                            emit.emit(Error::ListBoundPow2 { bound: num }.with_span(e.span()));
-                            NonZeroPow2Usize::TWO
-                        }
-                    },
-                    Err(_) => {
-                        emit.emit(
-                            Error::CannotParse {
-                                msg: format!("Invalid number: {}", bound_str),
-                            }
-                            .with_span(e.span()),
+            .then(choice((
+                select! { Token::Param(s) => SizeExpression::parameter(TemplateProgramWitness::parameter_from_str(s)) },
+                select! { Token::DecLiteral(s) => s }
+                    .validate(|bound_str, e, emit| {
+                        let digits = crate::str::underscore_parsing::strip_digit_separators(
+                            bound_str.as_inner(),
                         );
-                        NonZeroPow2Usize::TWO
-                    }
-                };
 
-                CallName::Fold(func, bound)
-            });
+                        let bound = match digits.parse::<usize>() {
+                            Ok(num) => match NonZeroPow2Usize::new(num) {
+                                Some(val) => val,
+                                None => {
+                                    emit.emit(
+                                        Error::ListBoundPow2 { bound: num }.with_span(e.span()),
+                                    );
+                                    NonZeroPow2Usize::TWO
+                                }
+                            },
+                            Err(_) => {
+                                emit.emit(
+                                    Error::CannotParse {
+                                        msg: format!("Invalid number: {}", bound_str),
+                                    }
+                                    .with_span(e.span()),
+                                );
+                                NonZeroPow2Usize::TWO
+                            }
+                        };
+
+                        SizeExpression::literal(bound)
+                    }),
+            ))
+            .labelled("list size"))
+            .then_ignore(generics_close.clone())
+            .map(|(func, bound)| CallName::Fold(func, bound));
 
         let array_fold = just(Token::Ident("array_fold"))
             .ignore_then(turbofish_start.clone())
             .ignore_then(FunctionName::parser())
             .then_ignore(parse_token_with_recovery(Token::Comma))
-            .then(select! { Token::DecLiteral(s) => s }.labelled("array size"))
-            .then_ignore(generics_close.clone())
-            .validate(|(func, size_str), e, emit| {
-                let digits =
-                    crate::str::underscore_parsing::strip_digit_separators(size_str.as_inner());
-
-                let size = match digits.parse::<usize>() {
-                    Ok(0) => {
-                        emit.emit(Error::ArraySizeNonZero { size: 0 }.with_span(e.span()));
-                        NonZeroUsize::new(1).unwrap()
-                    }
-                    Ok(n) => NonZeroUsize::new(n).unwrap(),
-                    Err(_) => {
-                        emit.emit(
-                            Error::CannotParse {
-                                msg: format!("Invalid number: {}", size_str),
-                            }
-                            .with_span(e.span()),
+            .then(choice((
+                select! { Token::Param(s) => SizeExpression::parameter(TemplateProgramWitness::parameter_from_str(s)) },
+                select! { Token::DecLiteral(s) => s }
+                    .validate(|size_str, e, emit| {
+                        let digits = crate::str::underscore_parsing::strip_digit_separators(
+                            size_str.as_inner(),
                         );
-                        NonZeroUsize::new(1).unwrap()
-                    }
-                };
 
-                CallName::ArrayFold(func, size)
-            });
+                        let size = match digits.parse::<usize>() {
+                            Ok(0) => {
+                                emit.emit(
+                                    Error::ArraySizeNonZero { size: 0 }.with_span(e.span()),
+                                );
+                                NonZeroUsize::new(1).unwrap()
+                            }
+                            Ok(n) => NonZeroUsize::new(n).unwrap(),
+                            Err(_) => {
+                                emit.emit(
+                                    Error::CannotParse {
+                                        msg: format!("Invalid number: {}", size_str),
+                                    }
+                                    .with_span(e.span()),
+                                );
+                                NonZeroUsize::new(1).unwrap()
+                            }
+                        };
+
+                        SizeExpression::literal(size)
+                    }),
+            ))
+            .labelled("array size"))
+            .then_ignore(generics_close.clone())
+            .map(|(func, size)| CallName::ArrayFold(func, size));
 
         let for_while = just(Token::Ident("for_while"))
             .ignore_then(turbofish_start.clone())
@@ -3628,6 +3933,30 @@ mod type_alias {
 mod regular_parsing {
     use super::*;
     use crate::parse;
+
+    #[test]
+    fn compilation_parameters_as_sizes_round_trip() {
+        let source = r#"
+fn step(element: u32, accumulator: u32) -> u32 {
+    accumulator
+}
+
+fn main() {
+    let array: [u32; param::SIZE] = [1, 2, 3, 4];
+    let list: List<u32, param::BOUND> = list![1, 2];
+    let _: u32 = array_fold::<step, param::SIZE>(array, 0);
+    let _: u32 = fold::<step, param::BOUND>(list, 0);
+}
+"#;
+
+        let program = Program::parse_from_str(source).expect("program parses");
+        let rendered = program.to_string();
+
+        assert!(rendered.contains("[u32; param::SIZE]"));
+        assert!(rendered.contains("List<u32, param::BOUND>"));
+        assert!(rendered.contains("array_fold::<step, param::SIZE>"));
+        assert!(rendered.contains("fold::<step, param::BOUND>"));
+    }
 
     impl UseDecl {
         /// Creates a dummy `UseDecl` specifically for testing `DependencyMap` resolution.

@@ -238,14 +238,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     #[cfg(feature = "serde")]
-    let args_opt: simplicityhl::Arguments = match unresolved_args {
-        None => simplicityhl::Arguments::default(),
-        Some(unresolved) => unresolved.resolve(template.parameters())?,
+    let compiled = match unresolved_args {
+        None => template.instantiate(simplicityhl::Arguments::default(), include_debug_symbols),
+        Some(unresolved) => template.instantiate_unresolved(unresolved, include_debug_symbols),
     };
     #[cfg(not(feature = "serde"))]
-    let args_opt = simplicityhl::Arguments::default();
+    let compiled = template.instantiate(simplicityhl::Arguments::default(), include_debug_symbols);
 
-    let compiled = match template.instantiate(args_opt, include_debug_symbols) {
+    let compiled = match compiled {
         Ok(program) => program,
         Err(e) => {
             eprintln!("{e}");
