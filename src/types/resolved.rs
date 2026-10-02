@@ -1,4 +1,5 @@
 use core::fmt;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use miniscript::iter::{Tree, TreeLike};
@@ -60,6 +61,85 @@ impl ResolvedType {
     /// Check whether this is the uninhabited type.
     pub const fn is_never(&self) -> bool {
         matches!(self.0, TypeInner::Never)
+    }
+
+    /// Check whether the type mentions the uninhabited type, at any nesting depth
+    /// except inside enum payloads, because messages show an enum by its name.
+    pub(crate) fn contains_never(&self) -> bool {
+        self.reaches_never(false)
+    }
+
+    /// Check whether the type can be lowered to a structural type.
+    ///
+    /// Unlike [`Self::contains_never`], this looks inside enum payloads.
+    pub(crate) fn has_structural_type(&self) -> bool {
+        !self.reaches_never(true)
+    }
+
+    /// Search the type for `!`, visiting each shared part once.
+    ///
+    /// Types built from aliases share their parts, so walking them as trees
+    /// can take time exponential in the number of aliases.
+    fn reaches_never(&self, inside_enums: bool) -> bool {
+        let mut visited = HashSet::new();
+        let mut stack = vec![self];
+
+        while let Some(ty) = stack.pop() {
+            if !visited.insert(std::ptr::from_ref(ty)) {
+                continue;
+            }
+
+            match ty.as_inner() {
+                TypeInner::Never => return true,
+                TypeInner::Boolean | TypeInner::UInt(_) => {}
+                TypeInner::Enum(info) if inside_enums => {
+                    stack.extend(info.variants().iter().map(|v| v.payload_type()));
+                }
+                TypeInner::Enum(_) => {}
+                TypeInner::Option(inner)
+                | TypeInner::Array(inner, _)
+                | TypeInner::List(inner, _) => {
+                    stack.push(inner);
+                }
+                TypeInner::Either(left, right) => stack.extend([left.as_ref(), right.as_ref()]),
+                TypeInner::Tuple(elements) => stack.extend(elements.iter().map(Arc::as_ref)),
+            }
+        }
+
+        false
+    }
+
+    /// Check whether the types are equal, where `!` at any depth is equal to every type.
+    ///
+    /// During analysis, `!` stands for a broken type whose error was already reported,
+    /// so use this instead of `==` wherever a mismatch would be reported as an error.
+    pub(crate) fn compatible(&self, other: &Self) -> bool {
+        self.compatible_pairs(other, &mut HashSet::new())
+    }
+
+    fn compatible_pairs(
+        &self,
+        other: &Self,
+        seen: &mut HashSet<(*const Self, *const Self)>,
+    ) -> bool {
+        if std::ptr::eq(self, other)
+            || !seen.insert((std::ptr::from_ref(self), std::ptr::from_ref(other)))
+        {
+            return true;
+        }
+        let mut parts = |a: &Arc<Self>, b: &Arc<Self>| a.compatible_pairs(b, seen);
+
+        match (self.as_inner(), other.as_inner()) {
+            (TypeInner::Never, _) | (_, TypeInner::Never) => true,
+            (TypeInner::Either(a, b), TypeInner::Either(c, d)) => parts(a, c) && parts(b, d),
+            (TypeInner::Option(a), TypeInner::Option(b)) => parts(a, b),
+            (TypeInner::Tuple(a), TypeInner::Tuple(b)) => {
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| parts(x, y))
+            }
+            (TypeInner::Array(a, m), TypeInner::Array(b, n)) => m == n && parts(a, b),
+            (TypeInner::List(a, m), TypeInner::List(b, n)) => m == n && parts(a, b),
+            _ => self == other,
+        }
     }
 }
 

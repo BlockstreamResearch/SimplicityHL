@@ -64,6 +64,9 @@ impl Pattern {
                     }
                 },
                 Pattern::Ignore => {}
+                Pattern::Tuple(pats) | Pattern::Array(pats) if ty.is_never() => {
+                    stack.extend(pats.iter().zip(std::iter::repeat(ty)));
+                }
                 Pattern::Tuple(pats) => {
                     if let Some(types) = ty.as_tuple() {
                         stack.extend(pats.iter().zip(types.iter().map(Arc::as_ref)));

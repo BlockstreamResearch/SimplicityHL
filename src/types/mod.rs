@@ -143,6 +143,38 @@ mod tests {
     }
 
     #[test]
+    fn compatible_types() {
+        let never = ResolvedType::never();
+        let (u32, bool) = (ResolvedType::u32(), ResolvedType::boolean());
+        assert!(never.compatible(&u32) && u32.compatible(&never));
+        assert!(u32.compatible(&u32));
+        assert!(!u32.compatible(&bool));
+
+        let pair = |a: &ResolvedType, b: &ResolvedType| ResolvedType::tuple([a.clone(), b.clone()]);
+        assert!(pair(&never, &u32).compatible(&pair(&bool, &u32)));
+        assert!(!pair(&never, &u32).compatible(&pair(&bool, &bool)));
+        assert!(!pair(&never, &u32).compatible(&ResolvedType::tuple([never.clone()])));
+    }
+
+    /// Like `type A1 = (A0, A0); type A2 = (A1, A1); ...`, whose parts are shared.
+    fn shared_type(leaf: ResolvedType, depth: usize) -> ResolvedType {
+        (0..depth).fold(leaf, |inner, _| ResolvedType::tuple([inner.clone(), inner]))
+    }
+
+    #[test]
+    fn shared_types_are_not_walked_as_trees() {
+        let healthy = shared_type(ResolvedType::u8(), 64);
+        let separate = shared_type(ResolvedType::u8(), 64);
+        let broken = shared_type(ResolvedType::never(), 64);
+
+        assert!(healthy.compatible(&healthy.clone()));
+        assert!(healthy.compatible(&separate));
+        assert!(healthy.compatible(&broken) && broken.compatible(&healthy));
+        assert!(!healthy.contains_never() && broken.contains_never());
+        assert!(healthy.has_structural_type() && !broken.has_structural_type());
+    }
+
+    #[test]
     #[should_panic(expected = "the never type has no structural type")]
     fn never_type_has_no_structural_type() {
         let _ = StructuralType::from(&ResolvedType::option(ResolvedType::never()));
