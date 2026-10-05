@@ -1,0 +1,11 @@
+{
+    "TUPLE": {
+        "value": "(5, true)",
+        "type": "(u32, bool)"
+    },
+    "MAYBE_SHAPE": "Some(Shape::Rect(2, 3))",
+    "CHOICE": {
+        "value": "Right(1000)",
+        "type": "Either<u256, Height>"
+    }
+}

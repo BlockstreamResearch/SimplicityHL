@@ -1,0 +1,10 @@
+{
+    "THRESHOLD": {
+        "value": "2000000",
+        "type": "u32"
+    },
+    "FLAGS": {
+        "value": "[true, false]",
+        "type": "[bool; 2]"
+    }
+}
