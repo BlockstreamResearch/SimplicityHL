@@ -1,0 +1,8 @@
+// error: IncompatibleMatchArms
+fn main() {
+    let x: Option<u8> = None;
+    let _: u8 = match x {
+        Some(y: u8) => y,
+        Left(z: u8) => z,
+    };
+}

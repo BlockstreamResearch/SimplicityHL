@@ -1,0 +1,4 @@
+// error: Syntax
+fn main() {
+    let x u8 = 1;
+}

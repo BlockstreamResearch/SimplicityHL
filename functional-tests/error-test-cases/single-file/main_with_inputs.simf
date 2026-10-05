@@ -1,0 +1,2 @@
+// error: MainNoInputs
+fn main(x: u8) {}

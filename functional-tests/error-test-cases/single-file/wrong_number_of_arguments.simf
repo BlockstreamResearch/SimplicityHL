@@ -1,0 +1,5 @@
+// error: InvalidNumberOfArguments
+fn f(x: u8) {}
+fn main() {
+    f(1, 2);
+}

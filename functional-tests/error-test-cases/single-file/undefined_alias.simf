@@ -1,0 +1,4 @@
+// error: UndefinedAlias
+fn main() {
+    let _: Nope = 1;
+}

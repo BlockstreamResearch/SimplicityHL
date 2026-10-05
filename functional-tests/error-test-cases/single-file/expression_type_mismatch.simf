@@ -1,0 +1,5 @@
+// error: ExpressionTypeMismatch
+fn f() -> u16 { 1 }
+fn main() {
+    let _: u8 = f();
+}

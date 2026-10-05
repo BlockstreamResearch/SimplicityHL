@@ -1,0 +1,4 @@
+// error: VariableReuseInPattern
+fn main() {
+    let (a, a): (u8, u8) = (1, 2);
+}

@@ -20,6 +20,8 @@ pub mod source;
 mod template_program;
 pub mod unstable;
 
+#[cfg(all(test, feature = "serde"))]
+mod error_cases;
 #[cfg(feature = "serde")]
 mod serde;
 pub mod str;

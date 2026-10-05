@@ -1,0 +1,4 @@
+// error: ExpressionUnexpectedType
+fn main() {
+    let _: u8 = (1, 2);
+}

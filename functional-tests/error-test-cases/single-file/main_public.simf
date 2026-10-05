@@ -1,0 +1,3 @@
+// error: MainCannotBePublic
+// flags: imports
+pub fn main() {}

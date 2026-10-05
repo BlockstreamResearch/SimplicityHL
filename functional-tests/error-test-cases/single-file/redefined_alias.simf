@@ -1,0 +1,4 @@
+// error: RedefinedAlias
+type A = u8;
+type A = u16;
+fn main() {}

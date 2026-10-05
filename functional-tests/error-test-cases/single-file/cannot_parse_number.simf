@@ -1,0 +1,6 @@
+// error: CannotParse
+fn f(x: u8, acc: u8) -> u8 { x }
+fn main() {
+    let l: List<u8, 4> = list![1];
+    let _: u8 = fold::<f, 99999999999999999999999>(l, 0);
+}

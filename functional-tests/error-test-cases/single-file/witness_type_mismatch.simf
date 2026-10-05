@@ -1,0 +1,4 @@
+// error: WitnessTypeMismatch
+fn main() {
+    let _: u8 = witness::W;
+}

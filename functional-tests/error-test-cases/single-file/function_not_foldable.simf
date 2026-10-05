@@ -1,0 +1,6 @@
+// error: FunctionNotFoldable
+fn f(x: u8) -> u8 { x }
+fn main() {
+    let l: List<u8, 4> = list![1];
+    let _: u8 = fold::<f, 4>(l, 0);
+}

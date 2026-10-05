@@ -1,0 +1,4 @@
+// error: MainCannotBeAlias
+// flags: imports
+mod a { pub fn f() {} }
+use crate::a::f as main;
