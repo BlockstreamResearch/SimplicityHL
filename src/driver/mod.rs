@@ -764,6 +764,33 @@ pub(crate) mod tests {
         );
     }
 
+    /// An import that resolves to a path the driver cannot read, here a
+    /// directory named like a source file, is reported as not found.
+    #[test]
+    fn test_unreadable_import_is_file_not_found() {
+        let ws = TempWorkspace::new("unreadable_import");
+        let workspace_dir = canon(&ws.create_dir("workspace"));
+        let lib_dir = canon(&ws.create_dir("workspace/libs/lib"));
+        ws.create_dir("workspace/libs/lib/math.simf");
+
+        let content = "use lib::math::f;";
+        let main = canon(&ws.create_file("workspace/main.simf", content));
+        let dependency_map =
+            Arc::new(build_map(&workspace_dir, &[(&workspace_dir, "lib", &lib_dir)]).unwrap());
+
+        let (graph, diagnostics) = DependencyGraph::build_graph(
+            CanonSourceFile::new(main, Arc::from(content)),
+            dependency_map,
+            &UnstableFeatures::all(),
+        );
+
+        assert!(graph.is_none());
+        assert!(diagnostics
+            .diagnostics()
+            .iter()
+            .any(|d| matches!(d.error(), Error::FileNotFound { .. })));
+    }
+
     #[test]
     fn test_new_bfs_traversal_state() {
         // Goal: Verify that a simple chain (main -> a -> b) correctly pushes items

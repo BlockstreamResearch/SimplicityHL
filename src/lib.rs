@@ -1410,6 +1410,46 @@ fn main() {
         );
     }
 
+    /// A jet set without the SHA-256 context jets, such as one written before
+    /// they were added to `JetHinter`, cannot compile `raw_hash`.
+    #[test]
+    fn raw_hash_without_sha_jets() {
+        use crate::error::Error;
+        use crate::jet::JetHL;
+        use simplicity::jet::Jet;
+
+        #[derive(Debug, Clone)]
+        struct NoShaJetHinter(CoreJetHinter);
+
+        impl JetHinter for NoShaJetHinter {
+            fn parse_jet(&self, name: &str) -> Option<Box<dyn JetHL>> {
+                self.0.parse_jet(name)
+            }
+            fn construct_verify(&self) -> Box<dyn JetHL> {
+                self.0.construct_verify()
+            }
+            fn conjure(&self, jet: &dyn Jet) -> Option<Box<dyn JetHL>> {
+                self.0.conjure(jet)
+            }
+            fn clone_box(&self) -> Box<dyn JetHinter> {
+                Box::new(self.clone())
+            }
+        }
+
+        let code = "fn main() { let _: u256 = raw_hash::<(u8,)>((1,)); }";
+        let diagnostics = TemplateAst::new_with_unstable(
+            code,
+            &UnstableFeatures::new([UnstableFeature::RawHash]),
+            Box::new(NoShaJetHinter(CoreJetHinter::new())),
+        )
+        .unwrap_err();
+
+        assert!(diagnostics
+            .diagnostics()
+            .iter()
+            .any(|d| matches!(d.error(), Error::RawHashJetsUnavailable)));
+    }
+
     #[cfg(feature = "serde")]
     mod regression {
         use super::TestCase;

@@ -36,11 +36,9 @@ enum Coverage {
     Elsewhere(&'static str),
     /// Cannot be produced from source; the reason says why.
     Untestable(&'static str),
-    /// Not covered yet; the reason says what is missing.
-    Gap(&'static str),
 }
 
-use Coverage::{Elsewhere, Gap, Tested, Untestable};
+use Coverage::{Elsewhere, Tested, Untestable};
 
 macro_rules! coverage {
     ($($variant:ident => $coverage:expr,)*) => {
@@ -61,9 +59,9 @@ coverage! {
     MalformedSimcDirective => Tested,
     ReservedSimcKeyword => Tested,
     DependencyPathNotFound => Elsewhere("lib.rs: file_not_found_error, lib_not_found_error"),
-    DependencyNotADirectory => Gap("needs a dependency map"),
+    DependencyNotADirectory => Elsewhere("resolution.rs: test_builder_rejects_file_as_directory"),
     ReservedDependencyKeyword => Elsewhere("resolution.rs: test_builder_rejects_reserved_keywords"),
-    DuplicateDependencyAlias => Gap("needs a dependency map"),
+    DuplicateDependencyAlias => Elsewhere("resolution.rs: test_builder_rejects_duplicates"),
     LinearizationCycleDetected => Elsewhere("driver/linearization.rs: test_linearize_detects_cycle"),
     InvalidDependencyIdentifier => Elsewhere("resolution.rs: test_builder_rejects_invalid_identifiers"),
     Internal => Untestable("reports a compiler bug"),
@@ -80,9 +78,11 @@ coverage! {
     ParseCrateInt => Tested,
     JetDoesNotExist => Tested,
     InvalidCast => Tested,
-    FileNotFound => Gap("needs files on disk"),
-    ExternalFileNotFound => Gap("needs a dependency map"),
-    LocalFileImportedAsExternal => Gap("needs a dependency map"),
+    FileNotFound => Elsewhere(
+        "resolution.rs: test_crate_file_not_found; driver: test_unreadable_import_is_file_not_found",
+    ),
+    ExternalFileNotFound => Elsewhere("resolution.rs: test_external_file_not_found"),
+    LocalFileImportedAsExternal => Elsewhere("resolution.rs: test_local_file_imported_as_external"),
     RedefinedItem => Tested,
     UnresolvedItem => Tested,
     PrivateItem => Tested,
@@ -90,7 +90,7 @@ coverage! {
     MainNoInputs => Tested,
     MainNoOutput => Tested,
     MainRequired => Tested,
-    MainOutOfEntryFile => Gap("needs a dependency map"),
+    MainOutOfEntryFile => Untestable("only its message is used, inside a CannotParse error"),
     MainCannotBePublic => Tested,
     MainCannotBeAlias => Tested,
     FunctionRedefined => Tested,
@@ -119,7 +119,7 @@ coverage! {
     ArgumentMissing => Tested,
     ArgumentTypeMismatch => Tested,
     RawHashUnsupportedType => Tested,
-    RawHashJetsUnavailable => Gap("needs a jet hinter without the SHA-256 jets"),
+    RawHashJetsUnavailable => Elsewhere("lib.rs: raw_hash_without_sha_jets"),
 }
 
 struct Case {
@@ -260,7 +260,7 @@ fn every_variant_is_accounted_for() {
         }
     }
     for (name, coverage) in COVERAGE {
-        if let Elsewhere(reason) | Untestable(reason) | Gap(reason) = coverage {
+        if let Elsewhere(reason) | Untestable(reason) = coverage {
             if reason.trim().is_empty() {
                 writeln!(failures, "{name}: give a reason ({coverage:?})").unwrap();
             }
@@ -270,7 +270,7 @@ fn every_variant_is_accounted_for() {
             Tested if !has_case => {
                 writeln!(failures, "{name}: marked Tested but has no case file").unwrap()
             }
-            Elsewhere(_) | Untestable(_) | Gap(_) if has_case => writeln!(
+            Elsewhere(_) | Untestable(_) if has_case => writeln!(
                 failures,
                 "{name}: has a case file, so mark it Tested ({coverage:?})"
             )
