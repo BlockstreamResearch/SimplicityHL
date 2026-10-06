@@ -1,0 +1,266 @@
+simc ">=0.8.0";
+
+/*
+ * KITCHEN SINK
+ *
+ * Exercises every language feature in one program, so that any compiler change
+ * that alters the generated Simplicity code (and hence the CMR) is caught by
+ * the `kitchen_sink` regression test.
+ *
+ * This program is not a meaningful contract. When adding a language feature,
+ * extend this file and regenerate `test-data/kitchen_sink.json`.
+ *
+ * Requires -Z imports -Z enums -Z raw_hash.
+ */
+
+// Type aliases, both of custom types and of builtin aliases
+type Pair = (u32, u32);
+type Bytes4 = [u8; 4];
+type Hash = u256;
+type Count = Height;
+
+// Enums: unit variants, single and multiple payloads, enough variants to give
+// an unbalanced sum
+enum Shape {
+    Empty,
+    Point(u8),
+    Rect(u16, u16),
+    Labeled(Hash, bool, Bytes4),
+    Nested(Option<u4>),
+}
+
+pub enum Parity {
+    Even,
+    Odd,
+}
+
+// Modules: nested, public and private items, `use` inside a module
+mod math {
+    pub mod ops {
+        pub fn add(a: u32, b: u32) -> u32 {
+            let (_, sum): (bool, u32) = jet::add_32(a, b);
+            sum
+        }
+
+        fn double_private(x: u32) -> u32 {
+            add(x, x)
+        }
+
+        pub fn quadruple(x: u32) -> u32 {
+            double_private(double_private(x))
+        }
+    }
+
+    use crate::math::ops::add;
+    use crate::Parity;
+
+    pub fn add_three(a: u32, b: u32, c: u32) -> u32 {
+        add(add(a, b), c)
+    }
+
+    pub fn parity(x: u8) -> Parity {
+        let (_, low4): (u4, u4) = <u8>::into(x);
+        let (_, low2): (u2, u2) = <u4>::into(low4);
+        let (_, low1): (u1, u1) = <u2>::into(low2);
+        match jet::eq_1(low1, 0) {
+            true => Parity::Even,
+            false => Parity::Odd,
+        }
+    }
+}
+
+// Single import, list import, and `as` aliases
+use crate::math::ops::quadruple;
+use crate::math::{add_three as sum3, parity};
+use crate::math::ops::{add, quadruple as times_four};
+
+// Unit-returning function
+fn check_eq_32(a: u32, b: u32) {
+    assert!(jet::eq_32(a, b));
+}
+
+// Folds over lists and arrays
+fn sum_u32(elt: u32, acc: u32) -> u32 {
+    add(elt, acc)
+}
+
+fn xor_u8(elt: u8, acc: u8) -> u8 {
+    jet::xor_8(elt, acc)
+}
+
+// Bounded loop: stops when the counter reaches the context value
+fn count_up(acc: u16, stop: u8, counter: u8) -> Either<u16, u16> {
+    let (_, next): (bool, u16) = jet::increment_16(acc);
+    match jet::eq_8(counter, stop) {
+        true => Left(next),
+        false => Right(next),
+    }
+}
+
+fn shape_area(shape: Shape) -> u32 {
+    match shape {
+        Shape::Empty => 0,
+        Shape::Point(_: u8) => 1,
+        Shape::Rect(w: u16, h: u16) => jet::multiply_16(w, h),
+        Shape::Labeled(_: Hash, flag: bool, bytes: Bytes4) => {
+            let [a, _, _, d]: [u8; 4] = bytes;
+            match flag {
+                true => <(u16, u16)>::into((<(u8, u8)>::into((0, a)), <(u8, u8)>::into((0, d)))),
+                false => panic!(),
+            }
+        }
+        Shape::Nested(inner: Option<u4>) => match inner {
+            Some(x: u4) => <(u16, u16)>::into((0, <(u8, u8)>::into((0, <(u4, u4)>::into((0, x)))))),
+            None => 0,
+        },
+    }
+}
+
+fn main() {
+    // Integer literals of every width, in decimal, hex, and binary, with digit
+    // separators
+    let a1: u1 = 1;
+    let a2: u2 = 0b10;
+    let a4: u4 = 0b1010;
+    let a8: u8 = 2_5_5;
+    let a16: u16 = 0xff_ff;
+    let a32: u32 = 1_000_000;
+    let a64: u64 = 0xdeadbeef_cafebabe;
+    let a128: u128 = 0x0123456789abcdef_fedcba9876543210;
+    let a256: Hash = 0x0000000000000000000000000000000000000000000000000000000000000001;
+    let t: bool = true;
+    let f: bool = false;
+
+    // Tuples, nested tuples, arrays, and patterns (tuple, array, ignore)
+    let pair: Pair = (a32, 7);
+    let (x, y): Pair = pair;
+    let ((b1, _), (_, b4)): ((u1, u2), (u4, u8)) = ((a1, a2), (a4, a8));
+    let bytes: Bytes4 = [1, 2, 3, b4];
+    let [_, second, _, _]: [u8; 4] = bytes;
+    let matrix: [[u1; 2]; 2] = [[b1, 0], [0, b1]];
+    let unit: () = ();
+
+    // Shadowing and nested blocks
+    let x: u32 = {
+        let x: u32 = add(x, y);
+        let z: u32 = {
+            let w: u32 = quadruple(1);
+            times_four(w)
+        };
+        sum3(x, z, 0)
+    };
+    check_eq_32(x, 1_000_023);
+
+    // Type casts between integers and tuples of smaller integers
+    let wide: u64 = <(u32, u32)>::into((0, a32));
+    let (hi, lo): (u32, u32) = <u64>::into(wide);
+    check_eq_32(hi, 0);
+    check_eq_32(lo, a32);
+    let _: (u64, u64) = <u128>::into(a128);
+    let _: (u128, u128) = <u256>::into(a256);
+    let _: u64 = a64;
+
+    // Either and Option construction, unwrapping, and matching
+    let left: Either<u8, bool> = Left(second);
+    let right: Either<u8, bool> = Right(t);
+    let some: Option<u16> = Some(a16);
+    let none: Option<u16> = None;
+    assert!(jet::eq_8(unwrap_left::<bool>(left), 2));
+    assert!(unwrap_right::<u8>(right));
+    assert!(jet::eq_16(unwrap(some), a16));
+    assert!(is_none::<u16>(none));
+    let from_either: u8 = match right {
+        Left(n: u8) => n,
+        Right(b: bool) => match b {
+            true => 1,
+            false => 0,
+        },
+    };
+    assert!(jet::eq_8(from_either, 1));
+    let from_option: u16 = match none {
+        Some(n: u16) => n,
+        None => 42,
+    };
+    assert!(jet::eq_16(from_option, 42));
+    let complex: Either<(u32, (u1, u1)), [u1; 2]> = Left((3, (1, 0)));
+    let c: u32 = match complex {
+        Left((n, (_, _)): (u32, (u1, u1))) => n,
+        Right([_, _]: [u1; 2]) => 0,
+    };
+    check_eq_32(c, 3);
+
+    // Lists and folds
+    let list: List<u32, 8> = list![1, 2, 3, 4, 5];
+    check_eq_32(fold::<sum_u32, 8>(list, 0), 15);
+    let empty: List<u32, 2> = list![];
+    check_eq_32(fold::<sum_u32, 2>(empty, 9), 9);
+    assert!(jet::eq_8(array_fold::<xor_u8, 4>(bytes, 0), 255));
+
+    // Bounded loop
+    let looped: Either<u16, u16> = for_while::<count_up>(0, 3);
+    assert!(jet::eq_16(unwrap_left::<u16>(looped), 4));
+
+    // Enum construction and matching, including an enum from a module
+    let shapes: [Shape; 5] = [
+        Shape::Empty,
+        Shape::Point(a8),
+        Shape::Rect(3, 4),
+        Shape::Labeled(a256, t, bytes),
+        Shape::Nested(Some(a4)),
+    ];
+    let [s0, s1, s2, s3, s4]: [Shape; 5] = shapes;
+    check_eq_32(shape_area(s0), 0);
+    check_eq_32(shape_area(s1), 1);
+    check_eq_32(shape_area(s2), 12);
+    check_eq_32(shape_area(s3), 0x0001_00ff);
+    check_eq_32(shape_area(s4), 10);
+    match parity(a8) {
+        Parity::Even => panic!(),
+        Parity::Odd => {}
+    };
+
+    // Debug expression
+    let _: u8 = dbg!(second);
+
+    // Witnesses of compound and enum types
+    let (w1, w2): (u32, bool) = witness::TUPLE;
+    check_eq_32(w1, 5);
+    assert!(w2);
+    let maybe_shape: Option<Shape> = witness::MAYBE_SHAPE;
+    check_eq_32(shape_area(unwrap(maybe_shape)), 6);
+    let choice: Either<Hash, Count> = witness::CHOICE;
+    let _: Count = unwrap_right::<Hash>(choice);
+
+    // Parameters
+    let threshold: u32 = param::THRESHOLD;
+    assert!(jet::lt_32(x, threshold));
+    let flags: [bool; 2] = param::FLAGS;
+    let [flag_a, flag_b]: [bool; 2] = flags;
+    assert!(jet::eq_1(<bool>::into(flag_a), 1));
+    assert!(jet::eq_1(<bool>::into(flag_b), 0));
+
+    // Transaction environment and hash jets
+    let _: u32 = jet::num_inputs();
+    let _: u256 = jet::sig_all_hash();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_init();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_4(ctx, <Bytes4>::into(bytes));
+    let _: u256 = jet::sha_256_ctx_8_finalize(ctx);
+
+    // Raw hash of a tuple of integers, checked against the streaming hash jets
+    let raw: Hash = raw_hash::<(u8, u32, Hash)>((a8, a32, a256));
+    let ctx: Ctx8 = jet::sha_256_ctx_8_init();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_1(ctx, a8);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_4(ctx, a32);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, a256);
+    assert!(jet::eq_256(raw, jet::sha_256_ctx_8_finalize(ctx)));
+
+    // Jet with three arguments
+    let (carry, total): (bool, u32) = jet::full_add_32(t, 0xffffffff, 1);
+    assert!(carry);
+    check_eq_32(total, 1);
+
+    // Expression statement with unit value, and unused values
+    unit;
+    let _: [[u1; 2]; 2] = matrix;
+    let _: bool = f;
+}

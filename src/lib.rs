@@ -1188,6 +1188,18 @@ pub(crate) mod tests {
 
     #[test]
     #[cfg(feature = "serde")]
+    fn kitchen_sink() {
+        TestCase::template_file_with_unstable(
+            "./examples/kitchen_sink.simf",
+            UnstableFeatures::all(),
+        )
+        .with_argument_file("./examples/kitchen_sink.args")
+        .with_witness_file("./examples/kitchen_sink.wit")
+        .assert_run_success();
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
     fn last_will_inherit() {
         TestCase::program_file_with_unstable("./examples/last_will.simf", UnstableFeatures::all())
             .with_sequence(25920)
@@ -1430,8 +1442,16 @@ fn main() {
             )
             .unwrap();
 
-            let test_case =
-                TestCase::program_file_with_unstable(format!("./examples/{}.simf", name), features);
+            let template = TestCase::template_file_with_unstable(
+                format!("./examples/{}.simf", name),
+                features,
+            );
+            let arguments_path = format!("./examples/{}.args", name);
+            let test_case = if std::path::Path::new(&arguments_path).exists() {
+                template.with_argument_file(arguments_path)
+            } else {
+                template.with_arguments(crate::Arguments::default())
+            };
             match program.witness {
                 Some(wit) => {
                     let (new_program, new_witness) = test_case
@@ -1495,6 +1515,11 @@ fn main() {
         #[test]
         fn htlc_regression() {
             regression_test("htlc");
+        }
+
+        #[test]
+        fn kitchen_sink_regression() {
+            regression_test_with_features("kitchen_sink", crate::UnstableFeatures::all());
         }
 
         #[test]
