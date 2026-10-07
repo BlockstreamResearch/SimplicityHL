@@ -1716,7 +1716,8 @@ mod pipeline {
     ) -> Option<usize> {
         match SimcDirective::prescan(content, file_id) {
             Ok(start) => Some(start),
-            Err((err, span)) => {
+            Err(box_error) => {
+                let (err, span) = *box_error;
                 diagnostics.push(Diagnostic::new(err, span));
                 None
             }

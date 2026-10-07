@@ -58,12 +58,13 @@ impl SimcDirective {
     /// special cases, `simc` stays plainly reserved — without copying or modifying
     /// the source. On error the caller should not lex: any further diagnostic is
     /// noise.
-    pub(crate) fn prescan(content: &str, file_id: usize) -> Result<usize, (Error, Span)> {
+    pub(crate) fn prescan(content: &str, file_id: usize) -> Result<usize, Box<(Error, Span)>> {
         match Self::scan(content) {
             DirectiveScan::Absent => Ok(0),
-            DirectiveScan::Malformed { span } => {
-                Err((Error::MalformedSimcDirective, Span::new(file_id, span)))
-            }
+            DirectiveScan::Malformed { span } => Err(Box::new((
+                Error::MalformedSimcDirective,
+                Span::new(file_id, span),
+            ))),
             DirectiveScan::Found { range, span } => {
                 Self::validate(range, Span::new(file_id, span.clone()))?;
                 Ok(span.end)
@@ -135,7 +136,7 @@ impl SimcDirective {
     }
 
     /// Validate a directive's version-requirement string against the running compiler.
-    fn validate(required: &str, span: Span) -> Result<(), (Error, Span)> {
+    fn validate(required: &str, span: Span) -> Result<(), Box<(Error, Span)>> {
         let required = required.trim();
         let req = VersionRequirement::parse(required)
             .map_err(|e| (Error::InvalidSimcVersionSyntax { err: e }, span))?;
@@ -145,7 +146,7 @@ impl SimcDirective {
                 required: required.to_string(),
                 current: Self::current_version().to_string(),
             };
-            return Err((err, span));
+            return Err(Box::new((err, span)));
         }
         Ok(())
     }

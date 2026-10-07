@@ -1,4 +1,5 @@
 use core::fmt;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use miniscript::iter::{Tree, TreeLike};
@@ -10,12 +11,62 @@ use crate::num::NonZeroPow2Usize;
 
 /// SimplicityHL type without type aliases.
 #[derive(PartialEq, Eq, Hash, Clone)]
-pub struct ResolvedType(TypeInner<Arc<Self>>);
+pub struct ResolvedType {
+    inner: TypeInner<Arc<Self>>,
+    flags: TypeFlags,
+}
+
+/// Facts about a type, computed once from its parts when the type is built.
+///
+/// We need these cached flags because searching a [`TypeInner::Never`], including inside
+/// enum payloads, can take exponential time on types built from shared aliases.
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Default)]
+struct TypeFlags {
+    has_enum: bool,
+    has_never: bool,
+    has_never_in_enum: bool,
+}
+
+impl TypeFlags {
+    const fn union(self, other: Self) -> Self {
+        Self {
+            has_enum: self.has_enum || other.has_enum,
+            has_never: self.has_never || other.has_never,
+            has_never_in_enum: self.has_never_in_enum || other.has_never_in_enum,
+        }
+    }
+}
 
 impl ResolvedType {
+    fn new(inner: TypeInner<Arc<Self>>) -> Self {
+        let flags = match &inner {
+            TypeInner::Boolean | TypeInner::UInt(_) => TypeFlags::default(),
+            TypeInner::Never => Self::never().flags,
+            TypeInner::Enum(info) => TypeFlags {
+                has_enum: true,
+                has_never: false,
+                has_never_in_enum: info
+                    .variants()
+                    .iter()
+                    .any(|variant| !variant.payload_type().has_structural_type()),
+            },
+            TypeInner::Option(inner) | TypeInner::Array(inner, _) | TypeInner::List(inner, _) => {
+                inner.flags
+            }
+            TypeInner::Either(left, right) => left.flags.union(right.flags),
+            TypeInner::Tuple(elements) => elements
+                .iter()
+                .fold(TypeFlags::default(), |flags, element| {
+                    flags.union(element.flags)
+                }),
+        };
+
+        Self { inner, flags }
+    }
+
     /// Access the inner type primitive.
     pub fn as_inner(&self) -> &TypeInner<Arc<Self>> {
-        &self.0
+        &self.inner
     }
 }
 
@@ -31,22 +82,21 @@ impl ResolvedType {
 /// (which owns the uniqueness of declaration ids) can mint enum types.
 impl ResolvedType {
     /// Create a nominal enum type from the given definition.
-    pub const fn enumeration(info: EnumInfo) -> Self {
-        Self(TypeInner::Enum(info))
+    pub fn enumeration(info: EnumInfo) -> Self {
+        Self::new(TypeInner::Enum(info))
     }
 
     /// Access the enum definition if this is an enum type.
     pub const fn as_enum(&self) -> Option<&EnumInfo> {
-        match &self.0 {
+        match &self.inner {
             TypeInner::Enum(info) => Some(info),
             _ => None,
         }
     }
 
     /// Check whether the type mentions an enum, at any nesting depth.
-    pub fn contains_enum(&self) -> bool {
-        self.post_order_iter()
-            .any(|data| data.node.as_enum().is_some())
+    pub const fn contains_enum(&self) -> bool {
+        self.flags.has_enum
     }
 }
 
@@ -54,40 +104,122 @@ impl ResolvedType {
 impl ResolvedType {
     /// Create the uninhabited type.
     pub const fn never() -> Self {
-        Self(TypeInner::Never)
+        Self {
+            inner: TypeInner::Never,
+            flags: TypeFlags {
+                has_enum: false,
+                has_never: true,
+                has_never_in_enum: false,
+            },
+        }
     }
 
     /// Check whether this is the uninhabited type.
     pub const fn is_never(&self) -> bool {
-        matches!(self.0, TypeInner::Never)
+        matches!(self.inner, TypeInner::Never)
+    }
+
+    /// Check whether the type mentions the uninhabited type, except inside enum payloads,
+    /// because an enum is identified by its name.
+    pub const fn contains_never(&self) -> bool {
+        self.flags.has_never
+    }
+
+    /// Check whether the type can be lowered to a structural type.
+    ///
+    /// Use this before [`StructuralType::from`], which panics on `!`. Unlike
+    /// [`Self::contains_never`], this looks inside enum payloads.
+    pub const fn has_structural_type(&self) -> bool {
+        !self.flags.has_never && !self.flags.has_never_in_enum
+    }
+
+    /// Check whether the types are equal, where a type that mentions `!` is equal to every type.
+    pub(crate) fn compatible(&self, other: &Self) -> bool {
+        self.contains_never() || other.contains_never() || self.same_as(other)
+    }
+
+    /// Check whether the types are equal, like `==` but without walking shared parts as trees.
+    ///
+    /// Use this instead of `==`, which takes exponential time on equal types
+    /// built from different aliases
+    pub(crate) fn same_as(&self, other: &Self) -> bool {
+        self.matches_with(other, |one, two| {
+            matches!(
+                one.inner,
+                TypeInner::Boolean | TypeInner::UInt(_) | TypeInner::Enum(_) | TypeInner::Never
+            ) && one == two
+        })
+    }
+
+    /// Check whether the types match, using `leaves_match` for their leaves.
+    ///
+    /// Shared by [`Self::same_as`] and the enum check of casts.
+    pub(crate) fn matches_with(
+        &self,
+        other: &Self,
+        mut leaves_match: impl FnMut(&Self, &Self) -> bool,
+    ) -> bool {
+        let mut seen = HashSet::new();
+        let mut stack = vec![(self, other)];
+
+        while let Some((one, two)) = stack.pop() {
+            if std::ptr::eq(one, two)
+                || !seen.insert((std::ptr::from_ref(one), std::ptr::from_ref(two)))
+            {
+                continue;
+            }
+
+            match (&one.inner, &two.inner) {
+                (TypeInner::Either(l1, r1), TypeInner::Either(l2, r2)) => {
+                    stack.extend([(l1.as_ref(), l2.as_ref()), (r1.as_ref(), r2.as_ref())]);
+                }
+                (TypeInner::Option(i1), TypeInner::Option(i2)) => {
+                    stack.push((i1.as_ref(), i2.as_ref()))
+                }
+                (TypeInner::Tuple(e1), TypeInner::Tuple(e2)) if Arc::ptr_eq(e1, e2) => {}
+                (TypeInner::Tuple(e1), TypeInner::Tuple(e2)) if e1.len() == e2.len() => {
+                    stack.extend(e1.iter().map(Arc::as_ref).zip(e2.iter().map(Arc::as_ref)));
+                }
+                (TypeInner::Array(i1, n1), TypeInner::Array(i2, n2)) if n1 == n2 => {
+                    stack.push((i1.as_ref(), i2.as_ref()));
+                }
+                (TypeInner::List(i1, b1), TypeInner::List(i2, b2)) if b1 == b2 => {
+                    stack.push((i1.as_ref(), i2.as_ref()));
+                }
+                _ if leaves_match(one, two) => {}
+                _ => return false,
+            }
+        }
+
+        true
     }
 }
 
 impl TypeConstructible for ResolvedType {
     fn either(left: Self, right: Self) -> Self {
-        Self(TypeInner::Either(Arc::new(left), Arc::new(right)))
+        Self::new(TypeInner::Either(Arc::new(left), Arc::new(right)))
     }
 
     fn option(inner: Self) -> Self {
-        Self(TypeInner::Option(Arc::new(inner)))
+        Self::new(TypeInner::Option(Arc::new(inner)))
     }
 
     fn boolean() -> Self {
-        Self(TypeInner::Boolean)
+        Self::new(TypeInner::Boolean)
     }
 
     fn tuple<I: IntoIterator<Item = Self>>(elements: I) -> Self {
-        Self(TypeInner::Tuple(
+        Self::new(TypeInner::Tuple(
             elements.into_iter().map(Arc::new).collect(),
         ))
     }
 
     fn array(element: Self, size: usize) -> Self {
-        Self(TypeInner::Array(Arc::new(element), size))
+        Self::new(TypeInner::Array(Arc::new(element), size))
     }
 
     fn list(element: Self, bound: NonZeroPow2Usize) -> Self {
-        Self(TypeInner::List(Arc::new(element), bound))
+        Self::new(TypeInner::List(Arc::new(element), bound))
     }
 }
 
@@ -141,7 +273,7 @@ impl TypeDeconstructible for ResolvedType {
 
 impl TreeLike for &ResolvedType {
     fn as_node(&self) -> Tree<Self> {
-        match &self.0 {
+        match &self.inner {
             TypeInner::Boolean | TypeInner::UInt(..) | TypeInner::Enum(..) | TypeInner::Never => {
                 Tree::Nullary
             }
@@ -161,7 +293,7 @@ impl fmt::Debug for ResolvedType {
 impl fmt::Display for ResolvedType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for data in self.verbose_pre_order_iter() {
-            data.node.0.display(f, data.n_children_yielded)?;
+            data.node.inner.display(f, data.n_children_yielded)?;
         }
         Ok(())
     }
@@ -169,7 +301,7 @@ impl fmt::Display for ResolvedType {
 
 impl From<UIntType> for ResolvedType {
     fn from(value: UIntType) -> Self {
-        Self(TypeInner::UInt(value))
+        Self::new(TypeInner::UInt(value))
     }
 }
 
@@ -230,7 +362,7 @@ impl From<&ResolvedType> for StructuralType {
     fn from(value: &ResolvedType) -> Self {
         let mut output = vec![];
         for data in value.post_order_iter() {
-            match &data.node.0 {
+            match &data.node.inner {
                 TypeInner::Either(_, _) => {
                     let right = output.pop().unwrap();
                     let left = output.pop().unwrap();

@@ -1,5 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -18,7 +19,7 @@ use crate::pattern::Pattern;
 use crate::str::{AliasName, FunctionName, Identifier, ModuleName, SymbolName};
 use crate::types::{
     AliasedType, EnumInfo, EnumVariantInfo, ResolvedType, StructuralType, TypeConstructible,
-    TypeDeconstructible, TypeInner, UIntType,
+    TypeDeconstructible, UIntType,
 };
 use crate::value::{UIntValue, Value};
 use crate::witness::{Parameters, WitnessTypes};
@@ -867,7 +868,11 @@ impl Scope {
     /// A failure that was already reported is not recorded again.
     fn report(&mut self, failure: impl Into<Failure>) {
         if let Failure::New(diagnostic) = failure.into() {
-            self.diagnostics.push(diagnostic);
+            // Like rustc, an error about a type with `!` is left until the error
+            // that created `!` is fixed.
+            if !mentions_never(diagnostic.error()) {
+                self.diagnostics.push(diagnostic);
+            }
         }
     }
 
@@ -1327,6 +1332,28 @@ impl Scope {
         ty.resolve(|name| self.get_alias(name))
     }
 
+    /// Resolve a type, reporting every undefined alias and replacing it with `!`.
+    ///
+    /// This is the only place where analysis creates `!`, so every `!` has a reported error.
+    fn resolve_or_never(&mut self, ty: &AliasedType, span: impl Into<Span>) -> ResolvedType {
+        let mut errors = Vec::new();
+        let resolved = ty
+            .resolve(|name| {
+                Ok::<_, Infallible>(self.get_alias(name).unwrap_or_else(|error| {
+                    errors.push(error);
+                    ResolvedType::never()
+                }))
+            })
+            .unwrap_or_else(|never| match never {});
+
+        let span = span.into();
+        for error in errors {
+            self.report(error.with_span(span));
+        }
+
+        resolved
+    }
+
     /// Error if `name` is already defined as an alias in the current module.
     fn check_alias_free(&self, name: &AliasName) -> Result<(), Error> {
         if self.current_module().aliases.contains_key(name) {
@@ -1344,7 +1371,7 @@ impl Scope {
     pub fn insert_alias(&mut self, alias: parse::TypeAlias) -> Result<(), Error> {
         self.check_alias_free(alias.name())?;
 
-        let resolved = self.resolve(alias.ty())?;
+        let resolved = self.resolve_or_never(alias.ty(), &alias);
 
         self.current_module_mut()
             .aliases
@@ -1393,8 +1420,14 @@ impl Scope {
         name: TemplateProgramWitness,
         ty: ResolvedType,
     ) -> Result<(), Error> {
+        // A use with a broken type says nothing reliable about the parameter,
+        // so the stored type never contains `!` and never changes once stored.
+        if ty.contains_never() {
+            return Ok(());
+        }
+
         match self.parameters.entry(name.clone()) {
-            Entry::Occupied(entry) if entry.get() == &ty => Ok(()),
+            Entry::Occupied(entry) if entry.get().same_as(&ty) => Ok(()),
             Entry::Occupied(entry) => Err(Error::ExpressionTypeMismatch {
                 expected: entry.get().clone(),
                 found: ty,
@@ -1503,6 +1536,20 @@ enum Failure {
 impl From<Diagnostic> for Failure {
     fn from(diagnostic: Diagnostic) -> Self {
         Self::New(diagnostic)
+    }
+}
+
+/// Check whether an error mentions a type that contains `!`.
+fn mentions_never(error: &Error) -> bool {
+    match error {
+        Error::ExpressionUnexpectedType { ty } | Error::RawHashUnsupportedType { ty } => {
+            ty.contains_never()
+        }
+        Error::ExpressionTypeMismatch { expected, found } => {
+            expected.contains_never() || found.contains_never()
+        }
+        Error::InvalidCast { source, target } => source.contains_never() || target.contains_never(),
+        _ => false,
     }
 }
 
@@ -1654,14 +1701,18 @@ impl AbstractSyntaxTree for Item {
                     .map_err(Failure::from)
                 })?;
 
-                let variants = scope
-                    .analyze_all(decl.variants(), |v, scope| {
-                        let payload = scope.analyze_all(v.payload(), |ty, scope| {
-                            Ok(scope.resolve(ty).with_span(v)?)
-                        })?;
-                        Ok(EnumVariantInfo::new(v.name().clone(), Arc::from(payload)))
+                let variants = decl
+                    .variants()
+                    .iter()
+                    .map(|v| {
+                        let payload = v
+                            .payload()
+                            .iter()
+                            .map(|ty| scope.resolve_or_never(ty, v))
+                            .collect::<Arc<[_]>>();
+                        EnumVariantInfo::new(v.name().clone(), payload)
                     })
-                    .map(Arc::from)?;
+                    .collect::<Arc<[_]>>();
                 scope
                     .insert_enum(decl.name().clone(), decl.visibility().clone(), variants)
                     .with_span(decl)?;
@@ -1691,26 +1742,23 @@ impl AbstractSyntaxTree for Function {
         );
 
         if from.name() != MAIN_STR {
+            // A broken type in the signature becomes `!`, so the function is still
+            // registered and its calls do not report it as undefined.
             let params = from
                 .params()
                 .iter()
-                .map(|param| {
-                    let identifier = param.identifier().clone();
-                    let ty = scope.resolve(param.ty())?;
-                    Ok(FunctionParam {
-                        identifier,
-                        ty,
-                        span: *param.span(),
-                    })
+                .map(|param| FunctionParam {
+                    identifier: param.identifier().clone(),
+                    ty: scope.resolve_or_never(param.ty(), from),
+                    span: *param.span(),
                 })
-                .collect::<Result<Arc<[FunctionParam]>, Error>>()
-                .with_span(from)?;
+                .collect::<Arc<[FunctionParam]>>();
             let ret = from
                 .ret()
                 .as_ref()
-                .map(|aliased| scope.resolve(aliased).with_span(from))
-                .transpose()?
-                .unwrap_or_else(ResolvedType::unit);
+                .map_or_else(ResolvedType::unit, |aliased| {
+                    scope.resolve_or_never(aliased, from)
+                });
 
             let body = scope.in_function(|scope| {
                 for param in params.iter() {
@@ -1744,8 +1792,8 @@ impl AbstractSyntaxTree for Function {
         }
 
         if let Some(aliased) = from.ret() {
-            let resolved = scope.resolve(aliased).with_span(from)?;
-            if !resolved.is_unit() {
+            let resolved = scope.resolve_or_never(aliased, from);
+            if !resolved.compatible(&ResolvedType::unit()) {
                 return Err(Error::MainNoOutput).with_span(from)?;
             }
         }
@@ -1805,6 +1853,14 @@ impl Expression {
     /// The returned expression might not be evaluable at compile time.
     /// The details depend on the current state of the SimplicityHL compiler.
     pub fn analyze_const(from: &parse::Expression, ty: &ResolvedType) -> Result<Self, Diagnostic> {
+        // Without this check, a `!` from the caller could make the `expect` below panic,
+        // or make analysis drop errors and accept a wrong value.
+        if !ty.has_structural_type() {
+            return Err(
+                Error::ExpressionUnexpectedType { ty: ty.clone() }.with_span(*from.as_ref())
+            );
+        }
+
         // Value files carry no scope, so enum constructions may name the
         // enum by its declared name here — and only here.
         let mut empty_scope = Scope::for_value_parsing();
@@ -1814,6 +1870,8 @@ impl Expression {
         // Value parsing has no diagnostic manager: return the first error analysis found.
         match empty_scope.diagnostics.into_iter().next() {
             Some(error) => Err(error),
+            // This cannot panic: a failed analysis always leaves an error,
+            // because types with `!` were rejected above.
             None => Ok(expression.expect("every failure is reported to the scope")),
         }
     }
@@ -1844,8 +1902,16 @@ fn analyze_enum_construction(
     let names_expected_enum = match construction.enum_path() {
         [single] => {
             let alias = AliasName::from_ident(single);
+
             match scope.get_alias(&alias) {
-                Ok(resolved) if &resolved == ty => true,
+                // The written enum is broken, so its variants and payloads are unknown.
+                Ok(resolved) if resolved.is_never() => {
+                    let _ = scope.analyze_all(construction.args(), |arg, scope| {
+                        Expression::analyze(arg, &resolved, scope)
+                    });
+                    return Err(Failure::Reported);
+                }
+                Ok(resolved) if resolved.compatible(ty) => true,
                 Ok(resolved) => Err(Error::ExpressionTypeMismatch {
                     expected: ty.clone(),
                     found: resolved,
@@ -1914,29 +1980,13 @@ fn analyze_enum_construction(
 /// conservative either way, since their partition layout complicates
 /// position alignment.
 fn cast_preserves_enum_identity(source: &ResolvedType, target: &ResolvedType) -> bool {
-    match (source.as_inner(), target.as_inner()) {
-        (TypeInner::Enum(src), TypeInner::Enum(dst)) => src == dst,
-        (TypeInner::Enum(_), _) | (_, TypeInner::Enum(_)) => false,
-        (TypeInner::Option(src), TypeInner::Option(dst)) => cast_preserves_enum_identity(src, dst),
-        (TypeInner::Either(src_l, src_r), TypeInner::Either(dst_l, dst_r)) => {
-            cast_preserves_enum_identity(src_l, dst_l) && cast_preserves_enum_identity(src_r, dst_r)
-        }
-        (TypeInner::Tuple(src), TypeInner::Tuple(dst)) if src.len() == dst.len() => src
-            .iter()
-            .zip(dst.iter())
-            .all(|(src_el, dst_el)| cast_preserves_enum_identity(src_el, dst_el)),
-        (TypeInner::Array(src, src_len), TypeInner::Array(dst, dst_len)) if src_len == dst_len => {
-            cast_preserves_enum_identity(src, dst)
-        }
-        (TypeInner::List(src, src_bound), TypeInner::List(dst, dst_bound))
-            if src_bound == dst_bound =>
-        {
-            cast_preserves_enum_identity(src, dst)
-        }
+    source.matches_with(target, |src, dst| match (src.as_enum(), dst.as_enum()) {
+        (Some(src), Some(dst)) => src == dst,
         // Differently shaped subtrees may convert freely as long as no
         // enum is involved on either side.
-        _ => !source.contains_enum() && !target.contains_enum(),
-    }
+        (None, None) => !src.contains_enum() && !dst.contains_enum(),
+        _ => false,
+    })
 }
 
 /// The given string does not name a variant of the enum.
@@ -1979,7 +2029,7 @@ impl AbstractSyntaxTree for Expression {
                             Some(expression) => Expression::analyze(expression, ty, scope)
                                 .map(Arc::new)
                                 .map(Some),
-                            None if ty.is_unit() => Ok(None),
+                            None if ty.compatible(&ResolvedType::unit()) => Ok(None),
                             None => Err(Error::ExpressionTypeMismatch {
                                 expected: ty.clone(),
                                 found: ResolvedType::unit(),
@@ -2000,10 +2050,38 @@ impl AbstractSyntaxTree for Expression {
     }
 }
 
+/// The sub-expressions of an expression that builds a value, or `None` for any other expression.
+fn value_parts(from: &parse::SingleExpression) -> Option<Vec<&parse::Expression>> {
+    use parse::SingleExpressionInner as Inner;
+
+    match from.inner() {
+        Inner::Boolean(_) | Inner::Decimal(_) | Inner::Binary(_) | Inner::Hexadecimal(_) => {
+            Some(Vec::new())
+        }
+        Inner::Tuple(elements) | Inner::Array(elements) | Inner::List(elements) => {
+            Some(elements.iter().collect())
+        }
+        Inner::Either(Either::Left(inner) | Either::Right(inner)) => Some(vec![inner.as_ref()]),
+        Inner::Option(inner) => Some(inner.iter().map(Arc::as_ref).collect()),
+        Inner::EnumConstruction(construction) => Some(construction.args().iter().collect()),
+        _ => None,
+    }
+}
+
 impl AbstractSyntaxTree for SingleExpression {
     type From = parse::SingleExpression;
 
     fn analyze(from: &Self::From, ty: &ResolvedType, scope: &mut Scope) -> Result<Self, Failure> {
+        if ty.is_never() {
+            if let Some(parts) = value_parts(from) {
+                // No value has type `!`, so the value cannot be built, but its parts
+                // can still have errors of their own.
+                let _ =
+                    scope.analyze_all(parts, |part, scope| Expression::analyze(part, ty, scope));
+                return Err(Failure::Reported);
+            }
+        }
+
         let inner = match from.inner() {
             parse::SingleExpressionInner::Boolean(bit) => {
                 if !ty.is_boolean() {
@@ -2056,14 +2134,16 @@ impl AbstractSyntaxTree for SingleExpression {
                         identifier: identifier.clone(),
                     })
                     .with_span(from)?;
-                if ty != bound_ty {
+
+                if !ty.compatible(bound_ty) {
                     Err(Error::ExpressionTypeMismatch {
                         expected: ty.clone(),
                         found: bound_ty.clone(),
                     })
                     .with_span(from)?;
                 }
-                scope.insert_variable(identifier.clone(), ty.clone());
+                scope.insert_variable(identifier.clone(), bound_ty.clone());
+
                 SingleExpressionInner::Variable(identifier.clone())
             }
             parse::SingleExpressionInner::Expression(parse) => {
@@ -2203,6 +2283,7 @@ impl AbstractSyntaxTree for EnumMatch {
         let enum_ty = scope.get_alias(&alias).with_span(span)?;
         let info = match enum_ty.as_enum() {
             Some(info) => info.clone(),
+            None if enum_ty.is_never() => return Err(Failure::Reported),
             None => Err(Error::Grammar {
                 msg: format!(
                     "`{enum_name}` is not an enum, so match arms of the form \
@@ -2337,13 +2418,15 @@ fn analyze_enum_arm_bindings(
     let mut patterns = Vec::with_capacity(arm.bindings().len());
     for ((pattern, declared), payload_ty) in arm.bindings().iter().zip(variant.payload()) {
         let declared = scope.resolve(declared).with_span(span)?;
-        if &declared != payload_ty {
+
+        if !declared.compatible(payload_ty) {
             return Err(Error::ExpressionTypeMismatch {
                 expected: payload_ty.clone(),
                 found: declared,
             })
             .with_span(span);
         }
+
         patterns.push(pattern.clone());
     }
 
@@ -2377,7 +2460,7 @@ impl AbstractSyntaxTree for Call {
             observed_ty: &ResolvedType,
             expected_ty: &ResolvedType,
         ) -> Result<(), Error> {
-            if observed_ty == expected_ty {
+            if observed_ty.compatible(expected_ty) {
                 Ok(())
             } else {
                 Err(Error::ExpressionTypeMismatch {
@@ -2480,8 +2563,12 @@ impl AbstractSyntaxTree for Call {
                 // every enum must map to itself at its structural position
                 // (see `cast_preserves_enum_identity`), else same-shaped
                 // enums would convert variants by ordinal position.
-                if !cast_preserves_enum_identity(&source, ty)
-                    || StructuralType::from(&source) != StructuralType::from(ty)
+                if !source.contains_never()
+                    && !ty.contains_never()
+                    && (!cast_preserves_enum_identity(&source, ty)
+                        || (source.has_structural_type()
+                            && ty.has_structural_type()
+                            && StructuralType::from(&source) != StructuralType::from(ty)))
                 {
                     scope.report(
                         Error::InvalidCast {
@@ -2601,8 +2688,8 @@ impl AbstractSyntaxTree for Call {
 
 impl CallName {
     // Take parse::Call, so we have access to the span for pretty errors
-    fn analyze(from: &parse::Call, scope: &mut Scope) -> Result<Self, Diagnostic> {
-        match from.name() {
+    fn analyze(from: &parse::Call, scope: &mut Scope) -> Result<Self, Failure> {
+        let name = match from.name() {
             parse::CallName::Jet(name) => match scope.jet_hinter.parse_jet(name.as_inner()) {
                 Some(jet) if !jet.is_disabled() => Ok(Self::Jet(jet)),
                 _ => Err(Error::JetDoesNotExist { name: name.clone() }).with_span(from),
@@ -2659,7 +2746,9 @@ impl CallName {
                 let function = scope.get_function(name).with_span(from)?;
                 // A function that is used in a array fold has the signature:
                 //   fn f(element: E, accumulator: A) -> A
-                if function.params().len() != 2 || function.params()[1].ty() != function.ret() {
+                if function.params().len() != 2
+                    || !function.params()[1].ty().compatible(function.ret())
+                {
                     Err(Error::FunctionNotFoldable { name: name.clone() }).with_span(from)
                 } else {
                     Ok(Self::ArrayFold(function, *size))
@@ -2669,7 +2758,9 @@ impl CallName {
                 let function = scope.get_function(name).with_span(from)?;
                 // A function that is used in a list fold has the signature:
                 //   fn f(element: E, accumulator: A) -> A
-                if function.params().len() != 2 || function.params()[1].ty() != function.ret() {
+                if function.params().len() != 2
+                    || !function.params()[1].ty().compatible(function.ret())
+                {
                     Err(Error::FunctionNotFoldable { name: name.clone() }).with_span(from)
                 } else {
                     Ok(Self::Fold(function, *bound))
@@ -2682,19 +2773,25 @@ impl CallName {
                 // where
                 //   N is a power of two
                 if function.params().len() != 3 {
-                    return Err(Error::FunctionNotLoopable { name: name.clone() }).with_span(from);
+                    return Err(Error::FunctionNotLoopable { name: name.clone() })
+                        .with_span(from)?;
                 }
-                match function.ret().as_either() {
-                    Some((_, out_r)) if out_r == function.params().first().unwrap().ty() => {}
-                    _ => {
-                        return Err(Error::FunctionNotLoopable { name: name.clone() })
-                            .with_span(from);
-                    }
+                let accumulator_ty = function.params().first().unwrap().ty();
+                let returns_accumulator = function.ret().is_never()
+                    || matches!(
+                        function.ret().as_either(),
+                        Some((_, out_r)) if out_r.compatible(accumulator_ty)
+                    );
+                if !returns_accumulator {
+                    return Err(Error::FunctionNotLoopable { name: name.clone() })
+                        .with_span(from)?;
                 }
+
                 // Disable loops for u32 or higher since no one will want to run
                 // 2^32 = 4294967296 ≈ 4 billion iterations.
                 // The resulting Simplicity program will not fit into a Bitcoin block.
-                match function.params().get(2).unwrap().ty().as_integer() {
+                let counter_ty = function.params().get(2).unwrap().ty();
+                match counter_ty.as_integer() {
                     Some(
                         int_ty @ (UIntType::U1
                         | UIntType::U2
@@ -2702,10 +2799,13 @@ impl CallName {
                         | UIntType::U8
                         | UIntType::U16),
                     ) => Ok(Self::ForWhile(function, int_ty.bit_width())),
+                    // The loop needs the width of the counter, which is unknown.
+                    None if counter_ty.is_never() => return Err(Failure::Reported),
                     _ => Err(Error::FunctionNotLoopable { name: name.clone() }).with_span(from),
                 }
             }
-        }
+        };
+        name.map_err(Failure::from)
     }
 }
 
@@ -3168,6 +3268,198 @@ mod multi_error_tests {
                 "Variable `missing` is not defined",
                 "Variable `sibling_missing` is not defined",
                 "Variable `later_missing` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn undefined_types_are_reported_once() {
+        assert_errors(
+            "type Alias = Missing;
+            fn f(a: Alias) -> Alias { a }
+            fn g(a: Undefined) -> Unknown { a }
+            fn h() -> u32 { y }
+
+            fn main() { let x: u32 = f(1); }",
+            &[
+                "Type alias `Missing` is not defined",
+                "Type alias `Undefined` is not defined",
+                "Type alias `Unknown` is not defined",
+                "Variable `y` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn broken_parameter_does_not_hide_other_errors() {
+        assert_errors(
+            "fn f(a: Missing, b: u32) -> u32 { b }
+            fn main() {
+                let t: bool = true;
+                let y: u32 = f((1, x), t);
+            }",
+            &[
+                "Type alias `Missing` is not defined",
+                "Variable `x` is not defined",
+                "Expected expression of type `u32`, found type `bool`",
+            ],
+        );
+    }
+
+    #[test]
+    fn broken_enum_payload_does_not_hide_the_enum() {
+        assert_errors(
+            "enum E { A(Missing), B }
+            fn main() {
+                let e: E = E::B;
+                let n: u32 = match e {
+                    E::A(a: u32) => a,
+                    E::B => x,
+                };
+            }",
+            &[
+                "Type alias `Missing` is not defined",
+                "Variable `x` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn parameter_ignores_uses_of_broken_types() {
+        assert_errors(
+            "type Alias = Missing;
+            fn main() {
+                let a: Alias = param::X;
+                let b: u32 = param::X;
+                let c: bool = param::X;
+            }",
+            &[
+                "Type alias `Missing` is not defined",
+                "Expected expression of type `u32`, found type `bool`",
+            ],
+        );
+    }
+
+    #[test]
+    fn cast_of_enum_with_broken_payload() {
+        assert_errors(
+            "enum E { A(Missing), B }
+            enum F { A(u8), B }
+            fn different(e: E) -> F { <E>::into(e) }
+            fn same(e: E) -> Option<E> { <Option<E>>::into(Some(e)) }
+
+            fn main() {}",
+            &[
+                "Type alias `Missing` is not defined",
+                "Cannot cast values of type `E` as values of type `F`",
+            ],
+        );
+    }
+
+    #[test]
+    fn constant_of_broken_type_is_rejected() {
+        use crate::parse::{self, ParseFromStr};
+        use crate::types::{ResolvedType, TypeConstructible};
+
+        let never = ResolvedType::never();
+        let option_never = ResolvedType::option(never.clone());
+
+        for (source, ty) in [
+            ("5", never),
+            ("5", option_never.clone()),
+            ("[None, None]", ResolvedType::array(option_never, 3)),
+        ] {
+            let parsed = parse::Expression::parse_from_str(source).expect("value parses");
+            assert!(super::Expression::analyze_const(&parsed, &ty).is_err());
+        }
+    }
+
+    #[test]
+    fn construction_through_broken_enum_alias() {
+        assert_errors(
+            "type Bad = Missing;
+            enum Color { Red, Green }
+
+            fn unknown_variant() -> Color { Bad::Blue }
+            fn payload_count() -> Color { Bad::Red(x) }
+            fn mixed_arms(c: Color) {
+                match c {
+                    Color::Red => {},
+                    Bad::Green => {}
+                }
+            }
+
+            fn main() {}",
+            &[
+                "Type alias `Missing` is not defined",
+                "Variable `x` is not defined",
+                "Grammar error: all match arms must use the same enum; expected 'Color', found 'Bad'",
+            ],
+        );
+    }
+
+    #[test]
+    fn errors_mentioning_broken_types_are_not_reported() {
+        assert_errors(
+            "type Alias = Missing;
+            fn f(a: (Alias, u32)) {}
+            fn g() { f(1) }
+            fn main() { let x: Option<Alias> = 5; }",
+            &["Type alias `Missing` is not defined"],
+        );
+    }
+
+    /// Aliases like `type A1 = (A0, A0);` up to `A{depth}`, whose resolved types share their parts.
+    fn shared_aliases(name: &str, leaf: &str, depth: usize) -> String {
+        let mut source = format!("type {name}0 = {leaf};\n");
+        for i in 1..=depth {
+            source += &format!("type {name}{i} = ({name}{0}, {name}{0});\n", i - 1);
+        }
+        source
+    }
+
+    #[test]
+    fn shared_types_are_fast() {
+        let source = shared_aliases("A", "u8", 64)
+            + &shared_aliases("B", "Missing", 64)
+            + &shared_aliases("C", "u8", 64)
+            + "enum E { V(Unknown) }\n"
+            + &shared_aliases("G", "E", 64)
+            + &shared_aliases("H", "E", 64)
+            + "fn cast(a: A64) -> B64 { <A64>::into(a) }
+            fn enum_cast(g: G64) -> H64 { <G64>::into(g) }
+
+            fn main() {
+                let b: B64 = param::X;
+                let a: A64 = param::X;
+                let c: C64 = param::X;
+            }";
+
+        assert_errors(
+            &source,
+            &[
+                "Type alias `Missing` is not defined",
+                "Type alias `Unknown` is not defined",
+            ],
+        );
+    }
+
+    #[test]
+    fn builtins_accept_broken_types() {
+        assert_errors(
+            "type Alias = Missing;
+            fn cast() -> u32 { <Alias>::into(x) }
+            fn add(element: Alias, acc: u32) -> u32 { acc }
+            fn fold(array: [Alias; 2]) -> u32 { array_fold::<add, 2>(array, 0) }
+            fn step(acc: u32, context: (), counter: Alias) -> Either<u32, u32> { Right(acc) }
+            fn looped() -> Either<u32, u32> { for_while::<step>(0, ()) }
+            fn hash(tuple: (Alias,)) -> u256 { raw_hash::<(Alias,)>(tuple) }
+
+            fn main() { let z: u32 = y; }",
+            &[
+                "Type alias `Missing` is not defined",
+                "Variable `x` is not defined",
+                "Variable `y` is not defined",
             ],
         );
     }
