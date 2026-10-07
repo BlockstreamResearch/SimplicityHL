@@ -1841,7 +1841,6 @@ mod error_tests {
     }
 
     #[test]
-    #[ignore = "TODO: Bug in Error Handler. Expected to be fixed in a future update to correctly point to dependency source files."]
     fn dependency_ast_errors_use_dependency_source_file() {
         let ws = TempWorkspace::new("dependency_ast_error_source");
         let root_dir = ws.create_dir("workspace");
@@ -1863,13 +1862,13 @@ mod error_tests {
             &UnstableFeatures::all(),
             Box::new(ElementsJetHinter::new()),
         )
-        .expect_err("dependency body has a type error");
+        .expect_err("dependency body has a type error")
+        .render_to_string();
         let dependency_source = canon(&bad_path).as_path().display().to_string();
 
         assert!(
-            err.to_string().contains(&dependency_source),
-            "expected diagnostic to point at dependency source {dependency_source}, got:\n{}",
-            err
+            err.contains(&dependency_source),
+            "expected diagnostic to point at dependency source {dependency_source}, got:\n{err}"
         );
     }
 
