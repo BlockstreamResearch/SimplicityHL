@@ -12,6 +12,10 @@ allowed_duplicates = ["bitcoin_hashes", "hex-conservative", "syn"]
 name = "external-lib-consumer"
 path = "src/main.rs"
 
+[[bin]]
+name = "compiler-wasm"
+path = "src/compiler_wasm.rs"
+
 [lib]
 crate-type = ["cdylib"]
 
