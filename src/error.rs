@@ -890,6 +890,9 @@ pub enum Error {
     MainOutOfEntryFile,
     MainCannotBePublic,
     MainCannotBeAlias,
+    ParameterRedefined {
+        identifier: Identifier,
+    },
     FunctionRedefined {
         name: FunctionName,
     },
@@ -1119,6 +1122,10 @@ impl fmt::Display for Error {
             Error::MainCannotBeAlias => write!(
                 f,
                 "Main function cannot be alias",
+            ),
+            Error::ParameterRedefined { identifier } => write!(
+                f,
+                "Parameter `{identifier}` was defined multiple times"
             ),
             Error::FunctionRedefined { name } => write!(
                 f,

@@ -1742,15 +1742,28 @@ impl AbstractSyntaxTree for Function {
         );
 
         if from.name() != MAIN_STR {
+            let mut seen_params = HashSet::new();
+
             // A broken type in the signature becomes `!`, so the function is still
             // registered and its calls do not report it as undefined.
             let params = from
                 .params()
                 .iter()
-                .map(|param| FunctionParam {
-                    identifier: param.identifier().clone(),
-                    ty: scope.resolve_or_never(param.ty(), from),
-                    span: *param.span(),
+                .map(|param| {
+                    if !seen_params.insert(param.identifier()) {
+                        scope.report(
+                            Error::ParameterRedefined {
+                                identifier: param.identifier().clone(),
+                            }
+                            .with_span(*param.span()),
+                        );
+                    }
+
+                    FunctionParam {
+                        identifier: param.identifier().clone(),
+                        ty: scope.resolve_or_never(param.ty(), from),
+                        span: *param.span(),
+                    }
                 })
                 .collect::<Arc<[FunctionParam]>>();
             let ret = from
@@ -2912,6 +2925,17 @@ impl AsRef<Span> for EnumMatchArm {
 }
 
 #[cfg(test)]
+fn analyze(src: &str) -> Result<(), String> {
+    crate::TemplateAst::new_with_unstable(
+        src,
+        &crate::UnstableFeatures::all(),
+        Box::new(ElementsJetHinter::new()),
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
 mod span_tests {
     use crate::parse::ParseFromStr;
 
@@ -3498,8 +3522,9 @@ mod scope_balance_tests {
 
 #[cfg(test)]
 mod scope_resolution_tests {
-    use super::{ElementsJetHinter, Program};
     use crate::driver::tests::setup_graph;
+
+    use super::{analyze, ElementsJetHinter, Program};
 
     pub(super) fn analyze_multifile(files: Vec<(&str, &str)>) -> Result<(), String> {
         let (graph, _ids, _dir, mut diagnostics) = setup_graph(files);
@@ -3521,6 +3546,22 @@ mod scope_resolution_tests {
                 .collect::<Vec<_>>()
                 .join("\n")),
         }
+    }
+
+    #[test]
+    fn duplicate_function_parameter_is_rejected() {
+        let err = analyze(
+            "fn f(a: u256, a: Pubkey) -> u256 { a }
+            fn main() {
+                let _: u256 = f(0, 1);
+            }",
+        )
+        .unwrap_err();
+
+        assert!(
+            err.contains("Parameter `a` was defined multiple times"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -4019,15 +4060,7 @@ mod enum_tests {
     use crate::ast::ElementsJetHinter;
     use crate::{TemplateAst, UnstableFeatures};
 
-    fn analyze(src: &str) -> Result<(), String> {
-        TemplateAst::new_with_unstable(
-            src,
-            &UnstableFeatures::all(),
-            Box::new(ElementsJetHinter::new()),
-        )
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-    }
+    use super::analyze;
 
     #[test]
     fn enum_declaration_registers_type_alias() {
