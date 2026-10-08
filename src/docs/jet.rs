@@ -432,8 +432,8 @@ This jet should not be used directly."#,
         Elements::AssetAmountHash => "Continue a SHA256 hash with the serialization of a confidential asset followed by the serialization of a amount.",
         Elements::BuildTapbranch => r#"Return the SHA256 hash of the following:
 - The hash of the ASCII string `TapBranch/elements` (32 bytes).
-- The lexicographically smaller of the two inputs (32 bytes).
 - The hash of the ASCII string `TapBranch/elements` again (32 bytes).
+- The lexicographically smaller of the two inputs (32 bytes).
 - The lexicographically larger of the two inputs (32 bytes).
 
 This builds a taproot from two branches."#,
