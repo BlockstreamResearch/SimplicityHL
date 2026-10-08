@@ -22,6 +22,7 @@ pub mod unstable;
 
 #[cfg(feature = "serde")]
 mod serde;
+mod size;
 pub mod str;
 #[cfg(test)]
 pub mod test_utils;
@@ -45,6 +46,7 @@ use crate::driver::{DependencyGraph, SourceMap, MAIN_MODULE};
 use crate::error::DiagnosticManager;
 use crate::parse::ParseFromStrWithErrors;
 use crate::resolution::DependencyMap;
+pub use crate::size::SizeExpression;
 use crate::source::CanonSourceFile;
 pub use crate::template_program::{TemplateProgram, TemplateProgramWitness};
 pub use crate::types::ResolvedType;
@@ -60,7 +62,9 @@ pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
 /// A template has parameterized values that need to be supplied with arguments.
 #[derive(Debug)]
 pub struct TemplateAst {
-    simfony: ast::Program,
+    simfony: Option<ast::Program>,
+    size_parameters: Parameters,
+    preliminary_witness_types: WitnessTypes,
     file: Arc<str>,
     jet_hinter: Box<dyn ast::JetHinter>,
     diagnostics: DiagnosticManager,
@@ -94,9 +98,14 @@ impl TemplateAst {
 
     /// Parse the template of a SimplicityHL program.
     ///
+    /// Templates with symbolic sizes are parsed but not semantically analyzed
+    /// until their sizes are known. Call [`Self::analyze_with_sizes`] to validate
+    /// one of these templates without compiling it.
+    ///
     /// ## Errors
     ///
-    /// The string is not a valid SimplicityHL program.
+    /// The string does not parse, or a program without symbolic sizes fails
+    /// semantic analysis.
     pub fn new_with_dep(
         source: CanonSourceFile,
         dependency_map: &DependencyMap,
@@ -114,14 +123,22 @@ impl TemplateAst {
             return Err(diagnostics);
         };
 
-        let Some(simfony) =
-            ast::Program::analyze(&resolved_program, jet_hinter.clone_box(), &mut diagnostics)
-        else {
-            return Err(diagnostics);
+        let size_parameters = resolved_program.size_parameters();
+        let simfony = if size_parameters.iter().next().is_none() {
+            let Some(simfony) =
+                ast::Program::analyze(&resolved_program, jet_hinter.clone_box(), &mut diagnostics)
+            else {
+                return Err(diagnostics);
+            };
+            Some(simfony)
+        } else {
+            None
         };
 
         Ok(Self {
             simfony,
+            size_parameters,
+            preliminary_witness_types: WitnessTypes::default(),
             file,
             jet_hinter,
             diagnostics,
@@ -131,9 +148,13 @@ impl TemplateAst {
 
     /// Parse the template of a SimplicityHL program.
     ///
+    /// Templates with symbolic sizes require [`Self::analyze_with_sizes`] for
+    /// full semantic validation before instantiation.
+    ///
     /// ## Errors
     ///
-    /// The string is not a valid SimplicityHL program.
+    /// The string does not parse, or a program without symbolic sizes fails
+    /// semantic analysis.
     pub fn new<Str: Into<Arc<str>>>(
         s: Str,
         jet_hinter: Box<dyn ast::JetHinter>,
@@ -160,14 +181,22 @@ impl TemplateAst {
             return Err(diagnostics);
         };
 
-        let Some(simfony) =
-            ast::Program::analyze(&resolved_program, jet_hinter.clone_box(), &mut diagnostics)
-        else {
-            return Err(diagnostics);
+        let size_parameters = resolved_program.size_parameters();
+        let simfony = if size_parameters.iter().next().is_none() {
+            let Some(simfony) =
+                ast::Program::analyze(&resolved_program, jet_hinter.clone_box(), &mut diagnostics)
+            else {
+                return Err(diagnostics);
+            };
+            Some(simfony)
+        } else {
+            None
         };
 
         Ok(Self {
             simfony,
+            size_parameters,
+            preliminary_witness_types: WitnessTypes::default(),
             file,
             jet_hinter,
             diagnostics,
@@ -176,8 +205,19 @@ impl TemplateAst {
     }
 
     /// Access the parameters of the program.
+    ///
+    /// Before a template with symbolic sizes is specialized, this contains only
+    /// the `u32` parameters needed to determine those sizes.
     pub fn parameters(&self) -> &Parameters {
-        self.simfony.parameters()
+        match &self.simfony {
+            Some(simfony) => simfony.parameters(),
+            None => &self.size_parameters,
+        }
+    }
+
+    /// Access the parameters that determine array, list, or fold sizes.
+    pub fn size_parameters(&self) -> &Parameters {
+        &self.size_parameters
     }
 
     /// The version of the compiler that produced this program — this crate's version.
@@ -189,8 +229,14 @@ impl TemplateAst {
     }
 
     /// Access the witness types of the program.
+    ///
+    /// This map is empty for templates with symbolic sizes because their witness
+    /// types cannot be analyzed until the size parameters are specialized.
     pub fn witness_types(&self) -> &WitnessTypes {
-        self.simfony.witness_types()
+        match &self.simfony {
+            Some(simfony) => simfony.witness_types(),
+            None => &self.preliminary_witness_types,
+        }
     }
 
     /// Instantiate the template program with the given `arguments`.
@@ -204,33 +250,99 @@ impl TemplateAst {
         arguments: Arguments,
         include_debug_symbols: bool,
     ) -> Result<CompiledProgram, String> {
-        // This function returns Result<_, String> and its neighbors do not carry a
-        // DiagnosticManager, so we mint a local one to collect all witness mismatches,
-        // then render it to a message on failure.
+        let specialized;
+        let simfony = match &self.simfony {
+            Some(simfony) => simfony,
+            None => {
+                specialized = self.analyze_with_sizes(&arguments)?;
+                &specialized
+            }
+        };
+
         let mut diagnostics = DiagnosticManager::new();
-        arguments.is_consistent(self.simfony.parameters(), &mut diagnostics);
+        arguments.is_consistent(simfony.parameters(), &mut diagnostics);
         if diagnostics.has_errors() {
             return Err(diagnostics.to_string());
         }
 
-        let commit = self.simfony.compile(
+        let commit = simfony.compile(
             arguments.shallow_clone(),
             include_debug_symbols,
             self.jet_hinter.clone_box(),
         )?;
 
         Ok(CompiledProgram {
-            debug_symbols: self.simfony.debug_symbols(self.file.as_ref()),
+            debug_symbols: simfony.debug_symbols(self.file.as_ref()),
             simplicity: commit.instantiate(arguments),
-            witness_types: self.simfony.witness_types().shallow_clone(),
-            parameter_types: self.simfony.parameters().shallow_clone(),
+            witness_types: simfony.witness_types().shallow_clone(),
+            parameter_types: self.combined_parameters(simfony),
         })
     }
 
+    #[cfg(feature = "serde")]
+    /// Specialize and instantiate a template directly from unresolved argument values.
+    pub fn instantiate_unresolved(
+        &self,
+        unresolved: UnresolvedValues,
+        include_debug_symbols: bool,
+    ) -> Result<CompiledProgram, String> {
+        if self.simfony.is_some() {
+            let arguments = unresolved.resolve(self.parameters())?;
+            return self.instantiate(arguments, include_debug_symbols);
+        }
+
+        let size_arguments: Arguments = unresolved.clone().resolve(&self.size_parameters)?;
+        let simfony = self.analyze_with_sizes(&size_arguments)?;
+        let parameters = self.combined_parameters(&simfony);
+        let arguments = unresolved.resolve(&parameters)?;
+
+        self.instantiate(arguments, include_debug_symbols)
+    }
+
+    /// Validate and analyze a template using concrete size arguments.
+    ///
+    /// Unlike construction, this checks semantic errors in programs whose
+    /// array, list, or fold sizes depend on parameters.
+    pub fn analyze_with_sizes(&self, arguments: &Arguments) -> Result<ast::Program, String> {
+        let mut diagnostics = DiagnosticManager::new();
+        arguments.is_consistent(&self.size_parameters, &mut diagnostics);
+        if diagnostics.has_errors() {
+            return Err(diagnostics.to_string());
+        }
+
+        let specialized = self
+            .resolved_program
+            .specialize_sizes(arguments)
+            .map_err(|diagnostics| diagnostics.to_string())?;
+        ast::Program::analyze(&specialized, self.jet_hinter.clone_box(), &mut diagnostics)
+            .ok_or_else(|| diagnostics.to_string())
+    }
+
+    fn combined_parameters(&self, simfony: &ast::Program) -> Parameters {
+        let mut parameters = self
+            .size_parameters
+            .iter()
+            .map(|(name, ty)| (name.clone(), ty.clone()))
+            .collect::<std::collections::HashMap<_, _>>();
+        parameters.extend(
+            simfony
+                .parameters()
+                .iter()
+                .map(|(name, ty)| (name.clone(), ty.clone())),
+        );
+        Parameters::from(parameters)
+    }
+
     pub fn generate_abi_meta(&self) -> Result<AbiMeta, String> {
+        let Some(simfony) = &self.simfony else {
+            return Err(
+                "ABI metadata for symbolic sizes requires concrete size arguments".to_owned(),
+            );
+        };
+
         Ok(AbiMeta {
-            witness_types: self.simfony.witness_types().shallow_clone(),
-            param_types: self.parameters().shallow_clone(),
+            witness_types: simfony.witness_types().shallow_clone(),
+            param_types: simfony.parameters().shallow_clone(),
         })
     }
 
@@ -559,22 +671,232 @@ pub trait ArbitraryOfType: Sized {
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::ast::{CoreJetHinter, ElementsJetHinter, JetHinter};
+    use crate::error::Error;
     use crate::parse::ParseFromStr;
     use crate::resolution::tests::{build_map, canon};
     use crate::resolution::DependencyMapBuilder;
     use crate::source::CanonPath;
     use crate::str::Identifier;
     use crate::test_utils::TempWorkspace;
+    use crate::value::ValueConstructible;
     use base64::display::Base64Display;
     use base64::engine::general_purpose::STANDARD;
     use simplicity::BitMachine;
     use std::borrow::Cow;
+    use std::collections::HashMap;
     use std::path::{Path, PathBuf};
 
     use crate::*;
 
     const FLATTENED: &str = "flattened.simf";
     pub(crate) const MAIN: &str = "main.simf";
+
+    fn size_arguments(name: &str, value: Value) -> Arguments {
+        Arguments::from_map(HashMap::from([(
+            TemplateProgramWitness::parameter_from_str(name),
+            value,
+        )]))
+    }
+
+    #[test]
+    fn parameterized_array_fold_matches_literal_cmr() {
+        const PARAMETERIZED: &str = r#"
+fn step(element: u32, accumulator: u32) -> u32 {
+    accumulator
+}
+
+fn main() {
+    let values: [u32; param::SIZE] = [1, 2, 3, 4];
+    let _: u32 = array_fold::<step, param::SIZE>(values, 0);
+}
+"#;
+        const LITERAL: &str = r#"
+fn step(element: u32, accumulator: u32) -> u32 {
+    accumulator
+}
+
+fn main() {
+    let values: [u32; 4] = [1, 2, 3, 4];
+    let _: u32 = array_fold::<step, 4>(values, 0);
+}
+"#;
+
+        let parameterized = TemplateAst::new(PARAMETERIZED, Box::new(ElementsJetHinter::new()))
+            .expect("symbolic template parses")
+            .instantiate(size_arguments("SIZE", Value::u32(4)), false)
+            .expect("symbolic template specializes");
+        let literal = TemplateAst::new(LITERAL, Box::new(ElementsJetHinter::new()))
+            .expect("literal template analyzes")
+            .instantiate(Arguments::default(), false)
+            .expect("literal template compiles");
+
+        assert_eq!(parameterized.commit().cmr(), literal.commit().cmr());
+        let abi = parameterized.generate_abi_meta().unwrap();
+        assert_eq!(
+            abi.param_types
+                .get(&TemplateProgramWitness::parameter_from_str("SIZE"))
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("u32")
+        );
+    }
+
+    #[test]
+    fn different_fold_bounds_can_change_cmr() {
+        const SOURCE: &str = r#"
+fn step(element: u32, accumulator: u32) -> u32 {
+    accumulator
+}
+
+fn main() {
+    let values: List<u32, param::BOUND> = list![];
+    let _: u32 = fold::<step, param::BOUND>(values, 0);
+}
+"#;
+
+        let template = TemplateAst::new(SOURCE, Box::new(ElementsJetHinter::new()))
+            .expect("symbolic template parses");
+        let bound_2 = template
+            .instantiate(size_arguments("BOUND", Value::u32(2)), false)
+            .expect("bound 2 compiles");
+        let bound_4 = template
+            .instantiate(size_arguments("BOUND", Value::u32(4)), false)
+            .expect("bound 4 compiles");
+
+        assert_ne!(bound_2.commit().cmr(), bound_4.commit().cmr());
+    }
+
+    #[test]
+    fn symbolic_sizes_validate_arguments_and_constraints() {
+        const ARRAY_SOURCE: &str = r#"
+fn step(element: u32, accumulator: u32) -> u32 { accumulator }
+fn main() {
+    let values: [u32; param::SIZE] = [];
+    let _: u32 = array_fold::<step, param::SIZE>(values, 0);
+}
+"#;
+        const LIST_SOURCE: &str = r#"
+fn step(element: u32, accumulator: u32) -> u32 { accumulator }
+fn main() {
+    let values: List<u32, param::BOUND> = list![];
+    let _: u32 = fold::<step, param::BOUND>(values, 0);
+}
+"#;
+
+        let array = TemplateAst::new(ARRAY_SOURCE, Box::new(ElementsJetHinter::new())).unwrap();
+        assert!(array
+            .instantiate(Arguments::default(), false)
+            .unwrap_err()
+            .contains("SIZE"));
+        assert!(array
+            .instantiate(size_arguments("SIZE", Value::u16(1)), false)
+            .unwrap_err()
+            .contains("u32"));
+        assert!(array
+            .instantiate(size_arguments("SIZE", Value::u32(0)), false)
+            .unwrap_err()
+            .contains("array size"));
+
+        let list = TemplateAst::new(LIST_SOURCE, Box::new(ElementsJetHinter::new())).unwrap();
+        assert!(list
+            .instantiate(size_arguments("BOUND", Value::u32(3)), false)
+            .unwrap_err()
+            .contains("power of two"));
+    }
+
+    #[test]
+    fn public_analysis_rejects_unspecialized_sizes_without_panicking() {
+        let parsed =
+            parse::Program::parse_from_str("fn main() { let values: [u32; param::SIZE] = []; }")
+                .unwrap();
+        let mut diagnostics = DiagnosticManager::new();
+
+        let analyzed = ast::Program::analyze(
+            &parsed,
+            Box::new(ElementsJetHinter::new()),
+            &mut diagnostics,
+        );
+
+        assert!(analyzed.is_none());
+        assert!(diagnostics.to_string().contains("must be specialized"));
+    }
+
+    #[test]
+    fn symbolic_template_can_be_validated_before_instantiation() {
+        let source = "fn main() { let x: [u32; param::SIZE] = []; unknown(); }";
+        let template = TemplateAst::new(source, Box::new(ElementsJetHinter::new())).unwrap();
+
+        let error = template
+            .analyze_with_sizes(&size_arguments("SIZE", Value::u32(0)))
+            .unwrap_err();
+        assert!(error.contains("unknown"), "{error}");
+    }
+
+    #[test]
+    fn resolved_type_rejects_unspecialized_size_without_panicking() {
+        let error = ResolvedType::parse_from_str("[u32; param::SIZE]").unwrap_err();
+        assert!(error.to_string().contains("must be specialized"));
+    }
+
+    #[test]
+    fn aliased_type_resolution_rejects_unspecialized_sizes_without_panicking() {
+        for source in ["[u32; param::SIZE]", "List<u32, param::BOUND>"] {
+            let ty = types::AliasedType::parse_from_str(source).unwrap();
+            let error = ty.resolve_builtin().unwrap_err();
+            assert!(matches!(
+                error,
+                Error::SizeParameterRequiresSpecialization { .. }
+            ));
+            let error = ty
+                .resolve(|name| Err(Error::UndefinedAlias { name: name.clone() }))
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                Error::SizeParameterRequiresSpecialization { .. }
+            ));
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn typed_argument_rejects_unspecialized_size_without_panicking() {
+        let result = serde_json::from_str::<UnresolvedValues>(
+            r#"{ "VALUES": { "value": "[]", "type": "[u32; param::SIZE]" } }"#,
+        );
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must be specialized"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn unresolved_arguments_use_specialized_array_type() {
+        const SOURCE: &str = r#"
+fn step(element: u32, accumulator: u32) -> u32 { accumulator }
+fn main() {
+    let values: [u32; param::SIZE] = param::VALUES;
+    let _: u32 = array_fold::<step, param::SIZE>(values, 0);
+}
+"#;
+
+        let template = TemplateAst::new(SOURCE, Box::new(ElementsJetHinter::new())).unwrap();
+        let unresolved: UnresolvedValues =
+            serde_json::from_str(r#"{ "SIZE": "4", "VALUES": "[1, 2, 3, 4]" }"#).unwrap();
+        let compiled = template
+            .instantiate_unresolved(unresolved, false)
+            .expect("arguments resolve after size specialization");
+        let abi = compiled.generate_abi_meta().unwrap();
+
+        assert_eq!(
+            abi.param_types
+                .get(&TemplateProgramWitness::parameter_from_str("VALUES"))
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("[u32; 4]")
+        );
+    }
 
     pub(crate) fn flatten_template_file(
         prog_path: &Path,
