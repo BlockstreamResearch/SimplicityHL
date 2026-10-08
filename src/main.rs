@@ -2,7 +2,7 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
-use simplicityhl::ast::ElementsJetHinter;
+use simplicityhl::ast::SourceJetHinter;
 use simplicityhl::error::should_color;
 use simplicityhl::version::SimcDirective;
 use simplicityhl::{
@@ -28,6 +28,8 @@ struct Output {
     /// versions can produce different CMRs from the same source, so the version
     /// travels with the artifact as metadata (it is not part of the program).
     compiler_version: &'static str,
+    /// Source-selected chain backend.
+    target: Option<simplicityhl::parse::CompilationTarget>,
 }
 
 impl fmt::Display for Output {
@@ -35,6 +37,9 @@ impl fmt::Display for Output {
         writeln!(f, "Program:\n{}", self.program)?;
         writeln!(f, "CMR:\n{}", self.cmr)?;
         writeln!(f, "Compiler version:\n{}", self.compiler_version)?;
+        if let Some(target) = self.target {
+            writeln!(f, "Target:\n{target}")?;
+        }
         if let Some(witness) = &self.witness {
             writeln!(f, "Witness:\n{}", witness)?;
         }
@@ -222,7 +227,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         source,
         &dependencies,
         &unstable_features,
-        Box::new(ElementsJetHinter::new()),
+        Box::new(SourceJetHinter::new()),
     ) {
         Ok(program) => program,
         Err(diags) => {
@@ -299,12 +304,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let cmr_hex = compiled.commit().cmr().to_string();
+    if compiled.compilation_target() == Some(simplicityhl::parse::CompilationTarget::Bitcoin) {
+        eprintln!("UNSTABLE Bitcoin target: requires a compatible Simplicity Bitcoin test node.");
+    }
     let output = Output {
         program: Base64Display::new(&program_bytes, &STANDARD).to_string(),
         witness: witness_bytes.map(|bytes| Base64Display::new(&bytes, &STANDARD).to_string()),
         abi_meta: abi_opt,
         cmr: cmr_hex,
         compiler_version: compiled.compiler_version(),
+        target: compiled.compilation_target(),
     };
 
     if output_json {

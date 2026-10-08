@@ -94,6 +94,14 @@ impl Program {
         &self.items
     }
 
+    /// Access the optional source target declaration.
+    pub fn target_declaration(&self) -> Option<&TargetDeclaration> {
+        self.items.iter().find_map(|item| match item {
+            Item::Target(decl) => Some(decl),
+            _ => None,
+        })
+    }
+
     /// Parse source for formatting while retaining all comments and whitespace.
     #[cfg(feature = "fmt")]
     pub fn parse_with_errors_for_fmt<'src>(
@@ -143,9 +151,52 @@ impl_eq_hash!(Program; items);
 
 impl_require_feature!(Program { recurse: items; });
 
+/// The jet set declared by an entry source file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(::serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum CompilationTarget {
+    Elements,
+    Bitcoin,
+}
+
+impl fmt::Display for CompilationTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Elements => "elements",
+            Self::Bitcoin => "bitcoin",
+        })
+    }
+}
+
+/// A source declaration such as `target bitcoin;`.
+#[derive(Clone, Debug)]
+pub struct TargetDeclaration {
+    pub target: CompilationTarget,
+    pub span: Span,
+}
+
+impl TargetDeclaration {
+    pub fn target(&self) -> CompilationTarget {
+        self.target
+    }
+}
+
+impl_eq_hash!(TargetDeclaration; target);
+
+impl RequireFeature for TargetDeclaration {
+    fn feature_requirements(&self, out: &mut Vec<FeatureRequirement>) {
+        if self.target == CompilationTarget::Bitcoin {
+            out.push(FeatureRequirement::new(UnstableFeature::Bitcoin, self.span));
+        }
+    }
+}
+
 /// An item is a component of a program.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Item {
+    /// Entry-file compilation target.
+    Target(TargetDeclaration),
     /// A type alias.
     TypeAlias(TypeAlias),
     /// A function.
@@ -170,6 +221,7 @@ impl Item {
     /// Error-recovery placeholders have no source node to decorate.
     pub fn span(&self) -> Option<&Span> {
         match self {
+            Self::Target(decl) => Some(&decl.span),
             Self::TypeAlias(alias) => Some(alias.span()),
             Self::Function(function) => Some(function.span()),
             Self::Use(use_decl) => Some(use_decl.span()),
@@ -182,6 +234,7 @@ impl Item {
 
 impl_require_feature!(Item {
     variants:
+        Target(decl),
         TypeAlias(alias),
         Function(function),
         Use(use_decl),
@@ -1232,6 +1285,7 @@ impl fmt::Display for Program {
 impl fmt::Display for Item {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Target(decl) => write!(f, "target {};", decl.target),
             Self::TypeAlias(alias) => write!(f, "{alias}"),
             Self::Function(function) => write!(f, "{function}"),
             Self::Use(use_declaration) => write!(f, "{use_declaration}"),
@@ -2071,6 +2125,7 @@ impl ChumskyParse for Program {
                                 | Token::Type
                                 | Token::Mod
                                 | Token::Enum
+                                | Token::Ident("target")
                         )
                     })
                     .repeated(),
@@ -2085,6 +2140,23 @@ impl ChumskyParse for Program {
                 items: Arc::from(items),
                 span: e.span(),
             })
+            .validate(|program, _, emit| {
+                let mut seen = false;
+                for item in program.items() {
+                    if let Item::Target(decl) = item {
+                        if seen {
+                            emit.emit(
+                                Error::Grammar {
+                                    msg: "duplicate target declaration".into(),
+                                }
+                                .with_span(decl.span),
+                            );
+                        }
+                        seen = true;
+                    }
+                }
+                program
+            })
     }
 }
 
@@ -2094,6 +2166,26 @@ impl ChumskyParse for Item {
         I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
     {
         recursive(|item| {
+            let target_parser = just(Token::Ident("target"))
+                .ignore_then(
+                    select! { Token::Ident(name) => name }.try_map(|name, span| match name {
+                        "elements" => Ok(CompilationTarget::Elements),
+                        "bitcoin" => Ok(CompilationTarget::Bitcoin),
+                        _ => Err(Error::Grammar {
+                            msg: format!(
+                                "unknown compilation target `{name}`; expected elements or bitcoin"
+                            ),
+                        }
+                        .with_span(span)),
+                    }),
+                )
+                .then_ignore(just(Token::Semi))
+                .map_with(|target, e| {
+                    Item::Target(TargetDeclaration {
+                        target,
+                        span: e.span(),
+                    })
+                });
             let func_parser = Function::parser().map(Item::Function);
             let type_parser = TypeAlias::parser().map(Item::TypeAlias);
             let use_parser = UseDecl::parser().map(Item::Use);
@@ -2103,6 +2195,7 @@ impl ChumskyParse for Item {
             let mod_parser = Module::parser_with_items(item).map(Item::Module);
 
             choice((
+                target_parser,
                 func_parser,
                 use_parser,
                 type_parser,
@@ -3178,6 +3271,9 @@ impl Module {
                 // The bare name is the enum's identity in the ABI, and a module path would obscure it.
                 // Direct children suffice. Nested modules validate their own items.
                 for item in module.items.iter() {
+                    if let Item::Target(decl) = item {
+                        emit.emit(Error::Grammar { msg: "target declarations are only allowed at the entry file's top level".into() }.with_span(decl.span));
+                    }
                     if let Item::EnumDeclaration(decl) = item {
                         emit.emit(
                             Error::Grammar {

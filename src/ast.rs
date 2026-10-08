@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use either::Either;
 use miniscript::iter::{Tree, TreeLike};
+#[cfg(feature = "unstable-bitcoin")]
+use simplicity::jet::Bitcoin;
 use simplicity::jet::{Core, Elements, Jet};
 
 use crate::compile::{RawHashJets, RawHashJetsError};
@@ -675,6 +677,14 @@ impl TreeLike for ExprTree<'_> {
 /// Users may rely on this property for correctness of their code, though since this
 /// is a safe trait, of course they may not rely on it for soundness.
 pub trait JetHinter: std::fmt::Debug + Send + Sync {
+    /// Explicit backend identity, if this is a built-in chain hinter.
+    fn compilation_target(&self) -> Option<parse::CompilationTarget> {
+        None
+    }
+    /// Whether an entry-source declaration may select the backend.
+    fn selects_from_source(&self) -> bool {
+        false
+    }
     /// Attempts to parse a jet from a string.
     fn parse_jet(&self, name: &str) -> Option<Box<dyn JetHL>>;
     /// Constructs an instance of the `verify` jet.
@@ -737,7 +747,7 @@ pub trait JetHinter: std::fmt::Debug + Send + Sync {
 }
 
 macro_rules! impl_jet_hinter {
-    ($struct_name:ident, $jet_type:ident) => {
+    ($struct_name:ident, $jet_type:ident, $target:expr, $from_source:expr) => {
         #[derive(Clone, Debug, Default)]
         pub struct $struct_name;
 
@@ -748,6 +758,12 @@ macro_rules! impl_jet_hinter {
         }
 
         impl JetHinter for $struct_name {
+            fn compilation_target(&self) -> Option<parse::CompilationTarget> {
+                $target
+            }
+            fn selects_from_source(&self) -> bool {
+                $from_source
+            }
             fn parse_jet(&self, name: &str) -> Option<Box<dyn JetHL>> {
                 $jet_type::parse(name)
                     .ok()
@@ -796,8 +812,29 @@ macro_rules! impl_jet_hinter {
     };
 }
 
-impl_jet_hinter!(ElementsJetHinter, Elements);
-impl_jet_hinter!(CoreJetHinter, Core);
+impl_jet_hinter!(
+    ElementsJetHinter,
+    Elements,
+    Some(parse::CompilationTarget::Elements),
+    false
+);
+impl_jet_hinter!(CoreJetHinter, Core, None, false);
+// Selects the entry source's declared jet set; defaults to Elements when absent.
+// Use this for source-driven compilation. An explicit chain/Core/custom hinter
+// rejects a conflicting declaration instead of being silently replaced.
+impl_jet_hinter!(
+    SourceJetHinter,
+    Elements,
+    Some(parse::CompilationTarget::Elements),
+    true
+);
+#[cfg(feature = "unstable-bitcoin")]
+impl_jet_hinter!(
+    BitcoinJetHinter,
+    Bitcoin,
+    Some(parse::CompilationTarget::Bitcoin),
+    false
+);
 
 /// A single module namespace. Handles arbitrary nesting via `submodules`.
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
@@ -1726,7 +1763,7 @@ impl AbstractSyntaxTree for Item {
                     |scope| Item::analyze_items(module.items(), scope).map(Self::Module),
                 )
                 .with_span(module)?,
-            parse::Item::Ignored => Ok(Self::Ignored),
+            parse::Item::Target(_) | parse::Item::Ignored => Ok(Self::Ignored),
         }
     }
 }

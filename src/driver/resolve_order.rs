@@ -81,6 +81,9 @@ impl DependencyGraph {
         diagnostics: &mut DiagnosticManager,
     ) -> Option<parse::Program> {
         let mut items = Vec::with_capacity(order.len());
+        if let Some(decl) = self.modules[&MAIN_MODULE].program.target_declaration() {
+            items.push(parse::Item::Target(decl.clone()));
+        }
 
         let target_ids: HashMap<Span, usize> = self
             .use_cache
@@ -96,6 +99,18 @@ impl DependencyGraph {
 
         for &source_id in order {
             let module = &self.modules[&source_id];
+
+            if source_id != MAIN_MODULE {
+                if let Some(decl) = module.program.target_declaration() {
+                    diagnostics.push(Diagnostic::new(
+                        Error::Grammar {
+                            msg: "target declarations are only allowed in the entry source file"
+                                .into(),
+                        },
+                        decl.span,
+                    ));
+                }
+            }
 
             let local_items: Vec<parse::Item> = module
                 .program
@@ -162,7 +177,7 @@ impl DependencyGraph {
             parse::Item::TypeAlias(_)
             | parse::Item::Function(_)
             | parse::Item::EnumDeclaration(_) => Some(item.clone()),
-            parse::Item::Ignored => None,
+            parse::Item::Target(_) | parse::Item::Ignored => None,
         }
     }
 

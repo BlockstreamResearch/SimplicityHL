@@ -42,7 +42,7 @@ pub use simplicity::elements;
 
 use crate::debug::DebugSymbols;
 use crate::driver::{DependencyGraph, SourceMap, MAIN_MODULE};
-use crate::error::DiagnosticManager;
+use crate::error::{Diagnostic, DiagnosticManager, Error};
 use crate::parse::ParseFromStrWithErrors;
 use crate::resolution::DependencyMap;
 use crate::source::CanonSourceFile;
@@ -54,6 +54,48 @@ pub use crate::value::Value;
 pub use crate::witness::UnresolvedValues;
 pub use crate::witness::WitnessNameToValueMap;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
+
+fn select_source_hinter(
+    program: &parse::Program,
+    hinter: Box<dyn ast::JetHinter>,
+    diagnostics: &mut DiagnosticManager,
+) -> Option<Box<dyn ast::JetHinter>> {
+    let Some(decl) = program.target_declaration() else {
+        if hinter.compilation_target() == Some(parse::CompilationTarget::Bitcoin) {
+            diagnostics.push(Diagnostic::global(Error::Grammar {
+                msg: "Bitcoin compilation requires an entry-source `target bitcoin;` declaration"
+                    .into(),
+            }));
+            return None;
+        }
+        return Some(hinter);
+    };
+    if !hinter.selects_from_source() && hinter.compilation_target() != Some(decl.target) {
+        diagnostics.push(Diagnostic::new(Error::Grammar {
+            msg: format!("source target `{}` conflicts with the explicitly selected jet hinter; use SourceJetHinter for source-driven compilation", decl.target),
+        }, decl.span));
+        return None;
+    }
+    if !hinter.selects_from_source() {
+        return Some(hinter);
+    }
+    match decl.target {
+        parse::CompilationTarget::Elements => Some(Box::new(ast::ElementsJetHinter::new())),
+        parse::CompilationTarget::Bitcoin => {
+            #[cfg(feature = "unstable-bitcoin")]
+            {
+                Some(Box::new(ast::BitcoinJetHinter::new()))
+            }
+            #[cfg(not(feature = "unstable-bitcoin"))]
+            {
+                diagnostics.push(Diagnostic::new(Error::Grammar {
+                    msg: "UNSTABLE Bitcoin compilation requires the unstable-bitcoin Cargo feature".into(),
+                }, decl.span));
+                None
+            }
+        }
+    }
+}
 
 /// The template of a SimplicityHL program.
 ///
@@ -114,6 +156,12 @@ impl TemplateAst {
             return Err(diagnostics);
         };
 
+        let Some(jet_hinter) =
+            select_source_hinter(&resolved_program, jet_hinter, &mut diagnostics)
+        else {
+            return Err(diagnostics);
+        };
+
         let Some(simfony) =
             ast::Program::analyze(&resolved_program, jet_hinter.clone_box(), &mut diagnostics)
         else {
@@ -157,6 +205,12 @@ impl TemplateAst {
             unstable_features,
             &mut diagnostics,
         ) else {
+            return Err(diagnostics);
+        };
+
+        let Some(jet_hinter) =
+            select_source_hinter(&resolved_program, jet_hinter, &mut diagnostics)
+        else {
             return Err(diagnostics);
         };
 
@@ -224,6 +278,7 @@ impl TemplateAst {
             simplicity: commit.instantiate(arguments),
             witness_types: self.simfony.witness_types().shallow_clone(),
             parameter_types: self.simfony.parameters().shallow_clone(),
+            compilation_target: self.jet_hinter.compilation_target(),
         })
     }
 
@@ -254,9 +309,15 @@ pub struct CompiledProgram {
     witness_types: WitnessTypes,
     debug_symbols: DebugSymbols,
     parameter_types: Parameters,
+    compilation_target: Option<parse::CompilationTarget>,
 }
 
 impl CompiledProgram {
+    /// The selected built-in chain backend, or `None` for Core/custom jets.
+    pub fn compilation_target(&self) -> Option<parse::CompilationTarget> {
+        self.compilation_target
+    }
+
     /// Parse and compile a SimplicityHL program from the given
     ///
     /// ## See
@@ -359,6 +420,9 @@ impl CompiledProgram {
         witness_values: WitnessValues,
         env: Option<&ElementsEnv<Arc<elements::Transaction>>>,
     ) -> Result<SatisfiedProgram, String> {
+        if env.is_some() && self.compilation_target != Some(parse::CompilationTarget::Elements) {
+            return Err("an Elements environment requires an Elements-target program".into());
+        }
         // This function returns Result<_, String> and its neighbors do not carry a
         // DiagnosticManager, so we mint a local one to collect all witness mismatches,
         // then render it to a message on failure.
@@ -374,6 +438,34 @@ impl CompiledProgram {
         }
         Ok(SatisfiedProgram {
             simplicity: simplicity_redeem,
+            debug_symbols: self.debug_symbols.clone(),
+        })
+    }
+
+    /// Satisfy and prune a Bitcoin-target program in its transaction environment.
+    /// Available only for the explicitly unstable Bitcoin backend. Pruning also
+    /// executes the program, so an invalid signature or changed transaction fails.
+    #[cfg(feature = "unstable-bitcoin")]
+    pub fn satisfy_with_bitcoin_env<T: core::borrow::Borrow<simplicity::bitcoin::Transaction>>(
+        &self,
+        witness_values: WitnessValues,
+        env: &simplicity::jet::BitcoinEnv<T>,
+    ) -> Result<SatisfiedProgram, String> {
+        if self.compilation_target != Some(parse::CompilationTarget::Bitcoin) {
+            return Err("a Bitcoin environment requires a Bitcoin-target program".into());
+        }
+        if env.script_cmr() != self.simplicity.cmr() {
+            return Err("Bitcoin environment CMR differs from the compiled program".into());
+        }
+        let mut diagnostics = DiagnosticManager::new();
+        witness_values.is_consistent(&self.witness_types, &mut diagnostics);
+        if diagnostics.has_errors() {
+            return Err(diagnostics.to_string());
+        }
+        let redeem = named::populate_witnesses(&self.simplicity, witness_values)?;
+        let redeem = redeem.prune(env).map_err(|e| e.to_string())?;
+        Ok(SatisfiedProgram {
+            simplicity: redeem,
             debug_symbols: self.debug_symbols.clone(),
         })
     }

@@ -34,6 +34,7 @@ serde = ["dep:serde", "dep:serde_json"]
 docs = []
 external-jets = []
 fmt = []
+unstable-bitcoin = ["simplicity-lang/bitcoin"]
 
 [dependencies]
 base64 = "0.21.2"
@@ -55,6 +56,10 @@ getrandom = { version = "0.2", features = ["js"] }
 [workspace]
 members = ["codegen", "fuzz", "external-jet-lib-example"]
 exclude = ["bitcoind-tests"]
+
+# This experiment uses the matching local Rust Simplicity implementation.
+[patch.crates-io]
+simplicity-lang = { path = "../rust-simplicity" }
 
 [workspace.metadata.rbmt.toolchains]
 nightly = "nightly-2025-08-23"

@@ -18,6 +18,47 @@ Check the [developer documentation](https://docs.simplicity-lang.org/) to learn 
 
 Take a look at the [example programs](https://github.com/BlockstreamResearch/SimplicityHL/tree/master/examples).
 
+## Experimental Bitcoin target
+
+The default backend remains Elements. A program can declare `target elements;`
+explicitly. Bitcoin compilation is **UNSTABLE** and requires both the
+`unstable-bitcoin` Cargo feature and the compiler's `-Z bitcoin` gate:
+
+```text
+target bitcoin;
+
+fn main() {
+    jet::bip_0340_verify((param::ALICE_PUBLIC_KEY, jet::sig_all_hash()), witness::ALICE_SIGNATURE)
+}
+```
+
+```sh
+cargo run --features unstable-bitcoin --bin simc -- -Z bitcoin examples/bitcoin_p2pk.simf --args examples/p2pk.args
+```
+
+The declaration belongs at the top level of the entry file. Duplicate declarations
+and declarations in imported files or nested modules are errors. Flattened source
+preserves the entry declaration. `target` remains usable as a variable or function
+name. The CLI reports the selected target and marks Bitcoin output as unstable.
+
+Library callers can pass `ast::SourceJetHinter` to the existing constructors to
+select the backend from source, with Elements as the fallback when no declaration
+is present. An explicit Elements, Core or custom hinter is never silently replaced
+by a conflicting declaration. `ast::BitcoinJetHinter` requires a matching
+`target bitcoin;` declaration. `CompiledProgram::compilation_target()` exposes
+the selected built-in backend. `satisfy_with_bitcoin_env` validates and prunes a
+Bitcoin program in its transaction environment.
+
+This local experiment patches `simplicity-lang` to the sibling `../rust-simplicity`
+checkout. Its Bitcoin execution support uses the Rust `bitcoin` Cargo feature.
+A standalone consumer must apply the same local patch itself. This is tested with
+`delta1/bitcoin` tag `v29.2-inq-simplicity` (commit
+`32f5911cab012703b1e80c7e19a9f52253e2b377`), which uses leaf version `0xbe` and
+a 32-byte program commitment. It does not imply Bitcoin mainnet support. See
+[the isolated experiment instructions](bitcoind-tests/bitcoin-experiment.md)
+for the test-node lifecycle; node orchestration is separate from compiler target
+selection.
+
 ## MSRV
 
 This crate should compile with any feature combination on **Rust 1.79.0** or higher.
