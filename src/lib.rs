@@ -42,8 +42,8 @@ pub use simplicity::elements;
 
 use crate::debug::DebugSymbols;
 use crate::driver::{DependencyGraph, SourceMap, MAIN_MODULE};
-use crate::error::DiagnosticManager;
-use crate::parse::ParseFromStrWithErrors;
+use crate::error::{Diagnostic, DiagnosticManager, Error};
+use crate::parse::{ParseFromStrWithErrors, Target};
 use crate::resolution::DependencyMap;
 use crate::source::CanonSourceFile;
 pub use crate::template_program::{TemplateProgram, TemplateProgramWitness};
@@ -54,6 +54,43 @@ pub use crate::value::Value;
 pub use crate::witness::UnresolvedValues;
 pub use crate::witness::WitnessNameToValueMap;
 pub use crate::witness::{Arguments, Parameters, WitnessTypes, WitnessValues};
+
+fn resolve_jet_hinter(
+    program: &parse::Program,
+    jet_hinter: Box<dyn ast::JetHinter>,
+) -> Result<Box<dyn ast::JetHinter>, Diagnostic> {
+    match (program.target(), jet_hinter.target()) {
+        (None, Some(Target::Bitcoin)) => Err(Diagnostic::global(Error::TargetRequired {
+            target: Target::Bitcoin,
+        })),
+
+        (None, _) => Ok(jet_hinter),
+
+        (Some(decl), Some(Target::Elements)) => match decl.target() {
+            Target::Elements => Ok(jet_hinter),
+
+            #[cfg(feature = "unstable-bitcoin")]
+            Target::Bitcoin => Ok(Box::new(ast::BitcoinJetHinter::new())),
+
+            #[cfg(not(feature = "unstable-bitcoin"))]
+            Target::Bitcoin => Err(Diagnostic::new(
+                Error::TargetUnavailable {
+                    target: Target::Bitcoin,
+                },
+                *decl.span(),
+            )),
+        },
+
+        (Some(decl), hinted) if hinted == Some(decl.target()) => Ok(jet_hinter),
+
+        (Some(decl), _) => Err(Diagnostic::new(
+            Error::TargetJetSetMismatch {
+                declared: decl.target(),
+            },
+            *decl.span(),
+        )),
+    }
+}
 
 /// The template of a SimplicityHL program.
 ///
@@ -104,7 +141,7 @@ impl TemplateAst {
         jet_hinter: Box<dyn ast::JetHinter>,
     ) -> Result<Self, DiagnosticManager> {
         let file = source.content();
-        let (program, mut diagnostics) = DependencyGraph::build_program(
+        let (program, diagnostics) = DependencyGraph::build_program(
             source,
             Arc::from(dependency_map.clone()),
             unstable_features,
@@ -114,19 +151,7 @@ impl TemplateAst {
             return Err(diagnostics);
         };
 
-        let Some(simfony) =
-            ast::Program::analyze(&resolved_program, jet_hinter.clone_box(), &mut diagnostics)
-        else {
-            return Err(diagnostics);
-        };
-
-        Ok(Self {
-            simfony,
-            file,
-            jet_hinter,
-            diagnostics,
-            resolved_program,
-        })
+        Self::analyze(file, resolved_program, jet_hinter, diagnostics)
     }
 
     /// Parse the template of a SimplicityHL program.
@@ -158,6 +183,23 @@ impl TemplateAst {
             &mut diagnostics,
         ) else {
             return Err(diagnostics);
+        };
+
+        Self::analyze(file, resolved_program, jet_hinter, diagnostics)
+    }
+
+    fn analyze(
+        file: Arc<str>,
+        resolved_program: parse::Program,
+        jet_hinter: Box<dyn ast::JetHinter>,
+        mut diagnostics: DiagnosticManager,
+    ) -> Result<Self, DiagnosticManager> {
+        let jet_hinter = match resolve_jet_hinter(&resolved_program, jet_hinter) {
+            Ok(jet_hinter) => jet_hinter,
+            Err(error) => {
+                diagnostics.push(error);
+                return Err(diagnostics);
+            }
         };
 
         let Some(simfony) =
@@ -224,6 +266,7 @@ impl TemplateAst {
             simplicity: commit.instantiate(arguments),
             witness_types: self.simfony.witness_types().shallow_clone(),
             parameter_types: self.simfony.parameters().shallow_clone(),
+            target: self.jet_hinter.target(),
         })
     }
 
@@ -254,6 +297,7 @@ pub struct CompiledProgram {
     witness_types: WitnessTypes,
     debug_symbols: DebugSymbols,
     parameter_types: Parameters,
+    target: Option<parse::Target>,
 }
 
 impl CompiledProgram {
@@ -337,6 +381,11 @@ impl CompiledProgram {
         &self.witness_types
     }
 
+    /// The chain whose jets the program uses, or `None` for Core and custom jet sets.
+    pub fn target(&self) -> Option<parse::Target> {
+        self.target
+    }
+
     /// Satisfy the SimplicityHL program with the given `witness_values`.
     ///
     /// ## Errors
@@ -359,23 +408,65 @@ impl CompiledProgram {
         witness_values: WitnessValues,
         env: Option<&ElementsEnv<Arc<elements::Transaction>>>,
     ) -> Result<SatisfiedProgram, String> {
+        if env.is_some() && self.target == Some(parse::Target::Bitcoin) {
+            return Err("a Bitcoin program cannot be pruned in an Elements environment".into());
+        }
+
+        let mut simplicity_redeem = self.populate_witnesses(witness_values)?;
+        if let Some(env) = env {
+            simplicity_redeem = simplicity_redeem.prune(env).map_err(|e| e.to_string())?;
+        }
+
+        Ok(SatisfiedProgram {
+            simplicity: simplicity_redeem,
+            debug_symbols: self.debug_symbols.clone(),
+        })
+    }
+
+    /// Satisfy a `target bitcoin;` program with the given `witness_values` and prune
+    /// it in the Bitcoin transaction environment `env`.
+    ///
+    /// UNSTABLE: requires the `unstable-bitcoin` Cargo feature.
+    ///
+    /// ## Errors
+    ///
+    /// - The program does not target Bitcoin.
+    /// - Witness values have a different type than declared in the SimplicityHL program.
+    /// - There are missing witness values.
+    /// - The program fails in `env`.
+    #[cfg(feature = "unstable-bitcoin")]
+    pub fn satisfy_with_bitcoin_env<T: std::borrow::Borrow<simplicity::bitcoin::Transaction>>(
+        &self,
+        witness_values: WitnessValues,
+        env: &simplicity::jet::BitcoinEnv<T>,
+    ) -> Result<SatisfiedProgram, String> {
+        if self.target != Some(parse::Target::Bitcoin) {
+            return Err("a Bitcoin environment requires a `target bitcoin;` program".into());
+        }
+
+        let simplicity_redeem = self
+            .populate_witnesses(witness_values)?
+            .prune(env)
+            .map_err(|e| e.to_string())?;
+
+        Ok(SatisfiedProgram {
+            simplicity: simplicity_redeem,
+            debug_symbols: self.debug_symbols.clone(),
+        })
+    }
+
+    fn populate_witnesses(&self, witness_values: WitnessValues) -> Result<Arc<RedeemNode>, String> {
         // This function returns Result<_, String> and its neighbors do not carry a
         // DiagnosticManager, so we mint a local one to collect all witness mismatches,
         // then render it to a message on failure.
         let mut diagnostics = DiagnosticManager::new();
         witness_values.is_consistent(&self.witness_types, &mut diagnostics);
+
         if diagnostics.has_errors() {
             return Err(diagnostics.to_string());
         }
 
-        let mut simplicity_redeem = named::populate_witnesses(&self.simplicity, witness_values)?;
-        if let Some(env) = env {
-            simplicity_redeem = simplicity_redeem.prune(env).map_err(|e| e.to_string())?;
-        }
-        Ok(SatisfiedProgram {
-            simplicity: simplicity_redeem,
-            debug_symbols: self.debug_symbols.clone(),
-        })
+        named::populate_witnesses(&self.simplicity, witness_values)
     }
 
     pub fn generate_abi_meta(&self) -> Result<AbiMeta, String> {
@@ -1813,6 +1904,48 @@ fn main() {
                 .assert_run_success();
             }
         }
+    }
+
+    fn compile_with(
+        source: &str,
+        jet_hinter: Box<dyn JetHinter>,
+    ) -> Result<CompiledProgram, String> {
+        CompiledProgram::new_with_unstable(
+            source,
+            &UnstableFeatures::all(),
+            Arguments::default(),
+            false,
+            jet_hinter,
+        )
+    }
+
+    #[test]
+    fn target_header_must_agree_with_an_explicit_jet_set() {
+        let err = compile_with(
+            "target elements;\nfn main() {}",
+            Box::new(CoreJetHinter::new()),
+        )
+        .unwrap_err();
+        assert!(err.contains("conflicts with the jet set"), "{err}");
+    }
+
+    #[test]
+    #[cfg(feature = "unstable-bitcoin")]
+    fn target_header_switches_the_default_jet_set_to_bitcoin() {
+        let source = "target bitcoin;
+            fn main() { let x: u64 = jet::current_value(); assert!(jet::eq_64(x, x)); }";
+        let selected = compile_with(source, Box::new(ElementsJetHinter::new())).unwrap();
+        let explicit = compile_with(source, Box::new(ast::BitcoinJetHinter::new())).unwrap();
+
+        assert_eq!(selected.target(), Some(parse::Target::Bitcoin));
+        assert_eq!(selected.commit().cmr(), explicit.commit().cmr());
+    }
+
+    #[test]
+    #[cfg(feature = "unstable-bitcoin")]
+    fn bitcoin_jet_set_requires_the_target_header() {
+        let err = compile_with("fn main() {}", Box::new(ast::BitcoinJetHinter::new())).unwrap_err();
+        assert!(err.contains("requires a `target bitcoin;` header"), "{err}");
     }
 }
 

@@ -28,6 +28,7 @@ pub enum Token<'src> {
     Match,
     Enum,
     Crate,
+    Target,
     /// Reserved for the compiler version directive, which the version prescan
     /// consumes before lexing; [`lex`] reports any occurrence as an error and drops
     /// the token.
@@ -161,6 +162,7 @@ impl<'src> fmt::Display for Token<'src> {
             Token::Match => write!(f, "match"),
             Token::Enum => write!(f, "enum"),
             Token::Crate => write!(f, "{}", CRATE_STR),
+            Token::Target => write!(f, "target"),
             Token::Simc => write!(f, "{}", SIMC_STR),
 
             Token::Arrow => write!(f, "->"),
@@ -340,6 +342,7 @@ fn to_token<'src, const PRESERVE: bool>(
         "match" => Token::Match,
         "enum" => Token::Enum,
         CRATE_STR => Token::Crate,
+        "target" => Token::Target,
         SIMC_STR => Token::Simc,
         "true" => Token::Bool(true),
         "false" => Token::Bool(false),
@@ -525,7 +528,7 @@ fn filter_token<'src, F: Fn(SimpleSpan) -> Span>(
 /// A list of all reserved keywords.
 pub const KEYWORDS: &[&str] = &[
     "pub", "use", "as", "fn", "let", "type", "mod", "const", "match", "enum", CRATE_STR, SIMC_STR,
-    "true", "false",
+    "target", "true", "false",
 ];
 
 /// Checks whether a given string is a keyword.

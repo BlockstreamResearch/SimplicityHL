@@ -114,6 +114,8 @@ impl DependencyGraph {
                         msg: Error::MainOutOfEntryFile.to_string(),
                     }));
                 }
+            } else if let Some(decl) = module.program.target() {
+                diagnostics.push(Diagnostic::new(Error::TargetOutOfEntryFile, *decl.span()));
             }
 
             forbid_enum_dec_in_deps(source_id, &local_items, diagnostics);
@@ -133,8 +135,9 @@ impl DependencyGraph {
             )));
         }
 
+        let main = &self.modules[&MAIN_MODULE].program;
         (!diagnostics.has_errors())
-            .then(|| parse::Program::new(&items, *self.modules[&MAIN_MODULE].program.as_ref()))
+            .then(|| parse::Program::new(main.target().cloned(), &items, *main.as_ref()))
     }
 
     /// Rewrites a single item for the flattened single-file representation.
@@ -363,6 +366,22 @@ mod flattening_tests {
             diagnostics.presentation_order()[0].location(),
             Location::Code(span) if span.file_id == dependency_id
         ));
+    }
+
+    #[test]
+    fn dependency_cannot_declare_a_target() {
+        let (graph, _ids, _dir, mut diagnostics) = setup_graph(vec![
+            ("libs/lib/A.simf", "target elements;\npub fn helper() {}"),
+            ("main.simf", "use lib::A::helper; fn main() {}"),
+        ]);
+
+        assert!(graph.linearize_and_assemble(&mut diagnostics).is_none());
+        assert!(
+            diagnostics
+                .to_string()
+                .contains("must be in the entry point file"),
+            "{diagnostics}"
+        );
     }
 }
 

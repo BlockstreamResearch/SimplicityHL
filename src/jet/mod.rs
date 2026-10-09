@@ -1,3 +1,5 @@
+#[cfg(feature = "unstable-bitcoin")]
+pub mod bitcoin;
 pub mod core;
 #[cfg(feature = "external-jets")]
 mod dynlib;
@@ -160,11 +162,10 @@ pub fn target_type(jet: &dyn JetHL) -> AliasedType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use simplicity::jet::{Elements, Jet};
+    use simplicity::jet::Elements;
 
-    #[test]
-    fn compatible_source_type() {
-        for jet in Elements::ALL {
+    fn assert_compatible_source_types<J: JetHL + Copy>(jets: &[J]) {
+        for &jet in jets {
             let resolved_ty = ResolvedType::tuple(
                 source_type(&jet)
                     .into_iter()
@@ -178,9 +179,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn compatible_target_type() {
-        for jet in Elements::ALL {
+    fn assert_compatible_target_types<J: JetHL + Copy>(jets: &[J]) {
+        for &jet in jets {
             let resolved_ty = target_type(&jet).resolve_builtin().unwrap();
             let structural_ty = StructuralType::from(&resolved_ty);
             let simplicity_ty = jet.target_ty().to_final();
@@ -188,5 +188,19 @@ mod tests {
             println!("{jet}");
             assert_eq!(structural_ty.as_ref(), simplicity_ty.as_ref());
         }
+    }
+
+    #[test]
+    fn compatible_source_type() {
+        assert_compatible_source_types(&Elements::ALL);
+        #[cfg(feature = "unstable-bitcoin")]
+        assert_compatible_source_types(&simplicity::jet::Bitcoin::ALL);
+    }
+
+    #[test]
+    fn compatible_target_type() {
+        assert_compatible_target_types(&Elements::ALL);
+        #[cfg(feature = "unstable-bitcoin")]
+        assert_compatible_target_types(&simplicity::jet::Bitcoin::ALL);
     }
 }
