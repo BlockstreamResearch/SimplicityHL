@@ -36,6 +36,10 @@ pub enum UnstableFeature {
     /// Raw-hash syntax: the `raw_hash::<T>(tuple)` builtin, which hashes a
     /// tuple of unsigned integers. Enable with `simc -Z raw_hash`.
     RawHash,
+    /// Bitcoin support: the `target <chain>;` header that selects the jet set.
+    /// Enable with `simc -Z bitcoin`; `target bitcoin;` also needs the `unstable-bitcoin`
+    /// Cargo feature.
+    Bitcoin,
 }
 
 impl UnstableFeature {
@@ -49,7 +53,7 @@ impl UnstableFeature {
     /// Append the new variant here, bump the count in
     /// `all_contains_every_variant` ( in the `tests` module below), then
     /// gate the syntax via [`RequireFeature`].
-    pub const ALL: &'static [Self] = &[Self::Imports, Self::Enums, Self::RawHash];
+    pub const ALL: &'static [Self] = &[Self::Imports, Self::Enums, Self::RawHash, Self::Bitcoin];
 
     /// Human-readable description shown next to the feature's name under
     /// `simc --help`.
@@ -63,6 +67,9 @@ impl UnstableFeature {
             }
             Self::RawHash => {
                 "Raw-hash syntax: the 'raw_hash::<T>(tuple)' builtin for hashing a tuple of unsigned integers"
+            }
+            Self::Bitcoin => {
+                "Bitcoin support: the 'target bitcoin;' header selects Bitcoin jets (needs the 'unstable-bitcoin' Cargo feature)"
             }
         }
     }
@@ -227,6 +234,7 @@ impl fmt::Display for UnstableFeature {
             Self::Imports => write!(f, "imports"),
             Self::Enums => write!(f, "enums"),
             Self::RawHash => write!(f, "raw_hash"),
+            Self::Bitcoin => write!(f, "bitcoin"),
         }
     }
 }
@@ -241,6 +249,7 @@ impl FromStr for UnstableFeature {
             "imports" => Ok(UnstableFeature::Imports),
             "enums" => Ok(UnstableFeature::Enums),
             "raw_hash" => Ok(UnstableFeature::RawHash),
+            "bitcoin" => Ok(UnstableFeature::Bitcoin),
             _ => Err(format!("Unknown unstable feature: '{s}'")),
         }
     }
@@ -363,7 +372,7 @@ mod tests {
         // the variant to `ALL`. Pins that `ALL` stays complete.
         assert_eq!(
             all_features.len(),
-            3,
+            4,
             "update this count when adding a feature"
         );
 
