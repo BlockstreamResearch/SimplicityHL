@@ -1,3 +1,4 @@
+pub mod bitcoin;
 pub mod core;
 #[cfg(feature = "external-jets")]
 mod dynlib;
