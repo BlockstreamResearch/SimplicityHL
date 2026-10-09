@@ -39,9 +39,10 @@ use crate::TemplateProgramWitness;
 #[cfg(feature = "fmt")]
 use crate::lexer::{FmtToken, FmtTokens};
 
-/// A program is a sequence of items.
+/// A program is an optional `target` header followed by a sequence of items.
 #[derive(Clone, Debug)]
 pub struct Program {
+    target: Option<TargetDecl>,
     items: Arc<[Item]>,
     span: Span,
 }
@@ -82,11 +83,17 @@ impl<'src> ParsedSource<'src> {
 
 impl Program {
     // Need for driver usage
-    pub(crate) fn new(items: &[Item], span: Span) -> Self {
+    pub(crate) fn new(target: Option<TargetDecl>, items: &[Item], span: Span) -> Self {
         Self {
+            target,
             items: Arc::from(items),
             span,
         }
+    }
+
+    /// Access the `target` header, if the program declares one.
+    pub fn target(&self) -> Option<&TargetDecl> {
+        self.target.as_ref()
     }
 
     /// Access the items of the program.
@@ -139,9 +146,40 @@ impl Program {
     }
 }
 
-impl_eq_hash!(Program; items);
+impl_eq_hash!(Program; target, items);
 
-impl_require_feature!(Program { recurse: items; });
+impl_require_feature!(Program { recurse: target, items; });
+
+/// The chain whose jet set a program is compiled against.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Target {
+    Elements,
+    Bitcoin,
+}
+
+/// The `target <chain>;` header, which may only open the entry file
+/// (after the `simc` directive, if any).
+#[derive(Clone, Debug)]
+pub struct TargetDecl {
+    target: Target,
+    span: Span,
+}
+
+impl TargetDecl {
+    pub fn target(&self) -> Target {
+        self.target
+    }
+
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl_eq_hash!(TargetDecl; target);
+
+impl_require_feature!(TargetDecl {
+    requires: UnstableFeature::Bitcoin, span: span;
+});
 
 /// An item is a component of a program.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -1222,9 +1260,14 @@ impl Module {
 
 impl fmt::Display for Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(decl) = &self.target {
+            writeln!(f, "target {};", decl.target)?;
+        }
+
         for item in self.items() {
             writeln!(f, "{item}")?;
         }
+
         Ok(())
     }
 }
@@ -1348,6 +1391,29 @@ impl fmt::Display for Module {
         }
 
         write!(f, "}}")
+    }
+}
+
+impl fmt::Display for Target {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Elements => f.write_str("elements"),
+            Self::Bitcoin => f.write_str("bitcoin"),
+        }
+    }
+}
+
+impl FromStr for Target {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "elements" => Ok(Self::Elements),
+            "bitcoin" => Ok(Self::Bitcoin),
+            _ => Err(Error::UnknownTarget {
+                name: s.to_string(),
+            }),
+        }
     }
 }
 
@@ -2071,17 +2137,23 @@ impl ChumskyParse for Program {
                                 | Token::Type
                                 | Token::Mod
                                 | Token::Enum
+                                | Token::Target
                         )
                     })
                     .repeated(),
             )
             .map_with(|_, _| Item::Ignored);
 
-        Item::parser()
-            .recover_with(via_parser(skip_until_next_item))
-            .repeated()
-            .collect::<Vec<Item>>()
-            .map_with(|items, e| Program {
+        TargetDecl::parser()
+            .or_not()
+            .then(
+                Item::parser()
+                    .recover_with(via_parser(skip_until_next_item))
+                    .repeated()
+                    .collect::<Vec<Item>>(),
+            )
+            .map_with(|(target, items), e| Program {
+                target,
                 items: Arc::from(items),
                 span: e.span(),
             })
@@ -2102,14 +2174,39 @@ impl ChumskyParse for Item {
             // Lazy item here
             let mod_parser = Module::parser_with_items(item).map(Item::Module);
 
+            // A header that `Program` did not consume as its first item.
+            let misplaced_target = TargetDecl::parser().validate(|decl, _, emit| {
+                emit.emit(Error::MisplacedTarget.with_span(decl.span));
+                Item::Ignored
+            });
+
             choice((
                 func_parser,
                 use_parser,
                 type_parser,
                 enum_parser,
                 mod_parser,
+                misplaced_target,
             ))
         })
+    }
+}
+
+impl ChumskyParse for TargetDecl {
+    fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
+    where
+        I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
+    {
+        just(Token::Target)
+            .ignore_then(
+                select! { Token::Ident(name) => name }
+                    .try_map(|name, span| Target::from_str(name).map_err(|e| e.with_span(span))),
+            )
+            .then_ignore(just(Token::Semi))
+            .map_with(|target, e| Self {
+                target,
+                span: e.span(),
+            })
     }
 }
 
@@ -3339,6 +3436,7 @@ impl<'a> arbitrary::Arbitrary<'a> for Program {
 
         let items: Arc<[Item]> = items_vec.into();
         Ok(Self {
+            target: None,
             items,
             span: Span::DUMMY,
         })
@@ -3932,6 +4030,22 @@ fn main() {
                 "error should say the name is reserved: {error}"
             );
         }
+    }
+
+    #[test]
+    fn target_header_follows_the_version_directive() {
+        let (rejected, errors) = parse_with(
+            "simc \"*\";\ntarget elements;\nfn main() {}",
+            &UnstableFeatures::all(),
+        );
+        assert!(!rejected, "{errors}");
+
+        let (rejected, errors) = parse_with(
+            "target elements;\nsimc \"*\";\nfn main() {}",
+            &UnstableFeatures::all(),
+        );
+        assert!(rejected);
+        assert!(errors.contains("`simc` is reserved"), "{errors}");
     }
 }
 
