@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use either::Either;
 use miniscript::iter::{Tree, TreeLike};
+#[cfg(feature = "unstable-bitcoin")]
+use simplicity::jet::Bitcoin;
 use simplicity::jet::{Core, Elements, Jet};
 
 use crate::compile::{RawHashJets, RawHashJetsError};
@@ -685,6 +687,12 @@ pub trait JetHinter: std::fmt::Debug + Send + Sync {
     /// Clones the `JetHinter` into a boxed trait object.
     fn clone_box(&self) -> Box<dyn JetHinter>;
 
+    /// The chain whose jet set this is, or `None` for Core and custom jet sets,
+    /// which accept no `target` header.
+    fn target(&self) -> Option<parse::Target> {
+        None
+    }
+
     // The methods below default to `None`, so an implementation written before
     // they were added, or one for a jet set without the SHA-256 context jets,
     // keeps compiling; `raw_hash` then reports that the jets are unavailable.
@@ -737,7 +745,7 @@ pub trait JetHinter: std::fmt::Debug + Send + Sync {
 }
 
 macro_rules! impl_jet_hinter {
-    ($struct_name:ident, $jet_type:ident) => {
+    ($struct_name:ident, $jet_type:ident, $target:expr) => {
         #[derive(Clone, Debug, Default)]
         pub struct $struct_name;
 
@@ -768,6 +776,10 @@ macro_rules! impl_jet_hinter {
                 Box::new(Self)
             }
 
+            fn target(&self) -> Option<parse::Target> {
+                $target
+            }
+
             fn construct_sha_256_ctx_8_init(&self) -> Option<Box<dyn JetHL>> {
                 Some(Box::new($jet_type::Sha256Ctx8Init))
             }
@@ -796,8 +808,11 @@ macro_rules! impl_jet_hinter {
     };
 }
 
-impl_jet_hinter!(ElementsJetHinter, Elements);
-impl_jet_hinter!(CoreJetHinter, Core);
+// The default jet set: a `target` header in the source selects another chain.
+impl_jet_hinter!(ElementsJetHinter, Elements, Some(parse::Target::Elements));
+impl_jet_hinter!(CoreJetHinter, Core, None);
+#[cfg(feature = "unstable-bitcoin")]
+impl_jet_hinter!(BitcoinJetHinter, Bitcoin, Some(parse::Target::Bitcoin));
 
 /// A single module namespace. Handles arbitrary nesting via `submodules`.
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
@@ -3750,8 +3765,11 @@ mod scope_resolution_tests {
     #[test]
     fn test_deep_reexport_private_link_fails() {
         let result = analyze_multifile(vec![
-            ("libs/lib/A.simf", "pub fn target() {}"),
-            ("libs/lib/B.simf", "use crate::A::target as hidden_alias;"),
+            ("libs/lib/A.simf", "pub fn destination() {}"),
+            (
+                "libs/lib/B.simf",
+                "use crate::A::destination as hidden_alias;",
+            ),
             ("main.simf", "use lib::B::hidden_alias; fn main() {}"),
         ]);
 
@@ -3868,11 +3886,11 @@ mod module_tests {
         let result = analyze_multifile(vec![
             (
                 "libs/lib/A.simf",
-                "pub mod outer { pub mod inner { pub fn target() {} } }",
+                "pub mod outer { pub mod inner { pub fn destination() {} } }",
             ),
             (
                 "main.simf",
-                "use lib::A::outer::inner::target; fn main() {}",
+                "use lib::A::outer::inner::destination; fn main() {}",
             ),
         ]);
 
@@ -3886,14 +3904,14 @@ mod module_tests {
     fn test_private_inner_module_blocks_external_access() {
         let result = analyze_multifile(vec![
             // `outer` is public, but `inner` is private
-            // Even though `target` is public, the private wall at `inner` blocks it.
+            // Even though `destination` is public, the private wall at `inner` blocks it.
             (
                 "libs/lib/A.simf",
-                "pub mod outer { mod inner { pub fn target() {} } }",
+                "pub mod outer { mod inner { pub fn destination() {} } }",
             ),
             (
                 "main.simf",
-                "use lib::A::outer::inner::target; fn main() {}",
+                "use lib::A::outer::inner::destination; fn main() {}",
             ),
         ]);
 
