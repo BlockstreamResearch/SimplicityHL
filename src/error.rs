@@ -20,7 +20,7 @@ use itertools::Itertools;
 
 use crate::driver::{SourceMap, CRATE_STR, MAIN_MODULE};
 use crate::lexer::Token;
-use crate::parse::MatchPattern;
+use crate::parse::{MatchPattern, Target};
 use crate::str::{AliasName, FunctionName, Identifier, JetName, ModuleName};
 use crate::types::{ResolvedType, UIntType};
 use crate::unstable::UnstableFeature;
@@ -796,6 +796,20 @@ pub enum Error {
     },
     MalformedSimcDirective,
     ReservedSimcKeyword,
+    UnknownTarget {
+        name: String,
+    },
+    TargetOutOfEntryFile,
+    MisplacedTarget,
+    TargetJetSetMismatch {
+        declared: Target,
+    },
+    TargetRequired {
+        target: Target,
+    },
+    TargetUnavailable {
+        target: Target,
+    },
     DependencyPathNotFound {
         path: PathBuf,
     },
@@ -998,6 +1012,30 @@ impl fmt::Display for Error {
             Error::ReservedSimcKeyword => write!(
                 f,
                 "`simc` is reserved for the compiler version directive, which must be the first item in the file and may appear at most once"
+            ),
+            Error::UnknownTarget { name } => write!(
+                f,
+                "Unknown target `{name}`: expected `elements` or `bitcoin`"
+            ),
+            Error::TargetOutOfEntryFile => write!(
+                f,
+                "The `target` header must be in the entry point file"
+            ),
+            Error::MisplacedTarget => write!(
+                f,
+                "The `target` header must come once, before all items of the file"
+            ),
+            Error::TargetJetSetMismatch { declared } => write!(
+                f,
+                "`target {declared};` conflicts with the jet set the compiler was given"
+            ),
+            Error::TargetRequired { target } => write!(
+                f,
+                "The {target} jet set requires a `target {target};` header in the entry point file"
+            ),
+            Error::TargetUnavailable { target } => write!(
+                f,
+                "`target {target};` requires the `unstable-{target}` Cargo feature of simplicityhl"
             ),
             Error::DependencyPathNotFound { path } => write!(
                 f,
