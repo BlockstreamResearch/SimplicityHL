@@ -1,3 +1,5 @@
+#[cfg(feature = "unstable-bitcoin")]
+pub mod bitcoin;
 pub mod core;
 #[cfg(feature = "external-jets")]
 mod dynlib;
