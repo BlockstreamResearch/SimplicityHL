@@ -34,6 +34,34 @@ produce the same digest, as does any other type with the same bytes, such as an 
 of `u32` versus a plain `u32`. If your protocol needs the digest to be unambiguous,
 commit to the type yourself, for example by hashing a domain-separation tag first.
 
+## `bitcoin`
+
+A `target` header selects the chain whose jets the program uses. Enable it with
+`-Z bitcoin`:
+
+```rust
+target bitcoin;
+
+fn main() {
+    jet::bip_0340_verify((param::ALICE_PUBLIC_KEY, jet::sig_all_hash()), witness::ALICE_SIGNATURE)
+}
+```
+
+The chain is `elements` or `bitcoin`; without a header, programs use Elements jets.
+The header may only open the entry file, after the `simc` directive if there is one.
+
+`target bitcoin;` also needs the `unstable-bitcoin` Cargo feature, which currently pins
+unreleased rust-simplicity changes:
+
+```sh
+cargo run --features unstable-bitcoin -- -Z bitcoin examples/bitcoin_p2pk.simf --args examples/p2pk.args
+```
+
+Use `CompiledProgram::satisfy_with_bitcoin_env` to satisfy and
+prune a Bitcoin program in its transaction environment. Bitcoin programs only run
+on a Simplicity-enabled test node, not on Bitcoin mainnet; see
+`bitcoind-tests/README.md`.
+
 ## Adding or stabilizing a feature
 
 See the rustdoc on `UnstableFeature` in `src/unstable.rs`; the procedures
