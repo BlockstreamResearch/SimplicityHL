@@ -1,0 +1,4 @@
+// error: FunctionRedefined
+fn f() {}
+fn f() {}
+fn main() {}

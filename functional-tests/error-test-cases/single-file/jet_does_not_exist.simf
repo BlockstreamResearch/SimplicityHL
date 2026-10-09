@@ -1,0 +1,4 @@
+// error: JetDoesNotExist
+fn main() {
+    jet::not_a_jet();
+}

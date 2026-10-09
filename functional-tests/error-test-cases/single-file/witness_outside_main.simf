@@ -1,0 +1,5 @@
+// error: WitnessOutsideMain
+fn f() -> u8 { witness::W }
+fn main() {
+    let _: u8 = f();
+}

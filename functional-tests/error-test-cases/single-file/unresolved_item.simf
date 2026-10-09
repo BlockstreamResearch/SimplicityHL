@@ -1,0 +1,5 @@
+// error: UnresolvedItem
+// flags: imports
+mod a { pub fn f() {} }
+use crate::a::g;
+fn main() {}

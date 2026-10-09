@@ -595,6 +595,46 @@ pub(crate) mod tests {
         ));
     }
 
+    /// A dependency import naming a file that is not in the dependency root is
+    /// reported against the library.
+    #[test]
+    fn test_external_file_not_found() {
+        let ws = TempWorkspace::new("external_missing");
+
+        let [project_dir, target] = dirs(&ws, ["workspace", "libs/math"]);
+        let [current_file] = files(&ws, ["workspace/main.simf"]);
+
+        let map = build_map(&project_dir, &[(&project_dir, "math", &target)]).unwrap();
+
+        let use_decl = create_dummy_use_decl(&["math", "missing"]);
+        let result = map.resolve_path(&current_file, &use_decl);
+
+        assert!(matches!(
+            result.unwrap_err().error(),
+            Error::ExternalFileNotFound { lib, .. } if lib == "math"
+        ));
+    }
+
+    /// A `crate::` import naming a missing file, from a file below the package
+    /// root, has no inline fallback and is reported as not found.
+    #[test]
+    fn test_crate_file_not_found() {
+        let ws = TempWorkspace::new("crate_missing");
+
+        let [project_dir] = dirs(&ws, ["workspace"]);
+        let [current_file] = files(&ws, ["workspace/src/main.simf"]);
+
+        let map = build_map(&project_dir, &[]).unwrap();
+
+        let use_decl = create_dummy_use_decl(&[CRATE_STR, "missing"]);
+        let result = map.resolve_path(&current_file, &use_decl);
+
+        assert!(matches!(
+            result.unwrap_err().error(),
+            Error::FileNotFound { .. }
+        ));
+    }
+
     /// It verifies that the "crate" dependency root path successfully resolves
     /// to the local workspace root directory.
     #[test]

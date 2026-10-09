@@ -1,0 +1,4 @@
+// error: FunctionUndefined
+fn main() {
+    g();
+}

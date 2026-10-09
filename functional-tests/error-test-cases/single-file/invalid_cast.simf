@@ -1,0 +1,4 @@
+// error: InvalidCast
+fn main() {
+    let _: u16 = <u8>::into(1);
+}

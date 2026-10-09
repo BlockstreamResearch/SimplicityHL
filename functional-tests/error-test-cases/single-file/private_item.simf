@@ -1,0 +1,5 @@
+// error: PrivateItem
+// flags: imports
+mod a { fn f() {} }
+use crate::a::f;
+fn main() {}

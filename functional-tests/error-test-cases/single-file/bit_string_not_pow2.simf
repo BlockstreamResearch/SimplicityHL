@@ -1,0 +1,4 @@
+// error: BitStringPow2
+fn main() {
+    let _: u8 = 0b101;
+}

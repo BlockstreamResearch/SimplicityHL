@@ -1,0 +1,6 @@
+// error: ArraySizeNonZero
+fn f(x: u8, acc: u8) -> u8 { x }
+fn main() {
+    let a: [u8; 1] = [1];
+    let _: u8 = array_fold::<f, 0>(a, 0);
+}

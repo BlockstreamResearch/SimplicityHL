@@ -1,0 +1,5 @@
+// error: RawHashUnsupportedType
+// flags: raw_hash
+fn main() {
+    let _: u256 = raw_hash::<(bool, u8)>((true, 1));
+}

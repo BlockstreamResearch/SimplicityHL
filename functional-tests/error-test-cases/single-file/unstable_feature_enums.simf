@@ -1,0 +1,3 @@
+// error: UnstableFeature
+enum E { A, B, }
+fn main() {}

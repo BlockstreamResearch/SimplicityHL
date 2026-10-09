@@ -1,0 +1,5 @@
+// error: WitnessReused
+fn main() {
+    let a: u8 = witness::W;
+    let b: u8 = witness::W;
+}

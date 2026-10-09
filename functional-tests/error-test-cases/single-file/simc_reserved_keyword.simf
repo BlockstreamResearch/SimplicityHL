@@ -1,0 +1,4 @@
+// error: ReservedSimcKeyword
+fn main() {
+    let simc: u8 = 1;
+}

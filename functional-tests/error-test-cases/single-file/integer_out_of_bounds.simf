@@ -1,0 +1,4 @@
+// error: IntegerOutOfBounds
+fn main() {
+    let _: u2 = 4;
+}

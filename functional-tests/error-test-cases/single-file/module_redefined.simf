@@ -1,0 +1,5 @@
+// error: ModuleRedefined
+// flags: imports
+mod a {}
+mod a {}
+fn main() {}

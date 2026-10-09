@@ -1,0 +1,5 @@
+// error: FunctionNotLoopable
+fn f(acc: u8, ctx: (), i: u32) -> Either<u8, u8> { Left(acc) }
+fn main() {
+    let _: Either<u8, u8> = for_while::<f>(0, ());
+}

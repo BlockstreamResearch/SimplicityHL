@@ -1,0 +1,5 @@
+// error: ModuleIsPrivate
+// flags: imports
+mod a { mod b { pub fn f() {} } }
+use crate::a::b::f;
+fn main() {}

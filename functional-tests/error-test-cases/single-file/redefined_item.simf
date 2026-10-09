@@ -1,0 +1,5 @@
+// error: RedefinedItem
+// flags: imports
+mod a { pub fn f() {} }
+use crate::a::{f as g, f as g};
+fn main() {}
