@@ -76,10 +76,15 @@ check_all:
 # Build integration tests
 build_integration:
     cargo test --locked -p bitcoind-tests --test spend_utxo --no-run
+    cargo test --locked -p bitcoind-tests --features unstable-bitcoin --test bitcoin_spend_utxo --no-run
 
 # Run integration tests (requires custom elementsd)
 check_integration:
     cargo test --locked -p bitcoind-tests --test spend_utxo
+
+# Run the UNSTABLE Bitcoin integration test (requires a Simplicity-enabled bitcoind)
+check_bitcoin_integration:
+    cargo test --locked -p bitcoind-tests --features unstable-bitcoin --test bitcoin_spend_utxo
 
 # Build code for the WASM target
 build_wasm:

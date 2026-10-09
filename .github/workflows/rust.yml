@@ -137,3 +137,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --locked -p bitcoind-tests --test spend_utxo --no-run
+      - run: cargo test --locked -p bitcoind-tests --features unstable-bitcoin --test bitcoin_spend_utxo --no-run
