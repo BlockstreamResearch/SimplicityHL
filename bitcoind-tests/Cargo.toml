@@ -13,6 +13,18 @@ path = "tests/spend_utxo.rs"
 test = false
 bench = false
 
+# UNSTABLE: requires BITCOIND_EXE (a Simplicity-enabled Bitcoin node) and the
+# `unstable-bitcoin` feature; run explicitly with --features unstable-bitcoin --test bitcoin_spend_utxo.
+[[test]]
+name = "bitcoin_spend_utxo"
+path = "tests/bitcoin_spend_utxo.rs"
+required-features = ["unstable-bitcoin"]
+test = false
+bench = false
+
+[features]
+unstable-bitcoin = ["simplicityhl/unstable-bitcoin"]
+
 [dev-dependencies]
 simplicityhl = { path = ".." }
 elementsd = { version = "0.11.0" }

@@ -34,6 +34,8 @@ serde = ["dep:serde", "dep:serde_json"]
 docs = []
 external-jets = []
 fmt = []
+# UNSTABLE: Bitcoin jets for `target bitcoin;`, which also requires `-Z bitcoin`.
+unstable-bitcoin = ["simplicity-lang/bitcoin"]
 
 [dependencies]
 base64 = "0.21.2"
@@ -54,6 +56,12 @@ getrandom = { version = "0.2", features = ["js"] }
 
 [workspace]
 members = ["codegen", "fuzz", "external-jet-lib-example", "bitcoind-tests"]
+
+# FIXME: Bitcoin execution is not released yet. This pins the head of the stacked
+# rust-simplicity PRs #385, #386, #387 and #388. Replace with a version bump once they ship.
+[patch.crates-io]
+simplicity-lang = { git = "https://github.com/delta1/rust-simplicity", rev = "49e08916b8e3d3896a6cb7fd2c82667185bc190e" }
+simplicity-sys = { git = "https://github.com/delta1/rust-simplicity", rev = "49e08916b8e3d3896a6cb7fd2c82667185bc190e" }
 
 [workspace.metadata.rbmt.toolchains]
 nightly = "nightly-2025-08-23"
