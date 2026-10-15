@@ -33,6 +33,7 @@ default = [ "serde" ]
 serde = ["dep:serde", "dep:serde_json"]
 docs = []
 fmt = []
+unstable-bitcoin = ["simplicity-lang/bitcoin"]
 
 [dependencies]
 base64 = "0.21.2"
