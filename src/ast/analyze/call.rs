@@ -345,11 +345,9 @@ impl CallName {
             parse::CallName::TypeCast(target) => {
                 scope.resolve(target).map(Self::TypeCast).with_span(from)
             }
-            parse::CallName::Custom(name) => {
-                scope.get_function(name).map(Self::Custom).with_span(from)
-            }
+            parse::CallName::Custom(name) => Ok(Self::Custom(scope.get_function(name, from)?)),
             parse::CallName::ArrayFold(name, size) => {
-                let function = scope.get_function(name).with_span(from)?;
+                let function = scope.get_function(name, from)?;
                 // A function that is used in a array fold has the signature:
                 //   fn f(element: E, accumulator: A) -> A
                 if function.params().len() != 2
@@ -361,7 +359,7 @@ impl CallName {
                 }
             }
             parse::CallName::Fold(name, bound) => {
-                let function = scope.get_function(name).with_span(from)?;
+                let function = scope.get_function(name, from)?;
                 // A function that is used in a list fold has the signature:
                 //   fn f(element: E, accumulator: A) -> A
                 if function.params().len() != 2
@@ -373,7 +371,7 @@ impl CallName {
                 }
             }
             parse::CallName::ForWhile(name) => {
-                let function = scope.get_function(name).with_span(from)?;
+                let function = scope.get_function(name, from)?;
                 // A function that is used in a for-while loop has the signature:
                 //   fn f(accumulator: A, readonly_context: C, counter: u{N}) -> Either<B, A>
                 // where

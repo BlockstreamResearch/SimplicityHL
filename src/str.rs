@@ -390,6 +390,13 @@ pub struct SymbolName(Arc<str>);
 wrapped_string!(SymbolName, "unresolved symbol name");
 impl_arbitrary_lowercase_alpha!(SymbolName);
 
+/// Lets a set of symbols be searched by an item name without allocating.
+impl std::borrow::Borrow<str> for SymbolName {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

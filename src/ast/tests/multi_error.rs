@@ -491,3 +491,59 @@ fn broken_let_still_defines_its_variables() {
         ],
     );
 }
+
+#[test]
+fn broken_use_does_not_stop_the_analysis() {
+    assert_errors(
+        "mod m {
+                pub fn f() -> u32 { 1 }
+            }
+
+            use crate::m::{f, Missing};
+            use crate::nowhere::g;
+
+            fn h() -> u32 { x }
+
+            fn main() {
+                let a: u32 = f();
+                let b: Missing = 1;
+                let c: u32 = g();
+                let d: bool = a;
+            }",
+        &[
+            "Item `Missing` could not be found",
+            "Module `nowhere` not found",
+            "Variable `x` is not defined",
+            "Expected expression of type `bool`, found type `u32`",
+        ],
+    );
+}
+
+#[test]
+fn private_import_is_still_checked() {
+    assert_errors(
+        "mod m {
+                type Secret = u16;
+                
+                mod inner {
+                    pub type Word = u8;
+                }
+            }
+
+            use crate::m::Secret;
+            use crate::m::inner::Word;
+
+            fn main() {
+                let s: Secret = 1;
+                let w: Word = 2;
+                let t: bool = s;
+                let u: bool = w;
+            }",
+        &[
+            "Item `Secret` is private",
+            "Module `inner` is private",
+            "Expected expression of type `bool`, found type `u16`",
+            "Expected expression of type `bool`, found type `u8`",
+        ],
+    );
+}
