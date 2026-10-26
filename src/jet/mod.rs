@@ -1,3 +1,4 @@
+pub mod bitcoin;
 pub mod core;
 pub mod elements;
 
