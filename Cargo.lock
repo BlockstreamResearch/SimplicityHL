@@ -843,7 +843,7 @@ dependencies = [
 
 [[package]]
 name = "simplicityhl"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "arbitrary",
  "ariadne",
