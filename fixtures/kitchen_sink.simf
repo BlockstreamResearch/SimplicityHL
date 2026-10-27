@@ -39,9 +39,17 @@ pub enum Parity {
     Odd,
 }
 
+// Constants of compound, aliased, and enum types, one built from another
+const LIMIT: u32 = 2_000_000;
+const ORIGIN: Pair = (0, LIMIT);
+const MASKS: Bytes4 = [0x0f, 0xf0, 0x00, 0xff];
+const DEFAULT_SHAPE: Shape = Shape::Rect(2, 3);
+
 // Modules: nested, public and private items, `use` inside a module
 mod math {
     pub mod ops {
+        pub const SCALE: u32 = 4;
+
         pub fn add(a: u32, b: u32) -> u32 {
             let (_, sum): (bool, u32) = jet::add_32(a, b);
             sum
@@ -78,6 +86,7 @@ mod math {
 use crate::math::ops::quadruple;
 use crate::math::{add_three as sum3, parity};
 use crate::math::ops::{add, quadruple as times_four};
+use crate::math::ops::SCALE;
 
 // Unit-returning function
 fn check_eq_32(a: u32, b: u32) {
@@ -243,6 +252,17 @@ fn main() {
     let [flag_a, flag_b]: [bool; 2] = flags;
     assert!(jet::eq_1(<bool>::into(flag_a), 1));
     assert!(jet::eq_1(<bool>::into(flag_b), 0));
+
+    // Constants, including imported ones with and without an alias
+    let (origin_x, limit): Pair = ORIGIN;
+    check_eq_32(origin_x, 0);
+    assert!(jet::lt_32(x, limit));
+
+    let [_, _, _, mask]: Bytes4 = MASKS;
+    assert!(jet::eq_8(mask, 255));
+    check_eq_32(shape_area(DEFAULT_SHAPE), 6);
+    check_eq_32(4, SCALE);
+    check_eq_32(quadruple(1), SCALE);
 
     // Transaction environment and hash jets
     let _: u32 = jet::num_inputs();
