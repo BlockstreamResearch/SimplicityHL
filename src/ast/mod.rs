@@ -84,6 +84,11 @@ pub enum Item {
     EnumDeclaration,
     /// A function.
     Function(Function),
+    /// A constant declaration.
+    ///
+    /// A stub because the value was evaluated into scope during the
+    /// creation of the AST.
+    Const,
     Use,
     Module(Vec<Item>),
     /// A placeholder used for error recovery during parsing.

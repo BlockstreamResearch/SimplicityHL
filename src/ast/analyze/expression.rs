@@ -171,23 +171,36 @@ impl AbstractSyntaxTree for SingleExpression {
                 SingleExpressionInner::Parameter(name.shallow_clone())
             }
             parse::SingleExpressionInner::Variable(identifier) => {
-                let bound_ty = scope
-                    .get_variable(identifier)
-                    .ok_or(Error::UndefinedVariable {
-                        identifier: identifier.clone(),
-                    })
-                    .with_span(from)?;
+                let (inner, found) = match scope.get_variable(identifier).cloned() {
+                    Some(bound_ty) => {
+                        scope.insert_variable(identifier.clone(), bound_ty.clone());
+                        (
+                            SingleExpressionInner::Variable(identifier.clone()),
+                            bound_ty,
+                        )
+                    }
+                    None => {
+                        let value = scope
+                            .get_constant(identifier)
+                            .cloned()
+                            .ok_or(Error::UndefinedVariable {
+                                identifier: identifier.clone(),
+                            })
+                            .with_span(from)?;
+                        let found = value.ty().clone();
+                        (SingleExpressionInner::Constant(value), found)
+                    }
+                };
 
-                if !ty.compatible(bound_ty) {
+                if !ty.compatible(&found) {
                     Err(Error::ExpressionTypeMismatch {
                         expected: ty.clone(),
-                        found: bound_ty.clone(),
+                        found,
                     })
                     .with_span(from)?;
                 }
-                scope.insert_variable(identifier.clone(), bound_ty.clone());
 
-                SingleExpressionInner::Variable(identifier.clone())
+                inner
             }
             parse::SingleExpressionInner::Expression(parse) => {
                 Expression::analyze(parse, ty, scope)
