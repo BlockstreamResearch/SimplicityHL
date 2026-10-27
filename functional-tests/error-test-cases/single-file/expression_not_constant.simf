@@ -1,0 +1,3 @@
+// error: ExpressionNotConstant
+const X: u8 = { let a: u8 = 1; a };
+fn main() {}

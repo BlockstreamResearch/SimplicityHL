@@ -896,6 +896,9 @@ pub enum Error {
     FunctionRedefined {
         name: FunctionName,
     },
+    ConstantRedefined {
+        name: Identifier,
+    },
     FunctionUndefined {
         name: FunctionName,
     },
@@ -1130,6 +1133,10 @@ impl fmt::Display for Error {
             Error::FunctionRedefined { name } => write!(
                 f,
                 "Function `{name}` was defined multiple times"
+            ),
+            Error::ConstantRedefined { name } => write!(
+                f,
+                "Constant `{name}` was defined multiple times"
             ),
             Error::FunctionUndefined { name } => write!(
                 f,

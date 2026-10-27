@@ -6,6 +6,7 @@ use crate::error::{DiagnosticManager, Error, WithSpan};
 use crate::parse::{self, Visibility};
 use crate::str::FunctionName;
 use crate::types::{EnumVariantInfo, ResolvedType, TypeConstructible, TypeDeconstructible};
+use crate::value::Value;
 
 use super::super::recovery::Failure;
 use super::super::scope::Scope;
@@ -165,11 +166,29 @@ impl AbstractSyntaxTree for Item {
 
                 Ok(Self::EnumDeclaration)
             }
-            parse::Item::Const(decl) => Err(Error::Grammar {
-                msg: "`const` items are not supported yet".to_string(),
-            })
-            .with_span(decl)
-            .map_err(Failure::from),
+            parse::Item::Const(decl) => {
+                let expr = scope.analyze_strict(|scope| {
+                    let ty = scope.resolve_or_never(decl.ty(), decl);
+                    let expr =
+                        scope.in_function(|scope| Expression::analyze(decl.expr(), &ty, scope))?;
+
+                    // Errors about `!` are hidden, so `analyze_strict` cannot see them.
+                    if !ty.has_structural_type() {
+                        return Err(Failure::Reported);
+                    }
+
+                    Ok(expr)
+                })?;
+
+                let value = Value::from_const_expr(&expr)
+                    .ok_or(Error::ExpressionNotConstant)
+                    .with_span(decl.expr())?;
+                scope
+                    .insert_constant(decl.name().clone(), decl.visibility().clone(), value)
+                    .with_span(decl)?;
+
+                Ok(Self::Const)
+            }
             parse::Item::Module(module) => scope
                 .in_module(
                     module.name().clone(),
