@@ -899,6 +899,9 @@ pub enum Error {
     ConstantRedefined {
         name: Identifier,
     },
+    ConstantShadowed {
+        name: Identifier,
+    },
     FunctionUndefined {
         name: FunctionName,
     },
@@ -1137,6 +1140,10 @@ impl fmt::Display for Error {
             Error::ConstantRedefined { name } => write!(
                 f,
                 "Constant `{name}` was defined multiple times"
+            ),
+            Error::ConstantShadowed { name } => write!(
+                f,
+                "Variable `{name}` cannot shadow a constant"
             ),
             Error::FunctionUndefined { name } => write!(
                 f,

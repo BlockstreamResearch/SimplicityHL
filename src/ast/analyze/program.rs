@@ -245,7 +245,11 @@ impl AbstractSyntaxTree for Function {
 
             let body = scope.in_function(|scope| {
                 for param in params.iter() {
-                    scope.insert_variable(param.identifier().clone(), param.ty().clone());
+                    scope.bind_variable(
+                        param.identifier().clone(),
+                        param.ty().clone(),
+                        *param.span(),
+                    );
                 }
                 Expression::analyze(from.body(), &ret, scope).map(Arc::new)
             });

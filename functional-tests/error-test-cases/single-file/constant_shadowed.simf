@@ -1,0 +1,6 @@
+// error: ConstantShadowed
+const X: u8 = 1;
+
+fn main() {
+    let X: u8 = 2;
+}

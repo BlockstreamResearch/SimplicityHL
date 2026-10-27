@@ -330,6 +330,24 @@ impl Scope {
         self.locals.insert(identifier, ty);
     }
 
+    /// Bind a new variable, reporting it if its name hides a constant.
+    pub(super) fn bind_variable(
+        &mut self,
+        identifier: Identifier,
+        ty: ResolvedType,
+        span: impl Into<Span>,
+    ) {
+        if self.get_constant(&identifier).is_some() {
+            self.report(
+                Error::ConstantShadowed {
+                    name: identifier.clone(),
+                }
+                .with_span(span.into()),
+            );
+        }
+        self.insert_variable(identifier, ty);
+    }
+
     /// Get the type of the variable.
     pub(super) fn get_variable(&self, identifier: &Identifier) -> Option<&ResolvedType> {
         self.locals.get(identifier)

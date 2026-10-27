@@ -22,3 +22,20 @@ fn const_of_type_with_broken_alias_is_not_evaluated() {
     .unwrap_err();
     assert!(err.contains("Missing"), "{err}");
 }
+
+#[test]
+fn every_binding_rejects_a_constant_name() {
+    for src in [
+        "const A: u8 = 1;
+        fn f(A: u8) {}
+        fn main() {}",
+        "const A: u8 = 1;
+        fn main() {
+            let e: Either<u8, u8> = Left(2);
+            match e { Left(A: u8) => {}, Right(_: u8) => {} };
+        }",
+    ] {
+        let err = analyze(src).unwrap_err();
+        assert!(err.contains("cannot shadow a constant"), "{err}");
+    }
+}

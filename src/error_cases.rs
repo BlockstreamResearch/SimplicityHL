@@ -96,6 +96,7 @@ coverage! {
     ParameterRedefined => Tested,
     FunctionRedefined => Tested,
     ConstantRedefined => Tested,
+    ConstantShadowed => Tested,
     FunctionUndefined => Tested,
     InvalidNumberOfArguments => Tested,
     FunctionNotFoldable => Tested,
