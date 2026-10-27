@@ -106,6 +106,9 @@ pub trait TypeDeconstructible: Sized {
 
 #[cfg(test)]
 mod tests {
+    use simplicity::dag::{DagLike, InternalSharing};
+    use simplicity::types::{CompleteBound, Final};
+
     use super::*;
     use crate::str::Identifier;
 
@@ -204,5 +207,100 @@ mod tests {
             .expect("Pair is a declared variant");
         assert_eq!(2, index);
         assert_eq!("Pair", variant.name());
+    }
+
+    #[test]
+    fn lowering_shared_subtypes_preserves_sharing() {
+        let depth = 12;
+        let mut ty = ResolvedType::u8();
+        for _ in 0..depth {
+            ty = ResolvedType::product(ty.clone(), ty);
+        }
+
+        let lowered = StructuralType::from(&ty);
+        assert_eq!(
+            lowered.as_ref(),
+            Final::two_two_n(depth + 3).unwrap().as_ref()
+        );
+        // Count retained nodes rather than timing the conversion: the output
+        // should be a small DAG, not the expanded tree of 2^depth leaves.
+        assert!(
+            lowered
+                .as_ref()
+                .post_order_iter::<InternalSharing>()
+                .count()
+                <= 2 * depth + 8
+        );
+    }
+
+    #[test]
+    fn lowering_shares_nested_enum_payloads_without_changing_shape() {
+        let depth = 12;
+        let mut shared = ResolvedType::u8();
+        for _ in 0..depth {
+            shared = ResolvedType::product(shared.clone(), shared);
+        }
+        let variant = |name, payload: Vec<ResolvedType>| {
+            EnumVariantInfo::new(Identifier::from_str_unchecked(name), Arc::from(payload))
+        };
+        let inner = ResolvedType::enumeration(EnumInfo::new(
+            Arc::from("Inner"),
+            Arc::from([
+                variant("Unit", vec![]),
+                variant("Single", vec![shared.clone()]),
+                variant("Pair", vec![ResolvedType::u16(), shared]),
+                variant("Option", vec![ResolvedType::option(ResolvedType::u32())]),
+                variant(
+                    "List",
+                    vec![ResolvedType::list(
+                        ResolvedType::u8(),
+                        NonZeroPow2Usize::new_unchecked(4),
+                    )],
+                ),
+            ]),
+        ));
+        let outer = ResolvedType::enumeration(EnumInfo::new(
+            Arc::from("Outer"),
+            Arc::from([variant("Wrap", vec![inner.clone(), inner])]),
+        ));
+
+        let shared = StructuralType::from(Final::two_two_n(depth + 3).unwrap());
+        let inner = StructuralType::balanced_sum(vec![
+            StructuralType::unit(),
+            shared.clone(),
+            StructuralType::product(StructuralType::u16(), shared),
+            StructuralType::option(StructuralType::u32()),
+            StructuralType::list(StructuralType::u8(), NonZeroPow2Usize::new_unchecked(4)),
+        ]);
+        let lowered = StructuralType::from(&outer);
+        assert_eq!(lowered, StructuralType::product(inner.clone(), inner));
+        assert!(
+            lowered
+                .as_ref()
+                .post_order_iter::<InternalSharing>()
+                .count()
+                <= 2 * depth + 64
+        );
+    }
+
+    #[test]
+    fn lowering_deep_types_is_iterative() {
+        let depth = 8192;
+        let mut ty = ResolvedType::u8();
+        for _ in 0..depth {
+            ty = ResolvedType::option(ty);
+        }
+        let lowered = StructuralType::from(&ty);
+        assert_eq!(depth + 8, lowered.as_ref().bit_width());
+
+        // Dismantle both chains iteratively too, so this tests lowering rather
+        // than the recursive drop of their Arc-linked representation.
+        while let Some(inner) = ty.as_option() {
+            ty = inner.clone();
+        }
+        let mut lowered: Arc<Final> = lowered.into();
+        while let CompleteBound::Sum(_, inner) = lowered.bound() {
+            lowered = Arc::clone(inner);
+        }
     }
 }
