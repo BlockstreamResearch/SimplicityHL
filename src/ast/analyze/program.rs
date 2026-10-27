@@ -165,6 +165,11 @@ impl AbstractSyntaxTree for Item {
 
                 Ok(Self::EnumDeclaration)
             }
+            parse::Item::Const(decl) => Err(Error::Grammar {
+                msg: "`const` items are not supported yet".to_string(),
+            })
+            .with_span(decl)
+            .map_err(Failure::from),
             parse::Item::Module(module) => scope
                 .in_module(
                     module.name().clone(),

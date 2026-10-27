@@ -73,6 +73,8 @@ pub enum Item {
     Use(UseDecl),
     /// An enum declaration.
     EnumDeclaration(EnumDeclaration),
+    /// A constant declaration.
+    Const(ConstDecl),
     /// A module containing a collection of nested [`Item`].
     Module(Module),
     /// A placeholder used exclusively for error recovery during parsing.
@@ -92,6 +94,7 @@ impl Item {
             Self::Function(function) => Some(function.span()),
             Self::Use(use_decl) => Some(use_decl.span()),
             Self::EnumDeclaration(declaration) => Some(declaration.span()),
+            Self::Const(decl) => Some(decl.span()),
             Self::Module(module) => Some(module.span()),
             Self::Ignored => None,
         }
@@ -104,6 +107,7 @@ impl_require_feature!(Item {
         Function(function),
         Use(use_decl),
         EnumDeclaration(decl),
+        Const(decl),
         Module(module),
         Ignored,
 });
@@ -497,6 +501,48 @@ impl TypeAlias {
 impl_eq_hash!(TypeAlias; name, ty);
 
 impl_require_feature!(TypeAlias { recurse: ty; });
+
+/// A constant declaration.
+#[derive(Clone, Debug)]
+pub struct ConstDecl {
+    visibility: Visibility,
+    name: Identifier,
+    ty: AliasedType,
+    expr: Expression,
+    span: Span,
+}
+
+impl ConstDecl {
+    pub fn visibility(&self) -> &Visibility {
+        &self.visibility
+    }
+
+    pub fn name(&self) -> &Identifier {
+        &self.name
+    }
+
+    pub fn ty(&self) -> &AliasedType {
+        &self.ty
+    }
+
+    pub fn expr(&self) -> &Expression {
+        &self.expr
+    }
+
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl_eq_hash!(ConstDecl; visibility, name, ty, expr);
+
+impl_require_feature!(ConstDecl { recurse: ty, expr; });
+
+impl AsRef<Span> for ConstDecl {
+    fn as_ref(&self) -> &Span {
+        &self.span
+    }
+}
 
 /// A single variant in an enum declaration.
 ///
