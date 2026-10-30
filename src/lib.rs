@@ -40,7 +40,7 @@ use simplicity::{CommitNode, RedeemNode};
 
 pub extern crate either;
 pub extern crate simplicity;
-pub use simplicity::elements;
+pub use simplicity::{bitcoin, elements};
 
 use crate::debug::DebugSymbols;
 use crate::driver::{DependencyGraph, SourceMap, MAIN_MODULE};
@@ -361,23 +361,46 @@ impl CompiledProgram {
         witness_values: WitnessValues,
         env: Option<&ElementsEnv<Arc<elements::Transaction>>>,
     ) -> Result<SatisfiedProgram, String> {
+        let mut simplicity_redeem = self.populate_witnesses(witness_values)?;
+        if let Some(env) = env {
+            simplicity_redeem = simplicity_redeem.prune(env).map_err(|e| e.to_string())?;
+        }
+
+        Ok(SatisfiedProgram {
+            simplicity: simplicity_redeem,
+            debug_symbols: self.debug_symbols.clone(),
+        })
+    }
+
+    /// Satisfy the program with `witness_values` and prune it in the Bitcoin environment `env`.
+    pub fn satisfy_with_bitcoin_env<T: std::borrow::Borrow<bitcoin::Transaction>>(
+        &self,
+        witness_values: WitnessValues,
+        env: &simplicity::jet::BitcoinEnv<T>,
+    ) -> Result<SatisfiedProgram, String> {
+        let simplicity_redeem = self
+            .populate_witnesses(witness_values)?
+            .prune(env)
+            .map_err(|e| e.to_string())?;
+
+        Ok(SatisfiedProgram {
+            simplicity: simplicity_redeem,
+            debug_symbols: self.debug_symbols.clone(),
+        })
+    }
+
+    fn populate_witnesses(&self, witness_values: WitnessValues) -> Result<Arc<RedeemNode>, String> {
         // This function returns Result<_, String> and its neighbors do not carry a
         // DiagnosticManager, so we mint a local one to collect all witness mismatches,
         // then render it to a message on failure.
         let mut diagnostics = DiagnosticManager::new();
         witness_values.is_consistent(&self.witness_types, &mut diagnostics);
+
         if diagnostics.has_errors() {
             return Err(diagnostics.to_string());
         }
 
-        let mut simplicity_redeem = named::populate_witnesses(&self.simplicity, witness_values)?;
-        if let Some(env) = env {
-            simplicity_redeem = simplicity_redeem.prune(env).map_err(|e| e.to_string())?;
-        }
-        Ok(SatisfiedProgram {
-            simplicity: simplicity_redeem,
-            debug_symbols: self.debug_symbols.clone(),
-        })
+        named::populate_witnesses(&self.simplicity, witness_values)
     }
 
     pub fn generate_abi_meta(&self) -> Result<AbiMeta, String> {
@@ -560,7 +583,7 @@ pub trait ArbitraryOfType: Sized {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::ast::{CoreJetHinter, ElementsJetHinter, JetHinter};
+    use crate::ast::{BitcoinJetHinter, CoreJetHinter, ElementsJetHinter, JetHinter};
     use crate::parse::ParseFromStr;
     use crate::resolution::tests::{build_map, canon};
     use crate::resolution::DependencyMapBuilder;
@@ -1495,6 +1518,7 @@ fn main() {
         let hinters: Vec<Box<dyn JetHinter>> = vec![
             Box::new(CoreJetHinter::new()),
             Box::new(ElementsJetHinter::new()),
+            Box::new(BitcoinJetHinter::new()),
         ];
 
         for hinter in hinters {
@@ -1529,6 +1553,30 @@ fn main() {
             core_result.is_err(),
             "CoreJetHinter should fail to compile Elements-specific jets",
         );
+    }
+
+    #[test]
+    fn test_bitcoin_jet_hinter() {
+        // `current_value` exists only in Bitcoin, `current_amount` only in Elements.
+        let bitcoin = "fn main() {
+            let v: u64 = jet::current_value();
+            assert!(jet::eq_64(v, v));
+        }";
+        let elements = "fn main() {
+            let _: (Asset1, Amount1) = jet::current_amount();
+        }";
+
+        CompiledProgram::new(
+            bitcoin,
+            Arguments::default(),
+            false,
+            Box::new(BitcoinJetHinter::new()),
+        )
+        .expect("BitcoinJetHinter should compile Bitcoin-specific jets");
+
+        assert!(TemplateAst::new(bitcoin, Box::new(ElementsJetHinter::new())).is_err());
+        assert!(TemplateAst::new(elements, Box::new(ElementsJetHinter::new())).is_ok());
+        assert!(TemplateAst::new(elements, Box::new(BitcoinJetHinter::new())).is_err());
     }
 
     /// A jet set without the SHA-256 context jets, such as one written before
