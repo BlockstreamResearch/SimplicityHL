@@ -13,6 +13,13 @@ path = "tests/spend_utxo.rs"
 test = false
 bench = false
 
+# Requires BITCOIND_EXE (a Simplicity-enabled bitcoind); run explicitly with --test bitcoin_spend_utxo.
+[[test]]
+name = "bitcoin_spend_utxo"
+path = "tests/bitcoin_spend_utxo.rs"
+test = false
+bench = false
+
 [dev-dependencies]
 simplicityhl = { path = ".." }
 elementsd = { version = "0.11.0" }
