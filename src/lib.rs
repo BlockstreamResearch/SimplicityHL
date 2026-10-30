@@ -40,7 +40,7 @@ use simplicity::{CommitNode, RedeemNode};
 
 pub extern crate either;
 pub extern crate simplicity;
-pub use simplicity::elements;
+pub use simplicity::{bitcoin, elements};
 
 use crate::debug::DebugSymbols;
 use crate::driver::{DependencyGraph, SourceMap, MAIN_MODULE};
@@ -361,23 +361,46 @@ impl CompiledProgram {
         witness_values: WitnessValues,
         env: Option<&ElementsEnv<Arc<elements::Transaction>>>,
     ) -> Result<SatisfiedProgram, String> {
+        let mut simplicity_redeem = self.populate_witnesses(witness_values)?;
+        if let Some(env) = env {
+            simplicity_redeem = simplicity_redeem.prune(env).map_err(|e| e.to_string())?;
+        }
+
+        Ok(SatisfiedProgram {
+            simplicity: simplicity_redeem,
+            debug_symbols: self.debug_symbols.clone(),
+        })
+    }
+
+    /// Satisfy the program with `witness_values` and prune it in the Bitcoin environment `env`.
+    pub fn satisfy_with_bitcoin_env<T: std::borrow::Borrow<bitcoin::Transaction>>(
+        &self,
+        witness_values: WitnessValues,
+        env: &simplicity::jet::BitcoinEnv<T>,
+    ) -> Result<SatisfiedProgram, String> {
+        let simplicity_redeem = self
+            .populate_witnesses(witness_values)?
+            .prune(env)
+            .map_err(|e| e.to_string())?;
+
+        Ok(SatisfiedProgram {
+            simplicity: simplicity_redeem,
+            debug_symbols: self.debug_symbols.clone(),
+        })
+    }
+
+    fn populate_witnesses(&self, witness_values: WitnessValues) -> Result<Arc<RedeemNode>, String> {
         // This function returns Result<_, String> and its neighbors do not carry a
         // DiagnosticManager, so we mint a local one to collect all witness mismatches,
         // then render it to a message on failure.
         let mut diagnostics = DiagnosticManager::new();
         witness_values.is_consistent(&self.witness_types, &mut diagnostics);
+
         if diagnostics.has_errors() {
             return Err(diagnostics.to_string());
         }
 
-        let mut simplicity_redeem = named::populate_witnesses(&self.simplicity, witness_values)?;
-        if let Some(env) = env {
-            simplicity_redeem = simplicity_redeem.prune(env).map_err(|e| e.to_string())?;
-        }
-        Ok(SatisfiedProgram {
-            simplicity: simplicity_redeem,
-            debug_symbols: self.debug_symbols.clone(),
-        })
+        named::populate_witnesses(&self.simplicity, witness_values)
     }
 
     pub fn generate_abi_meta(&self) -> Result<AbiMeta, String> {
