@@ -560,7 +560,7 @@ pub trait ArbitraryOfType: Sized {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::ast::{CoreJetHinter, ElementsJetHinter, JetHinter};
+    use crate::ast::{BitcoinJetHinter, CoreJetHinter, ElementsJetHinter, JetHinter};
     use crate::parse::ParseFromStr;
     use crate::resolution::tests::{build_map, canon};
     use crate::resolution::DependencyMapBuilder;
@@ -1495,6 +1495,7 @@ fn main() {
         let hinters: Vec<Box<dyn JetHinter>> = vec![
             Box::new(CoreJetHinter::new()),
             Box::new(ElementsJetHinter::new()),
+            Box::new(BitcoinJetHinter::new()),
         ];
 
         for hinter in hinters {
@@ -1529,6 +1530,30 @@ fn main() {
             core_result.is_err(),
             "CoreJetHinter should fail to compile Elements-specific jets",
         );
+    }
+
+    #[test]
+    fn test_bitcoin_jet_hinter() {
+        // `current_value` exists only in Bitcoin, `current_amount` only in Elements.
+        let bitcoin = "fn main() {
+            let v: u64 = jet::current_value();
+            assert!(jet::eq_64(v, v));
+        }";
+        let elements = "fn main() {
+            let _: (Asset1, Amount1) = jet::current_amount();
+        }";
+
+        CompiledProgram::new(
+            bitcoin,
+            Arguments::default(),
+            false,
+            Box::new(BitcoinJetHinter::new()),
+        )
+        .expect("BitcoinJetHinter should compile Bitcoin-specific jets");
+
+        assert!(TemplateAst::new(bitcoin, Box::new(ElementsJetHinter::new())).is_err());
+        assert!(TemplateAst::new(elements, Box::new(ElementsJetHinter::new())).is_ok());
+        assert!(TemplateAst::new(elements, Box::new(BitcoinJetHinter::new())).is_err());
     }
 
     /// A jet set without the SHA-256 context jets, such as one written before

@@ -25,7 +25,7 @@ use crate::value::Value;
 use crate::witness::{Parameters, WitnessTypes};
 use crate::TemplateProgramWitness;
 
-pub use self::jet_hinter::{CoreJetHinter, ElementsJetHinter, JetHinter};
+pub use self::jet_hinter::{BitcoinJetHinter, CoreJetHinter, ElementsJetHinter, JetHinter};
 
 /// A program consists of the main function.
 ///
