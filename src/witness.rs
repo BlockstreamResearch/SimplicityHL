@@ -358,9 +358,7 @@ mod tests {
     use super::*;
     use crate::ast::ElementsJetHinter;
     use crate::parse::ParseFromStr;
-    #[cfg(feature = "serde")]
     use crate::str::Identifier;
-    #[cfg(feature = "serde")]
     use crate::types::{EnumInfo, EnumVariantInfo, TypeConstructible};
     use crate::value::ValueConstructible;
     use crate::{ast, parse, CompiledProgram, SatisfiedProgram};
@@ -438,7 +436,6 @@ fn main() {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn unresolved_values_resolve_against_declared_types() {
         let u32_ty = ResolvedType::parse_from_str("u32").unwrap();
         let sig_ty = ResolvedType::parse_from_str("Signature").unwrap();
@@ -494,7 +491,6 @@ fn main() {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn unresolved_values_parse_from_json() {
         // Bare strings and legacy value/type maps may be mixed in one file.
         let s = r#"{
@@ -523,7 +519,6 @@ fn main() {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn enum_witness_resolves_by_variant_name() {
         let variants: Arc<[EnumVariantInfo]> = ["Inherit", "ColdSpend", "HotSpend"]
             .into_iter()
@@ -564,7 +559,6 @@ fn main() {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn enum_witness_resolves_inside_composite_types() {
         let variants: Arc<[EnumVariantInfo]> = ["Hot", "Cold"]
             .into_iter()

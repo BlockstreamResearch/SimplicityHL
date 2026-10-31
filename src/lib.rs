@@ -20,7 +20,7 @@ pub mod source;
 mod template_program;
 pub mod unstable;
 
-#[cfg(all(test, feature = "serde"))]
+#[cfg(test)]
 mod error_cases;
 #[cfg(feature = "serde")]
 mod serde;
@@ -701,7 +701,6 @@ pub(crate) mod tests {
             }
         }
 
-        #[cfg(feature = "serde")]
         pub fn with_argument_file<P: AsRef<Path>>(
             self,
             arguments_file_path: P,
@@ -775,7 +774,6 @@ pub(crate) mod tests {
             .with_arguments(Arguments::default())
         }
 
-        #[cfg(feature = "serde")]
         pub fn with_witness_file<P: AsRef<Path>>(
             self,
             witness_file_path: P,
@@ -808,7 +806,6 @@ pub(crate) mod tests {
             }
         }
 
-        #[cfg(feature = "serde")]
         pub fn get_encoding(self) -> String {
             let program_bytes = self.program.commit().to_vec_without_witness();
             Base64Display::new(&program_bytes, &STANDARD).to_string()
@@ -870,7 +867,6 @@ pub(crate) mod tests {
             }
         }
 
-        #[cfg(feature = "serde")]
         pub fn get_encoding_with_witness(self) -> (String, String) {
             let (program_bytes, witness_bytes) = self.program.redeem().to_vec_with_witness();
             (
@@ -1142,7 +1138,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn sighash_non_interactive_fee_bump() {
         let mut t = TestCase::program_file("./examples/non_interactive_fee_bump.simf")
             .with_witness_file("./examples/non_interactive_fee_bump.wit");
@@ -1153,7 +1148,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn escrow_with_delay_timeout() {
         TestCase::program_file("./examples/escrow_with_delay.simf")
             .with_sequence(1000)
@@ -1170,7 +1164,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn hodl_vault() {
         TestCase::program_file("./examples/hodl_vault.simf")
             .with_lock_time(1000)
@@ -1180,7 +1173,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn htlc_complete() {
         TestCase::program_file("./examples/htlc.simf")
             .print_sighash_all()
@@ -1189,7 +1181,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn kitchen_sink() {
         TestCase::template_file_with_unstable(
             "./fixtures/kitchen_sink.simf",
@@ -1201,7 +1192,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn last_will_inherit() {
         TestCase::program_file_with_unstable("./examples/last_will.simf", UnstableFeatures::all())
             .with_sequence(25920)
@@ -1320,7 +1310,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn p2ms() {
         TestCase::program_file("./examples/p2ms.simf")
             .print_sighash_all()
@@ -1329,7 +1318,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn p2pk() {
         TestCase::template_file("./examples/p2pk.simf")
             .with_argument_file("./examples/p2pk.args")
@@ -1339,7 +1327,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn p2pkh() {
         TestCase::program_file("./examples/p2pkh.simf")
             .print_sighash_all()
@@ -1348,7 +1335,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn presigned_vault_complete() {
         TestCase::program_file("./examples/presigned_vault.simf")
             .with_sequence(1000)
@@ -1358,7 +1344,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn sighash_all_anyonecanpay() {
         TestCase::program_file("./examples/sighash_all_anyonecanpay.simf")
             .with_witness_file("./examples/sighash_all_anyonecanpay.wit")
@@ -1366,7 +1351,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn sighash_all_anyprevout() {
         TestCase::program_file("./examples/sighash_all_anyprevout.simf")
             .with_witness_file("./examples/sighash_all_anyprevout.wit")
@@ -1374,7 +1358,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn sighash_all_anyprevoutanyscript() {
         TestCase::program_file("./examples/sighash_all_anyprevoutanyscript.simf")
             .with_witness_file("./examples/sighash_all_anyprevoutanyscript.wit")
@@ -1382,7 +1365,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn sighash_none() {
         TestCase::program_file("./examples/sighash_none.simf")
             .with_witness_file("./examples/sighash_none.wit")
@@ -1390,7 +1372,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn sighash_single() {
         TestCase::program_file("./examples/sighash_single.simf")
             .with_witness_file("./examples/sighash_single.wit")
@@ -1398,7 +1379,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn transfer_with_timeout_transfer() {
         TestCase::program_file("./examples/transfer_with_timeout.simf")
             .print_sighash_all()
@@ -1571,7 +1551,6 @@ fn main() {
             .any(|d| matches!(d.error(), Error::RawHashJetsUnavailable)));
     }
 
-    #[cfg(feature = "serde")]
     mod regression {
         use super::TestCase;
 
@@ -1833,7 +1812,6 @@ fn main() {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
     fn enum_match_witness_file_variant_name() {
         // The witness file names the variant; resolution constructs the
         // enum value at the declared type.
