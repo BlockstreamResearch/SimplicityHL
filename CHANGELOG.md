@@ -1,9 +1,31 @@
 # Unreleased
 
+# 0.9.0 - 2026-10-26
+
+## Breaking Changes
+
+* Remove the `external-jets` cargo feature, which loaded custom jets from a shared library at runtime. [#440](https://github.com/BlockstreamResearch/SimplicityHL/pull/440)
+
 ## Added
 
 * Add the unstable `raw_hash::<T>(tuple)` builtin, which hashes a tuple of unsigned integers (`u8`, `u16`, `u32`, `u64`, `u128`, `u256`) with SHA-256, using one `sha_256_ctx_8_add_N` jet per element in source order. Enable with `-Z raw_hash`.  
 **Use with care:** the digest commits only to the bytes, not to the type, so `(u8, u8)` and `u16` hash identically. See `doc/unstable-features.md`. [#423](https://github.com/BlockstreamResearch/SimplicityHL/pull/423)
+* Add `simc --target <elements|core>` to select the jet set used for compilation. The default is `elements`.
+  The compiler output, including JSON, now reports the target. [#438](https://github.com/BlockstreamResearch/SimplicityHL/pull/438)
+* Add `ResolvedType::builtin_alias()`, which returns the builtin alias a type was resolved from.
+  Previously `Pubkey`, `Fe` and `Scalar` all became `u256` after resolution, so tools reading `AbiMeta` could not tell a public key from an arbitrary 256-bit number.
+  Type checking is unchanged: `Pubkey` and `u256` stay interchangeable. [#443](https://github.com/BlockstreamResearch/SimplicityHL/pull/443)
+* Add the Bitcoin jet set as `jet::bitcoin`, in preparation for Bitcoin support. It cannot be selected with `simc --target` yet. [#437](https://github.com/BlockstreamResearch/SimplicityHL/pull/437)
+
+## Changed
+
+* Report more errors in a single run. The compiler no longer stops at the first failing statement, function body or undefined type. Like rustc, it does not report follow-up errors caused by an undefined type. [#424](https://github.com/BlockstreamResearch/SimplicityHL/pull/424), [#430](https://github.com/BlockstreamResearch/SimplicityHL/pull/430), [#448](https://github.com/BlockstreamResearch/SimplicityHL/pull/448)
+* Compile programs with many `let` bindings much faster: compile time now grows linearly with the number of bindings instead of quadratically. The compiled program is unchanged. [#439](https://github.com/BlockstreamResearch/SimplicityHL/pull/439)
+
+## Fixed
+
+* Reject functions that declare the same parameter more than once, such as `fn f(a: u32, a: u32)`. [#435](https://github.com/BlockstreamResearch/SimplicityHL/pull/435)
+* Correct the documented input order of the `build_tapbranch` jet. [#427](https://github.com/BlockstreamResearch/SimplicityHL/pull/427)
 
 # 0.8.0 - 2026-09-23
 
