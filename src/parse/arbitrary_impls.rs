@@ -9,8 +9,8 @@ use crate::types::AliasedType;
 use crate::TemplateProgramWitness;
 
 use super::{
-    Assignment, Call, CallName, EnumDeclaration, EnumVariant, Expression, ExpressionInner,
-    Function, FunctionParam, Item, Match, MatchArm, MatchPattern, Module, Program,
+    Assignment, Call, CallName, ConstDecl, EnumDeclaration, EnumVariant, Expression,
+    ExpressionInner, Function, FunctionParam, Item, Match, MatchArm, MatchPattern, Module, Program,
     SingleExpression, SingleExpressionInner, Statement, TypeAlias, UseDecl, UseItems, Visibility,
 };
 
@@ -129,13 +129,28 @@ impl<'a> arbitrary::Arbitrary<'a> for Program {
 
 impl<'a> arbitrary::Arbitrary<'a> for Item {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        match u.int_in_range(0..=3)? {
+        match u.int_in_range(0..=4)? {
             0 => Ok(Item::TypeAlias(TypeAlias::arbitrary(u)?)),
             1 => Ok(Item::Function(Function::arbitrary(u)?)),
             2 => Ok(Item::Use(UseDecl::arbitrary(u)?)),
             3 => Ok(Item::Module(Module::arbitrary(u)?)),
+            4 => Ok(Item::Const(ConstDecl::arbitrary(u)?)),
             _ => unreachable!(),
         }
+    }
+}
+
+impl<'a> arbitrary::Arbitrary<'a> for ConstDecl {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        use crate::ArbitraryRec;
+
+        Ok(Self {
+            visibility: Visibility::arbitrary(u)?,
+            name: Identifier::arbitrary(u)?,
+            ty: AliasedType::arbitrary(u)?,
+            expr: Expression::arbitrary_rec(u, 3)?,
+            span: Span::DUMMY,
+        })
     }
 }
 

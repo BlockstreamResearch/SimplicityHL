@@ -1114,6 +1114,13 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn const_items() {
+        TestCase::program_file_with_unstable("./examples/const.simf", UnstableFeatures::all())
+            .with_witness_values(WitnessValues::default())
+            .assert_run_success();
+    }
+
+    #[test]
     fn ctv() {
         TestCase::program_file("./examples/ctv.simf")
             .with_witness_values(WitnessValues::default())
@@ -1573,6 +1580,8 @@ fn main() {
 
     #[cfg(feature = "serde")]
     mod regression {
+        use crate::UnstableFeatures;
+
         use super::TestCase;
 
         #[derive(serde::Deserialize)]
@@ -1582,15 +1591,15 @@ fn main() {
         }
 
         fn regression_test(name: &str) {
-            regression_test_with_features(name, crate::UnstableFeatures::none());
+            regression_test_with_features(name, UnstableFeatures::none());
         }
 
-        fn regression_test_with_features(name: &str, features: crate::UnstableFeatures) {
+        fn regression_test_with_features(name: &str, features: UnstableFeatures) {
             regression_test_in("./examples", name, features);
         }
 
         /// Compare the encoding of `<dir>/<name>.simf` with `test-data/<name>.json`.
-        fn regression_test_in(dir: &str, name: &str, features: crate::UnstableFeatures) {
+        fn regression_test_in(dir: &str, name: &str, features: UnstableFeatures) {
             let program = serde_json::from_str::<Program>(
                 std::fs::read_to_string(format!("./test-data/{}.json", name))
                     .unwrap()
@@ -1633,11 +1642,7 @@ fn main() {
 
         #[test]
         fn array_fold_2n_regression() {
-            regression_test_in(
-                "./fixtures",
-                "array_fold_2n",
-                crate::UnstableFeatures::none(),
-            );
+            regression_test_in("./fixtures", "array_fold_2n", UnstableFeatures::none());
         }
 
         #[test]
@@ -1648,6 +1653,11 @@ fn main() {
         #[test]
         fn cat_regression() {
             regression_test("cat");
+        }
+
+        #[test]
+        fn const_regression() {
+            regression_test_with_features("const", UnstableFeatures::all());
         }
 
         #[test]
@@ -1677,12 +1687,12 @@ fn main() {
 
         #[test]
         fn kitchen_sink_regression() {
-            regression_test_in("./fixtures", "kitchen_sink", crate::UnstableFeatures::all());
+            regression_test_in("./fixtures", "kitchen_sink", UnstableFeatures::all());
         }
 
         #[test]
         fn last_will_regression() {
-            regression_test_with_features("last_will", crate::UnstableFeatures::all());
+            regression_test_with_features("last_will", UnstableFeatures::all());
         }
 
         #[test]
@@ -1707,7 +1717,7 @@ fn main() {
 
         #[test]
         fn raw_hash_regression() {
-            regression_test_with_features("raw_hash", crate::UnstableFeatures::all());
+            regression_test_with_features("raw_hash", UnstableFeatures::all());
         }
 
         #[test]

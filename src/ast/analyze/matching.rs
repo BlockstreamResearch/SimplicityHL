@@ -215,14 +215,17 @@ impl AbstractSyntaxTree for EnumMatch {
                 |(arm, variant), scope| {
                     let arm_span = *arm.span();
                     let pattern = analyze_enum_arm_bindings(arm, variant, scope, arm_span)?;
+
                     scope.in_match_arm(|scope| {
                         let payload_ty = variant.payload_type();
                         let typed_variables = pattern.is_of_type(payload_ty).with_span(arm_span)?;
                         for (identifier, variable_ty) in typed_variables {
-                            scope.insert_variable(identifier, variable_ty);
+                            scope.bind_variable(identifier, variable_ty, arm_span);
                         }
+
                         let body =
                             Expression::analyze(arm.expression(), ty, scope).map(Arc::new)?;
+
                         Ok(EnumMatchArm {
                             pattern,
                             body,
@@ -306,7 +309,7 @@ impl AbstractSyntaxTree for Match {
                     let typed_variables = pattern.is_of_type(&arm_ty).with_span(arm)?;
 
                     for (identifier, ty) in typed_variables {
-                        scope.insert_variable(identifier, ty);
+                        scope.bind_variable(identifier, ty, arm);
                     }
                 }
                 Expression::analyze(arm.expression(), ty, scope).map(Arc::new)

@@ -216,6 +216,12 @@ pub struct Identifier(Arc<str>);
 wrapped_string!(Identifier, "variable identifier");
 impl_arbitrary_lowercase_alpha!(Identifier);
 
+impl From<SymbolName> for Identifier {
+    fn from(sym: SymbolName) -> Self {
+        Self(sym.0)
+    }
+}
+
 /// The name of a jet.
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct JetName(Arc<str>);

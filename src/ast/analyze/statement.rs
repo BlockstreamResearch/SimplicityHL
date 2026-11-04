@@ -39,14 +39,14 @@ impl AbstractSyntaxTree for Assignment {
         let pattern_matches = match from.pattern().is_of_type(&ty_expr) {
             Ok(typed_variables) => {
                 for (identifier, ty) in typed_variables {
-                    scope.insert_variable(identifier, ty);
+                    scope.bind_variable(identifier, ty, from);
                 }
                 true
             }
             Err(error) => {
                 scope.report(error.with_span(*from.as_ref()));
                 for identifier in from.pattern().identifiers() {
-                    scope.insert_variable(identifier.clone(), ResolvedType::never());
+                    scope.bind_variable(identifier.clone(), ResolvedType::never(), from);
                 }
                 false
             }

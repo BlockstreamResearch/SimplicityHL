@@ -464,6 +464,7 @@ impl<'a> ImportContext<'a> {
             parse::Item::TypeAlias(_)
             | parse::Item::Function(_)
             | parse::Item::EnumDeclaration(_)
+            | parse::Item::Const(_)
             | parse::Item::Ignored => {}
         }
     }

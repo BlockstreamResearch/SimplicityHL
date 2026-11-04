@@ -1,0 +1,4 @@
+// error: ConstantRedefined
+const X: u8 = 1;
+const X: u8 = 2;
+fn main() {}
