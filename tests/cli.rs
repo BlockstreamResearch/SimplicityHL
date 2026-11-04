@@ -251,8 +251,7 @@ fn cli_reserved_crate_mapping_fails() {
 
 /// The output carries the version of the compiler that produced it, so the exact
 /// compiler can be identified from a shared artifact (different versions can
-/// produce different CMRs from the same source). JSON output requires `serde`.
-#[cfg(feature = "serde")]
+/// produce different CMRs from the same source).
 #[test]
 fn cli_output_includes_compiler_version() {
     let file = Path::new(env!("CARGO_TARGET_TMPDIR")).join("output_version.simf");
