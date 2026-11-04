@@ -258,8 +258,12 @@ impl Scope {
         self.modules.path()
     }
 
-    pub(super) fn resolve_use(&mut self, use_decl: &UseDecl) -> Result<(), Error> {
-        self.modules.resolve_use(use_decl)
+    pub(super) fn resolve_use(&mut self, use_decl: &UseDecl) {
+        let span = Span::from(use_decl);
+
+        for error in self.modules.resolve_use(use_decl) {
+            self.report(error.with_span(span));
+        }
     }
 
     pub(super) fn get_alias(&self, name: &AliasName) -> Result<ResolvedType, Error> {
@@ -288,8 +292,16 @@ impl Scope {
         self.modules.insert_function(name, visibility, function)
     }
 
-    pub(super) fn get_function(&self, name: &FunctionName) -> Result<CustomFunction, Error> {
-        self.modules.get_function(name)
+    pub(super) fn get_function(
+        &self,
+        name: &FunctionName,
+        span: impl Into<Span>,
+    ) -> Result<CustomFunction, Failure> {
+        match self.modules.get_function(name) {
+            Ok(function) => Ok(function),
+            Err(_) if self.modules.is_poisoned(name.as_str()) => Err(Failure::Reported),
+            Err(error) => Err(error.with_span(span.into()).into()),
+        }
     }
 
     /// Insert a variable into the current block.
