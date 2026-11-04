@@ -1,8 +1,13 @@
 //! Compile the parsed ast into a simplicity program
 
 mod builtins;
+#[cfg(test)]
+mod function_tests;
 mod scope_bindings;
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use either::Either;
@@ -13,8 +18,8 @@ use self::builtins::{array_fold, raw_hash};
 use self::scope_bindings::ScopeBindings;
 use crate::array::{BTreeSlice, Partition};
 use crate::ast::{
-    Call, CallName, EnumMatch, Expression, ExpressionInner, JetHinter, Match, Program,
-    SingleExpression, SingleExpressionInner, Statement,
+    Call, CallName, CustomFunction, EnumMatch, Expression, ExpressionInner, JetHinter, Match,
+    Program, SingleExpression, SingleExpressionInner, Statement,
 };
 use crate::debug::CallTracker;
 use crate::error::{Diagnostic, Error, Span, WithSpan};
@@ -30,6 +35,7 @@ use crate::witness::{Arguments, WitnessNameToValueMap as _};
 pub(crate) use self::builtins::{RawHashJets, RawHashJetsError};
 
 type ProgNode<'brand> = Arc<named::ConstructNode<'brand>>;
+type FunctionBodies<'brand> = HashMap<*const Expression, PairBuilder<ProgNode<'brand>>>;
 
 /// Each SimplicityHL expression expects an _input value_.
 /// A SimplicityHL expression is translated into a Simplicity expression
@@ -46,6 +52,8 @@ struct Scope<'brand> {
     /// The live bindings: their patterns, name index and scope boundaries.
     bindings: ScopeBindings,
     ctx: simplicity::types::Context<'brand>,
+    /// Helper bodies shared by child scopes in this compilation's inference context.
+    function_bodies: Rc<RefCell<FunctionBodies<'brand>>>,
     /// Tracker of function calls.
     call_tracker: Arc<CallTracker>,
     /// Values for parameters inside the SimplicityHL program.
@@ -73,6 +81,7 @@ impl<'brand> Scope<'brand> {
         Self {
             bindings: ScopeBindings::from_root(BasePattern::Ignore),
             ctx,
+            function_bodies: Rc::default(),
             call_tracker,
             arguments,
             include_debug_symbols,
@@ -85,11 +94,31 @@ impl<'brand> Scope<'brand> {
         Self {
             bindings: ScopeBindings::from_root(BasePattern::from(&input)),
             ctx: self.ctx.shallow_clone(),
+            function_bodies: Rc::clone(&self.function_bodies),
             call_tracker: Arc::clone(&self.call_tracker),
             arguments: self.arguments.clone(),
             include_debug_symbols: self.include_debug_symbols,
             jet_hinter: self.jet_hinter.clone_box(),
         }
+    }
+
+    fn compile_function(
+        &self,
+        function: &CustomFunction,
+    ) -> Result<PairBuilder<ProgNode<'brand>>, Diagnostic> {
+        // Cloned functions share their Arc-backed body, which the AST keeps alive.
+        // Key by identity so equal bodies with different debug spans stay separate.
+        let key = std::ptr::from_ref(function.body());
+        if let Some(body) = self.function_bodies.borrow().get(&key) {
+            return Ok(body.clone());
+        }
+
+        // Functions have fixed signatures and share this inference context.
+        // Release the cache borrow before compiling calls to other functions.
+        let mut function_scope = self.child(function.params_pattern());
+        let body = function.body().compile(&mut function_scope)?;
+        self.function_bodies.borrow_mut().insert(key, body.clone());
+        Ok(body)
     }
 
     /// Push a new scope onto the stack.
@@ -470,19 +499,16 @@ impl Call {
                 Ok(args)
             }
             CallName::Custom(function) => {
-                let mut function_scope = scope.child(function.params_pattern());
-                let body = function.body().compile(&mut function_scope)?;
+                let body = scope.compile_function(function)?;
                 args.comp(&body).with_span(self)
             }
             CallName::Fold(function, bound) => {
-                let mut function_scope = scope.child(function.params_pattern());
-                let body = function.body().compile(&mut function_scope)?;
+                let body = scope.compile_function(function)?;
                 let fold_body = list_fold(*bound, body.as_ref()).with_span(self)?;
                 args.comp(&fold_body).with_span(self)
             }
             CallName::ArrayFold(function, size) => {
-                let mut function_scope = scope.child(function.params_pattern());
-                let body = function.body().compile(&mut function_scope)?;
+                let body = scope.compile_function(function)?;
                 let fold_body = array_fold(*size, body.as_ref()).with_span(self)?;
                 args.comp(&fold_body).with_span(self)
             }
@@ -491,8 +517,7 @@ impl Call {
                 scope.with_debug_symbol(args, &body, self)
             }
             CallName::ForWhile(function, bit_width) => {
-                let mut function_scope = scope.child(function.params_pattern());
-                let body = function.body().compile(&mut function_scope)?;
+                let body = scope.compile_function(function)?;
                 let fold_body = for_while(*bit_width, body).with_span(self)?;
                 args.comp(&fold_body).with_span(self)
             }
