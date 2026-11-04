@@ -54,6 +54,12 @@ getrandom = { version = "0.2", features = ["js"] }
 [workspace]
 members = ["codegen", "fuzz", "bitcoind-tests"]
 
+# Bitcoin jet CMRs, costs and execution are not released yet. Replace with a
+# version bump once rust-simplicity ships them (#386).
+[patch.crates-io]
+simplicity-lang = { git = "https://github.com/delta1/rust-simplicity", rev = "49e08916b8e3d3896a6cb7fd2c82667185bc190e" }
+simplicity-sys = { git = "https://github.com/delta1/rust-simplicity", rev = "49e08916b8e3d3896a6cb7fd2c82667185bc190e" }
+
 [workspace.metadata.rbmt.toolchains]
 nightly = "nightly-2025-08-23"
 stable = "1.95.0"
