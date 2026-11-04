@@ -37,6 +37,9 @@ fn write_jet<W: io::Write>(jet: Elements, w: &mut W) -> io::Result<()> {
     write!(w, "pub fn {jet}(")?;
     let parameters = simplicityhl::jet::source_type(&jet);
     for (i, ty) in parameters.iter().enumerate() {
+        // Jets take a handful of parameters at most, so the index stays well
+        // inside `u8` (and inside the a-z range this names them from).
+        #[allow(clippy::cast_possible_truncation)]
         let identifier = (b'a' + i as u8) as char;
         if i == parameters.len() - 1 {
             write!(w, "{identifier}: {ty}")?;
