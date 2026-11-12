@@ -45,38 +45,38 @@ Feel free to add any feature to this list, no matter how futuristic or low-prior
 is to define the DAG of dependencies so that we can understand what is blocking the high-priority
 items.
 
-| ID     | Name                                  | Description                                                         | Dependencies  | Status       | PRs |
-|--------|---------------------------------------|---------------------------------------------------------------------|---------------|--------------|-----|
-| MOD    | [Module system](MOD.md)               | Rust-2018-style mod1les, external crates, content-based identity    | —             | -            |  -  |
-| MOD-1  | Internal modules                      | `mod x;` loads `x.simf`; `use` only brings names into scope         | —             | Needs design |  -  |
-| MOD-2  | External crates                       | Dependency crates identified by Merkle-style `CrateId` hash         | MOD-1,  IR-2  | Needs design |  -  |
-| MOD-3  | External crates 2                     | Some notion of crate "compatibility", semver rules, etc             | MOD-2         | Needs design |  -  |
-| TYPE   | [Type system](TYPE.md)                | Stronger notions of type identity and inference                     | —             | -            |  -  |
-| TYPE-1 | Better type theory                    | `more-tt`-based type theory; type inference                         | -             | Needs design |  —  |
-| TYPE-2 | Nominal typing                        | Named types distinct from structurally equal types                  | MOD-2, TYPE-1 | Needs design |  —  |
-| TYPE-3 | Integer types                         | `u1`, `u2`, etc; integer promotion; signed integers                 | TYPE-1        | Needs design |  —  |
-| TYPE-4 | Object hashes                         | Standard hashes of SimplictiyHL objects that cannot be collided     | TYPE-2        | Needs design |  —  |
-| IR     | [Intermediate representations](IR.md) | Compiler output, object format, etc                                 | —             | -            |  -  |
-| IR-1   | Parameters and Witnesses              | Coherent design for parameters, witnesses, and constants            | MOD-1         | Needs design |  -  |
-| IR-2   | Canonical CMR                         | Simplicity expression that computes the CMR for other expressions   | IR-1          | Needs design |  -  |
-| IR-3   | "Object file" format                  | Format for "templated Simplicity", metadata, "compiled crates"      | IR-2          | Needs design |  -  |
-| DIAG   | [Compiler diganostics](DIAG.md)       | Better error messages, continuing after initial errors, etc         | -             | -            |  -  |
-| OPT    | [Optimizations](OPT.md)               | Compiler optimizations                                              | —             | -            |  -  |
-| OPT-1  | "Post-hoc optimizer"                  | Optimizer that takes an object file, improves code, outputs proofs  | IR-3          | -            |  -  |
-| OPT-2  | Static analyzer                       | Static analysis of Simplicity code                                  | IR-3          | -            |  -  |
-| TX     | [Transaction Introspection](TX.md)    | Covenants, transaction introspection, multi-tx state management     | —             | -            |  -  | 
-| TX-1   | Covenant Convention                   | "Covenant convention" as code convention, then as HL built-in       | —             | Needs design |  —  |
-| TX-2   | Contract self-reference               | Ability to reference own code, maybe with parameters changed        | IR-2, TYPE-4  | Needs design |  —  |
-| SYN    | [Syntax / language features](SYN.md)  | Language syntax and features                                        | —             | -            |  —  |
-| SYN-1  | Infix operators (easy)                | `==`, `!=`, bitwise operators, inequalities, etc                    | —             | Needs design |  —  |
-| SYN-2  | Infix operators (integers)            | addition, subtraction, etc; needs integer promotion rules           | TYPE-3        | Needs design |  —  |
-| SYN-3  | `if` expressions                      | syntax sugar for matching on booleans                               | —             | Needs design |  —  |
-| SYN-4  | `return` expressions                  | syntax sugar for "early returns"                                    | —             | Needs design |  —  |
-| SYN-5  | Better loops                          | More conventional-looking, still statically bounded loops           | -             | Needs design |  —  |
-| SYN-6  | Unbounded loops                       | Recursion, unbounded loops, general `disconnect` support?           | -             | Needs design |  —  |
-| SYN-7  | Universal sighash                     | Better sighashing, language support for "universal sighash"         | -             | Needs design |  —  |
-| CFG    | [Conditional compilation](CFG.md)     | Compilation based on target blockchain etc                          | —             | -            |  —  |
-| CFG-1  | Compilation for separate targets      | Compilation where the end user choses their blockchain target       | —             | Done(?)      |  —  |
-| CFG-2  | Bitcoin support                       | Adding a "Bitcoin" blockchain target                                | CFG-1         | Needs design |  —  |
-| CFG-3  | `cfg` flags                           | Code which is condintionally compiled per target                    | CFG-1         | Needs design |  —  |
-| TEST   | [Unit testing](TEST.md)               | In-language testing support                                         | —             | -            |  —  |
+| ID     | Name                                  | Description                                                        | Dependencies  | Status       | PRs |
+|--------|---------------------------------------|--------------------------------------------------------------------|---------------|--------------|-----|
+| MOD    | [Module system](MOD.md)               | Rust-2018-style mod1les, external crates, content-based identity   | —             | -            | -   |
+| MOD-1  | Internal modules                      | `mod x;` loads `x.simf`; `use` only brings names into scope        | —             | Proposed     | -   |
+| MOD-2  | External crates                       | Dependency crates identified by Merkle-style `CrateId` hash        | MOD-1,  IR-2  | Needs design | -   |
+| MOD-3  | External crates 2                     | Some notion of crate "compatibility", semver rules, etc            | MOD-2         | Needs design | -   |
+| TYPE   | [Type system](TYPE.md)                | Stronger notions of type identity and inference                    | —             | -            | -   |
+| TYPE-1 | Better type theory                    | `more-tt`-based type theory; type inference                        | -             | Needs design | —   |
+| TYPE-2 | Nominal typing                        | Named types distinct from structurally equal types                 | MOD-2, TYPE-1 | Needs design | —   |
+| TYPE-3 | Integer types                         | `u1`, `u2`, etc; integer promotion; signed integers                | TYPE-1        | Needs design | —   |
+| TYPE-4 | Object hashes                         | Standard hashes of SimplictiyHL objects that cannot be collided    | TYPE-2        | Needs design | —   |
+| IR     | [Intermediate representations](IR.md) | Compiler output, object format, etc                                | —             | -            | -   |
+| IR-1   | Parameters and Witnesses              | Coherent design for parameters, witnesses, and constants           | MOD-1         | Needs design | -   |
+| IR-2   | Canonical CMR                         | Simplicity expression that computes the CMR for other expressions  | IR-1          | Needs design | -   |
+| IR-3   | "Object file" format                  | Format for "templated Simplicity", metadata, "compiled crates"     | IR-2          | Needs design | -   |
+| DIAG   | [Compiler diganostics](DIAG.md)       | Better error messages, continuing after initial errors, etc        | -             | -            | -   |
+| OPT    | [Optimizations](OPT.md)               | Compiler optimizations                                             | —             | -            | -   |
+| OPT-1  | "Post-hoc optimizer"                  | Optimizer that takes an object file, improves code, outputs proofs | IR-3          | -            | -   |
+| OPT-2  | Static analyzer                       | Static analysis of Simplicity code                                 | IR-3          | -            | -   |
+| TX     | [Transaction Introspection](TX.md)    | Covenants, transaction introspection, multi-tx state management    | —             | -            | -   | 
+| TX-1   | Covenant Convention                   | "Covenant convention" as code convention, then as HL built-in      | —             | Needs design | —   |
+| TX-2   | Contract self-reference               | Ability to reference own code, maybe with parameters changed       | IR-2, TYPE-4  | Needs design | —   |
+| SYN    | [Syntax / language features](SYN.md)  | Language syntax and features                                       | —             | -            | —   |
+| SYN-1  | Infix operators (easy)                | `==`, `!=`, bitwise operators, inequalities, etc                   | —             | Needs design | —   |
+| SYN-2  | Infix operators (integers)            | addition, subtraction, etc; needs integer promotion rules          | TYPE-3        | Needs design | —   |
+| SYN-3  | `if` expressions                      | syntax sugar for matching on booleans                              | —             | Needs design | —   |
+| SYN-4  | `return` expressions                  | syntax sugar for "early returns"                                   | —             | Needs design | —   |
+| SYN-5  | Better loops                          | More conventional-looking, still statically bounded loops          | -             | Needs design | —   |
+| SYN-6  | Unbounded loops                       | Recursion, unbounded loops, general `disconnect` support?          | -             | Needs design | —   |
+| SYN-7  | Universal sighash                     | Better sighashing, language support for "universal sighash"        | -             | Needs design | —   |
+| CFG    | [Conditional compilation](CFG.md)     | Compilation based on target blockchain etc                         | —             | -            | —   |
+| CFG-1  | Compilation for separate targets      | Compilation where the end user choses their blockchain target      | —             | Done(?)      | —   |
+| CFG-2  | Bitcoin support                       | Adding a "Bitcoin" blockchain target                               | CFG-1         | Needs design | —   |
+| CFG-3  | `cfg` flags                           | Code which is condintionally compiled per target                   | CFG-1         | Needs design | —   |
+| TEST   | [Unit testing](TEST.md)               | In-language testing support                                        | —             | -            | —   |
