@@ -68,7 +68,7 @@ items.
 | TX-1   | Covenant Convention                   | "Covenant convention" as code convention, then as HL built-in       | —             | Needs design |  —  |
 | TX-2   | Contract self-reference               | Ability to reference own code, maybe with parameters changed        | IR-2, TYPE-4  | Needs design |  —  |
 | SYN    | [Syntax / language features](SYN.md)  | Language syntax and features                                        | —             | -            |  —  |
-| SYN-1  | Infix operators (easy)                | `==`, `!=`, bitwise operators, inequalities, etc                    | —             | Needs design |  —  |
+| SYN-1  | Infix operators (easy)                | `==`, `!=`, bitwise operators, inequalities, etc                    | —             | In progress  |  —  |
 | SYN-2  | Infix operators (integers)            | addition, subtraction, etc; needs integer promotion rules           | TYPE-3        | Needs design |  —  |
 | SYN-3  | `if` expressions                      | syntax sugar for matching on booleans                               | —             | Needs design |  —  |
 | SYN-4  | `return` expressions                  | syntax sugar for "early returns"                                    | —             | Needs design |  —  |
