@@ -36,7 +36,7 @@ Our highest priorities right now (Q4 2026) are:
 
 * the module system `MOD-1` and `MOD-2` (blocking nominal typing, which is blocking "working enums")
 * Bitcoin support `CFG-2`
-* Compiler diagnostics `DIAG` (needs splitting into sub-features with dependencies)
+* Compiler diagnostics `DIAG`
 * The object file format `IR-3`
 
 # All Features
@@ -61,10 +61,11 @@ items.
 | IR-2   | Canonical CMR                         | Simplicity expression that computes the CMR for other expressions  | IR-1          | Needs design | -   |
 | IR-3   | "Object file" format                  | Format for "templated Simplicity", metadata, "compiled crates"     | IR-2          | Needs design | -   |
 | DIAG   | [Compiler diganostics](DIAG.md)       | Better error messages, continuing after initial errors, etc        | -             | -            | -   |
+| DIAG-1 | Structured error types                | One error type per phase; no `String` errors in the public API     | -             | Needs design | -   |
 | OPT    | [Optimizations](OPT.md)               | Compiler optimizations                                             | —             | -            | -   |
 | OPT-1  | "Post-hoc optimizer"                  | Optimizer that takes an object file, improves code, outputs proofs | IR-3          | -            | -   |
 | OPT-2  | Static analyzer                       | Static analysis of Simplicity code                                 | IR-3          | -            | -   |
-| TX     | [Transaction Introspection](TX.md)    | Covenants, transaction introspection, multi-tx state management    | —             | -            | -   | 
+| TX     | [Transaction Introspection](TX.md)    | Covenants, transaction introspection, multi-tx state management    | —             | -            | -   |
 | TX-1   | Covenant Convention                   | "Covenant convention" as code convention, then as HL built-in      | —             | Needs design | —   |
 | TX-2   | Contract self-reference               | Ability to reference own code, maybe with parameters changed       | IR-2, TYPE-4  | Needs design | —   |
 | SYN    | [Syntax / language features](SYN.md)  | Language syntax and features                                       | —             | -            | —   |
