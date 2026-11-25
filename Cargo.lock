@@ -858,6 +858,7 @@ dependencies = [
  "serde",
  "serde_json",
  "simplicity-lang",
+ "simplicityhl",
 ]
 
 [[package]]

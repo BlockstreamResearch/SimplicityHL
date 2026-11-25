@@ -51,6 +51,10 @@ ariadne = "=0.5.0"
 [target.wasm32-unknown-unknown.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
 
+[dev-dependencies]
+# Tests always build with `serde`, so test code needs no `cfg(feature = "serde")`.
+simplicityhl = { path = ".", default-features = false, features = ["serde"] }
+
 [workspace]
 members = ["codegen", "fuzz", "bitcoind-tests"]
 
