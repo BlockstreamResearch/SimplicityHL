@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Simplicity Object Format (SOF) object, JSON version 0",
+  "description": "A compiled Simplicity contract whose parameters are not filled in yet: a body f : P -> 1 plus the schemas of its parameters and witnesses. Draft; see IR.md. Some rules can't be expressed in JSON Schema and are listed under $comment.",
+  "$comment": "Also required, but not checkable here: body_cmr is the CMR of the decoded body; every type is in canonical text form (no non-canonical spelling such as 2^128*2^128); parameter names are unique; every key in signatures names a witness, and every key.param names a parameter; source_language is present if any source_type is; witnesses list one entry per witness node of the body, in non-sharing post order; sources lists the entry file first, then the files it imports sorted by path.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sof_json", "jet_set", "body", "body_cmr", "params", "witnesses"],
+  "properties": {
+    "sof_json": {
+      "description": "Version of this JSON form.",
+      "const": 0
+    },
+    "jet_set": {
+      "description": "Jet set of the body, identified by the hash of its canonical jet table.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "hash"],
+      "properties": {
+        "name": {
+          "description": "For display only.",
+          "enum": ["bitcoin", "elements"]
+        },
+        "hash": { "$ref": "#/$defs/hash32" }
+      }
+    },
+    "body": {
+      "description": "The body f : P -> 1 in Simplicity's bit encoding without witness data, in base64 (RFC 4648 standard alphabet, padded), as Simplicity tools print programs.",
+      "type": "string",
+      "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+      "minLength": 4
+    },
+    "body_cmr": {
+      "description": "CMR of the body.",
+      "$ref": "#/$defs/hash32"
+    },
+    "source_language": {
+      "description": "The language the source_type fields are written in, such as simplicityhl. Required if any parameter or witness has a source_type.",
+      "type": "string",
+      "minLength": 1
+    },
+    "params": {
+      "description": "The parameters. Their order defines P, the right-nested product p0 * (p1 * (... * p(n-1))), or 1 when there are none.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/param" }
+    },
+    "witnesses": {
+      "description": "One entry per witness node of the body, in the order a linker fills them (non-sharing post order). A witness used twice in the source can appear twice.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/witness" }
+    },
+    "signatures": {
+      "description": "Witnesses that a PSBT/PSET signer fills, keyed by witness name. Each named witness has type 2^512 (Signature).",
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/signature" },
+      "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+    },
+    "provenance": {
+      "description": "Where the object comes from, so that a third party can rebuild it and compare. Linkers ignore it.",
+      "$ref": "#/$defs/provenance"
+    }
+  },
+  "$defs": {
+    "hash32": {
+      "description": "32 bytes as lowercase hex.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "type_text": {
+      "description": "A Simplicity type in canonical text form: 1, 2, 2^N, A+B, A*B and parentheses (section 5.3.1).",
+      "type": "string",
+      "pattern": "^[0-9^+*()]+$"
+    },
+    "source_type": {
+      "description": "The type as the source language writes it, aliases included (Pubkey, Height, Either<Signature, Signature>), for people and tools that speak that language. Linkers ignore it.",
+      "type": "string",
+      "minLength": 1
+    },
+    "param": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": {
+          "description": "The source-level parameter name, ASCII. Used directly as a descriptor key.",
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "type": { "$ref": "#/$defs/type_text" },
+        "source_type": { "$ref": "#/$defs/source_type" }
+      }
+    },
+    "witness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": {
+          "description": "The source-level witness name, ASCII.",
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "type": { "$ref": "#/$defs/type_text" },
+        "source_type": { "$ref": "#/$defs/source_type" }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scheme", "message_builder"],
+      "properties": {
+        "scheme": {
+          "description": "Signature scheme. Only bip340 is defined.",
+          "enum": ["bip340"]
+        },
+        "key": {
+          "description": "The parameter holding the public key. Omitted when the program takes the key from a constant or a witness.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["param"],
+          "properties": {
+            "param": {
+              "description": "Name of an entry in params.",
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            }
+          }
+        },
+        "message_builder": {
+          "description": "How the signed message is computed. An object with exactly one tag. Only the jet tag is defined, and only sig_all_hash. A signer that does not recognise the tag or the jet must not sign.",
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "maxProperties": 1,
+          "properties": {
+            "jet": {
+              "description": "Name of a jet of type 1 -> 2^256.",
+              "enum": ["sig_all_hash"]
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["compiler", "compiler_version", "sources"],
+      "properties": {
+        "compiler": {
+          "description": "The compiler that produced the object, e.g. simc.",
+          "type": "string",
+          "minLength": 1
+        },
+        "compiler_version": {
+          "description": "The exact compiler version. Different versions can produce different bodies.",
+          "type": "string",
+          "minLength": 1
+        },
+        "entry_point": {
+          "description": "The function compiled as the body, for compilers that have a choice.",
+          "type": "string",
+          "minLength": 1
+        },
+        "options": {
+          "description": "The compiler options that affect the output, in order, as passed to the compiler.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "repository": {
+          "description": "Where to fetch the sources. A hint only: the sha256 of each source is what a verifier checks.",
+          "$ref": "#/$defs/repository"
+        },
+        "sources": {
+          "description": "The source files: the entry file first, then the files it imports, sorted by path.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/source" }
+        }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "commit"],
+      "properties": {
+        "url": {
+          "description": "URL of the repository, with a scheme such as https://. Not scp-style SSH shorthand (git@host:path), which can't be fetched without credentials.",
+          "type": "string",
+          "format": "uri",
+          "pattern": "^[A-Za-z][A-Za-z0-9+.-]*://[^\\s]+$"
+        },
+        "commit": {
+          "description": "The commit holding the sources (SHA-1 or SHA-256 object name).",
+          "type": "string",
+          "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "modified": {
+          "description": "True if a source file differed from that commit at build time.",
+          "type": "boolean"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {
+          "description": "Relative path with / separators: from the repository root when a repository is given, otherwise as given to the compiler (entry file) or from the entry file's directory (imports).",
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "description": "SHA-256 of the file's bytes, as sha256sum prints it.",
+          "$ref": "#/$defs/hash32"
+        }
+      }
+    }
+  }
+}

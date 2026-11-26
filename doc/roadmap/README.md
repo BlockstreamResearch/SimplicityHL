@@ -59,7 +59,7 @@ items.
 | IR     | [Intermediate representations](IR.md) | Compiler output, object format, etc                                | —             | -            | -   |
 | IR-1   | Parameters and Witnesses              | Coherent design for parameters, witnesses, and constants           | MOD-1         | Needs design | -   |
 | IR-2   | Canonical CMR                         | Simplicity expression that computes the CMR for other expressions  | IR-1          | Needs design | -   |
-| IR-3   | "Object file" format                  | Format for "templated Simplicity", metadata, "compiled crates"     | IR-2          | Needs design | -   |
+| IR-3   | "Object file" format                  | Format for "templated Simplicity", metadata, "compiled crates"     | IR-2          | Proposed     | -   |
 | DIAG   | [Compiler diganostics](DIAG.md)       | Better error messages, continuing after initial errors, etc        | -             | -            | -   |
 | DIAG-1 | Structured error types                | One error type per phase; no `String` errors in the public API     | -             | Needs design | -   |
 | OPT    | [Optimizations](OPT.md)               | Compiler optimizations                                             | —             | -            | -   |
