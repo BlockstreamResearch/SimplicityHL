@@ -1,5 +1,9 @@
 # Unreleased
 
+## Fixed
+
+* Reject tuple patterns whose number of elements differs from the tuple type, as array patterns already do. [#469](https://github.com/BlockstreamResearch/SimplicityHL/pull/469)
+
 # 0.9.0 - 2026-10-26
 
 ## Breaking Changes

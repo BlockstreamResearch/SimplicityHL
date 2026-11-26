@@ -938,6 +938,10 @@ pub enum Error {
     VariableReuseInPattern {
         identifier: Identifier,
     },
+    TuplePatternLengthMismatch {
+        expected: usize,
+        found: usize,
+    },
     WitnessReused {
         name: TemplateProgramWitness,
     },
@@ -1198,6 +1202,10 @@ impl fmt::Display for Error {
             Error::VariableReuseInPattern { identifier } => write!(
                 f,
                 "Variable `{identifier}` is used twice in the pattern"
+            ),
+            Error::TuplePatternLengthMismatch { expected, found } => write!(
+                f,
+                "Expected a tuple pattern with {expected} elements, found {found} elements"
             ),
             Error::WitnessReused { name } => write!(
                 f,

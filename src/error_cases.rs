@@ -109,6 +109,7 @@ coverage! {
     UndefinedAlias => Tested,
     DuplicateAlias => Untestable("never constructed"),
     VariableReuseInPattern => Tested,
+    TuplePatternLengthMismatch => Tested,
     WitnessReused => Tested,
     WitnessMissing => Tested,
     WitnessTypeMismatch => Tested,

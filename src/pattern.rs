@@ -67,13 +67,18 @@ impl Pattern {
                 Pattern::Tuple(pats) | Pattern::Array(pats) if ty.is_never() => {
                     stack.extend(pats.iter().zip(std::iter::repeat(ty)));
                 }
-                Pattern::Tuple(pats) => {
-                    if let Some(types) = ty.as_tuple() {
+                Pattern::Tuple(pats) => match ty.as_tuple() {
+                    Some(types) if types.len() == pats.len() => {
                         stack.extend(pats.iter().zip(types.iter().map(Arc::as_ref)));
-                    } else {
-                        return unexpected_err();
                     }
-                }
+                    Some(types) => {
+                        return Err(Error::TuplePatternLengthMismatch {
+                            expected: types.len(),
+                            found: pats.len(),
+                        });
+                    }
+                    None => return unexpected_err(),
+                },
                 Pattern::Array(pats) => {
                     if let Some((ty, size)) = ty.as_array() {
                         if pats.len() == size {

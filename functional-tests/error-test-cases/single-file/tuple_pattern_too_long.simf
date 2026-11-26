@@ -1,0 +1,4 @@
+// error: TuplePatternLengthMismatch
+fn main() {
+    let (a, b, c): (u8, u8) = (1, 2);
+}
