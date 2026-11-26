@@ -1,12 +1,12 @@
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ast::CustomFunction;
 use crate::driver::{CRATE_STR, MAIN_STR};
 use crate::error::Error;
 use crate::parse::{self, UseDecl, Visibility};
-use crate::str::{AliasName, FunctionName, ModuleName, SymbolName};
+use crate::str::{AliasName, FunctionName, Identifier, ModuleName, SymbolName};
 use crate::types::{AliasedType, EnumInfo, EnumVariantInfo, ResolvedType};
 
 /// A single module namespace. Handles arbitrary nesting via `submodules`.
@@ -16,6 +16,8 @@ struct ModuleScope {
     functions: HashMap<FunctionName, (CustomFunction, Visibility)>,
     /// Nested inling `mod` blocks, each becoming a child scope.
     submodules: HashMap<ModuleName, (ModuleScope, Visibility)>,
+    /// Names of failed imports, whose uses are not reported again.
+    poisoned: HashSet<SymbolName>,
 }
 
 /// The modules of the program and the current position inside them.
@@ -87,11 +89,18 @@ impl ModuleTree {
     ///
     /// * [`Error::UndefinedAlias`]: The alias is not defined in the current scope.
     pub(super) fn get_alias(&self, name: &AliasName) -> Result<ResolvedType, Error> {
-        self.current()
-            .aliases
-            .get(name)
-            .map(|(ty, _)| ty.clone())
-            .ok_or_else(|| Error::UndefinedAlias { name: name.clone() })
+        let current = self.current();
+
+        match current.aliases.get(name) {
+            Some((ty, _)) => Ok(ty.clone()),
+            None if current.poisoned.contains(name.as_str()) => Ok(ResolvedType::never()),
+            None => Err(Error::UndefinedAlias { name: name.clone() }),
+        }
+    }
+
+    /// Check whether `name` comes from a failed import in the current module.
+    pub(super) fn is_poisoned(&self, name: &str) -> bool {
+        self.current().poisoned.contains(name)
     }
 
     /// Resolve a type with aliases to a type without aliases.
@@ -194,6 +203,8 @@ impl ModuleTree {
     /// Resolves a `use` declaration by navigating the module tree, checking visibility,
     /// and importing matching items into the current scope.
     ///
+    /// Returns every error instead of stopping at the first one.
+    ///
     /// ## Errors
     ///
     /// * [`Error::MissingCrateKeyword`] The import path does not start with the `crate` keyword.
@@ -201,87 +212,143 @@ impl ModuleTree {
     /// * [`Error::ModuleIsPrivate`] Attempted to navigate into a private module from an unauthorized scope.
     /// * [`Error::MainCannotBeAlias`] Attempted to alias an imported item to the reserved `main` identifier.
     /// * May also return errors propagated from item collection and insertion, such as [`Error::PrivateItem`] or [`Error::RedefinedItem`].
-    pub(super) fn resolve_use(&mut self, use_decl: &UseDecl) -> Result<(), Error> {
-        let path = use_decl.path();
-        if path.first().map(|id| id.as_str()) != Some(CRATE_STR) {
-            return Err(Error::MissingCrateKeyword);
-        }
-
+    pub(super) fn resolve_use(&mut self, use_decl: &UseDecl) -> Vec<Error> {
         let use_vis = use_decl.visibility().clone();
         let use_decl_items = match use_decl.items() {
             parse::UseItems::Single(elem) => std::slice::from_ref(elem),
             parse::UseItems::List(elems) => elems.as_slice(),
         };
 
-        // Phase 1: navigate to target and collect items. Immutable borrow, dropped at end of block
-        // Vec<(ProcessedAlias, ProcessedFunction, ProcessedModule)>
-        // where each is Result<(Key, (Value, Visibility)), Error>
-        let collected: Vec<_> = {
-            // TODO: Part, that can be optimized
-            // How many segments do the caller's path and the target's path have in common?
-            let shared_prefix_len = self
-                .path
+        let mut errors = Vec::new();
+        // Phase 1: navigate to the target module. If it cannot be reached, every imported name is poisoned.
+        let Some(target_scope) = self.find_use_target(use_decl.path(), &mut errors) else {
+            let local_names = use_decl_items
                 .iter()
-                .zip(&path[1..])
-                .take_while(|(curr, nav)| curr.as_str() == nav.as_str())
-                .count();
-
-            let mut target_scope = &self.root;
-
-            for (ind, segment) in path[1..].iter().enumerate() {
-                let name = ModuleName::from_ident(segment);
-
-                let (inner, visibility) = target_scope
-                    .submodules
-                    .get(&name)
-                    .ok_or_else(|| Error::ModuleNotFound { name: name.clone() })?;
-
-                if matches!(visibility, Visibility::Private) && shared_prefix_len < ind {
-                    return Err(Error::ModuleIsPrivate { name });
-                }
-
-                target_scope = inner;
-            }
-
-            let mut collected = Vec::with_capacity(use_decl_items.len());
-            for (name, aliased) in use_decl_items {
-                if aliased.as_ref().is_some_and(|a| a == MAIN_STR) {
-                    return Err(Error::MainCannotBeAlias);
-                }
-
-                let local_name = aliased.as_ref().unwrap_or(name);
-
-                let alias_res =
-                    Self::try_collect_item(name, local_name, &target_scope.aliases, &use_vis);
-                let func_res =
-                    Self::try_collect_item(name, local_name, &target_scope.functions, &use_vis);
-                let mod_res =
-                    Self::try_collect_item(name, local_name, &target_scope.submodules, &use_vis);
-
-                collected.push((alias_res, func_res, mod_res));
-            }
-            collected
+                .map(|(name, aliased)| aliased.as_ref().unwrap_or(name).clone());
+            self.current_mut().poisoned.extend(local_names);
+            return errors;
         };
 
-        // Phase 2: validate against existing names and stage the complete import.
-        // Failed declarations discard these maps without changing the module tree.
+        // Phase 2: stage each item. A failed item is reported, then poisoned or imported anyway.
         let current = self.current();
         let mut pending = ModuleScope::default();
-        for (alias_res, func_res, mod_res) in collected {
-            Self::resolve_processing_use_items_error(&[
-                Self::stage_collected(alias_res, &current.aliases, &mut pending.aliases),
-                Self::stage_collected(func_res, &current.functions, &mut pending.functions),
-                Self::stage_collected(mod_res, &current.submodules, &mut pending.submodules),
-            ])?;
+        for (name, aliased) in use_decl_items {
+            if aliased.as_ref().is_some_and(|a| a == MAIN_STR) {
+                errors.push(Error::MainCannotBeAlias);
+                continue;
+            }
+
+            let local_name = aliased.as_ref().unwrap_or(name);
+            let stage = |pending: &mut ModuleScope, ignore_privacy: bool| {
+                Self::resolve_processing_use_items_error(&[
+                    Self::stage_collected(
+                        Self::try_collect_item(
+                            name,
+                            local_name,
+                            &target_scope.aliases,
+                            &use_vis,
+                            ignore_privacy,
+                        ),
+                        &current.aliases,
+                        &mut pending.aliases,
+                    ),
+                    Self::stage_collected(
+                        Self::try_collect_item(
+                            name,
+                            local_name,
+                            &target_scope.functions,
+                            &use_vis,
+                            ignore_privacy,
+                        ),
+                        &current.functions,
+                        &mut pending.functions,
+                    ),
+                    Self::stage_collected(
+                        Self::try_collect_item(
+                            name,
+                            local_name,
+                            &target_scope.submodules,
+                            &use_vis,
+                            ignore_privacy,
+                        ),
+                        &current.submodules,
+                        &mut pending.submodules,
+                    ),
+                ])
+            };
+
+            let Err(error) = stage(&mut pending, false) else {
+                continue;
+            };
+
+            match error {
+                Error::UnresolvedItem { .. } => {
+                    pending.poisoned.insert(local_name.clone());
+                    if target_scope.poisoned.contains(name) {
+                        continue;
+                    }
+                }
+                Error::PrivateItem { .. } => {
+                    let _ = stage(&mut pending, true);
+                }
+                _ => {}
+            }
+            errors.push(error);
         }
 
-        // Phase 3: commit because every item was resolved successfully
+        // Phase 3: commit everything that was staged, including the poisoned names.
         let current = self.current_mut();
         current.aliases.extend(pending.aliases);
         current.functions.extend(pending.functions);
         current.submodules.extend(pending.submodules);
+        current.poisoned.extend(pending.poisoned);
 
-        Ok(())
+        errors
+    }
+
+    /// Navigate to the module that a `use` path names.
+    ///
+    /// A private module is reported but still entered, because its items are known.
+    /// Returns `None` if the module does not exist.
+    fn find_use_target(
+        &self,
+        path: &[Identifier],
+        errors: &mut Vec<Error>,
+    ) -> Option<&ModuleScope> {
+        if path.first().map(|id| id.as_str()) != Some(CRATE_STR) {
+            errors.push(Error::MissingCrateKeyword);
+            return None;
+        }
+
+        // TODO: Part, that can be optimized
+        // How many segments do the caller's path and the target's path have in common?
+        let shared_prefix_len = self
+            .path
+            .iter()
+            .zip(&path[1..])
+            .take_while(|(curr, nav)| curr.as_str() == nav.as_str())
+            .count();
+
+        let mut target_scope = &self.root;
+
+        for (ind, segment) in path[1..].iter().enumerate() {
+            let name = ModuleName::from_ident(segment);
+
+            let Some((inner, visibility)) = target_scope.submodules.get(&name) else {
+                if !target_scope.poisoned.contains(name.as_str()) {
+                    errors.push(Error::ModuleNotFound { name });
+                }
+                return None;
+            };
+
+            if matches!(visibility, Visibility::Private) && shared_prefix_len < ind {
+                errors.push(Error::ModuleIsPrivate { name });
+            }
+
+            target_scope = inner;
+        }
+
+        Some(target_scope)
     }
 
     /// Attempts to find `name` in `target_map` and prepare it for import into another scope.
@@ -295,6 +362,7 @@ impl ModuleTree {
         local_name: &SymbolName,
         target_map: &HashMap<K, (V, Visibility)>,
         use_vis: &Visibility,
+        ignore_privacy: bool,
     ) -> Result<(K, (V, Visibility)), Error>
     where
         K: Eq + std::hash::Hash + From<SymbolName> + Clone,
@@ -307,7 +375,7 @@ impl ModuleTree {
                     name: name.to_string(),
                 })?;
 
-        if matches!(vis, Visibility::Private) {
+        if matches!(vis, Visibility::Private) && !ignore_privacy {
             return Err(Error::PrivateItem {
                 name: name.to_string(),
             });
@@ -382,19 +450,28 @@ impl ModuleTree {
 }
 
 #[cfg(test)]
-mod transactional_use_tests {
+mod use_tests {
     use crate::parse::ParseFromStr;
     use crate::str::AliasName;
     use crate::types::{ResolvedType, TypeConstructible};
 
     use super::*;
 
-    fn resolve(scope: &mut ModuleTree, source: &str) -> Result<(), Error> {
+    fn resolve(scope: &mut ModuleTree, source: &str) -> Vec<String> {
         let program = parse::Program::parse_from_str(source).unwrap();
         let parse::Item::Use(decl) = &program.items()[0] else {
             panic!("expected use declaration");
         };
-        scope.resolve_use(decl)
+
+        scope
+            .resolve_use(decl)
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    fn alias(scope: &ModuleTree, name: &str) -> Option<ResolvedType> {
+        scope.get_alias(&AliasName::from_str_unchecked(name)).ok()
     }
 
     fn scope() -> ModuleTree {
@@ -418,35 +495,62 @@ mod transactional_use_tests {
     }
 
     #[test]
-    fn failed_imports_preserve_the_complete_module_tree() {
-        for (source, expected) in [
+    fn failed_imports_keep_the_rest_of_the_declaration() {
+        let missing = Error::UnresolvedItem {
+            name: "Missing".into(),
+        };
+        let secret = Error::PrivateItem {
+            name: "Secret".into(),
+        };
+        let same = Error::RedefinedItem {
+            name: "Same".into(),
+        };
+        let taken = Error::RedefinedItem {
+            name: "Taken".into(),
+        };
+        let module = Error::ModuleNotFound {
+            name: ModuleName::from_str_unchecked("nowhere"),
+        };
+
+        for (source, expected, bound) in [
             (
                 "use crate::source::{Good, Missing};",
-                Error::UnresolvedItem {
-                    name: "Missing".into(),
-                },
+                vec![missing],
+                vec![
+                    ("Good", ResolvedType::u32()),
+                    ("Missing", ResolvedType::never()),
+                ],
             ),
             (
                 "use crate::source::{Good, Secret};",
-                Error::PrivateItem {
-                    name: "Secret".into(),
-                },
+                vec![secret],
+                vec![
+                    ("Good", ResolvedType::u32()),
+                    ("Secret", ResolvedType::u16()),
+                ],
             ),
             (
                 "use crate::source::{Good as Same, Good as Same};",
-                Error::RedefinedItem {
-                    name: "Same".into(),
-                },
+                vec![same],
+                vec![("Same", ResolvedType::u32())],
             ),
             (
                 "use crate::source::{Good, Good as main};",
-                Error::MainCannotBeAlias,
+                vec![Error::MainCannotBeAlias],
+                vec![("Good", ResolvedType::u32())],
             ),
             (
                 "use crate::source::{Good, Good as Taken};",
-                Error::RedefinedItem {
-                    name: "Taken".into(),
-                },
+                vec![taken],
+                vec![("Good", ResolvedType::u32()), ("Taken", ResolvedType::u8())],
+            ),
+            (
+                "use crate::nowhere::{Good, Other};",
+                vec![module],
+                vec![
+                    ("Good", ResolvedType::never()),
+                    ("Other", ResolvedType::never()),
+                ],
             ),
         ] {
             for nested in [false, true] {
@@ -465,16 +569,47 @@ mod transactional_use_tests {
                     (ResolvedType::u8(), Visibility::Private),
                 );
 
-                let before = scope.root.clone();
                 let path = scope.path.clone();
-                let error = resolve(&mut scope, source).expect_err(source);
+                let errors = resolve(&mut scope, source);
 
-                assert_eq!(error.to_string(), expected.to_string(), "{source}");
-                assert_eq!(scope.root, before, "failed import mutated scope: {source}");
+                let expected: Vec<_> = expected.iter().map(ToString::to_string).collect();
+                assert_eq!(errors, expected, "{source}");
+                for (name, ty) in &bound {
+                    assert_eq!(alias(&scope, name).as_ref(), Some(ty), "{name} in {source}");
+                }
                 assert_eq!(scope.path, path, "{source}");
-
-                resolve(&mut scope, "use crate::source::Good;").unwrap();
             }
+        }
+    }
+
+    #[test]
+    fn uses_of_poisoned_names_are_not_reported() {
+        let mut scope = scope();
+        scope
+            .enter(
+                ModuleName::from_str_unchecked("reexport"),
+                Visibility::Public,
+            )
+            .unwrap();
+        assert_eq!(
+            resolve(&mut scope, "pub use crate::source::Missing;").len(),
+            1
+        );
+        scope.exit();
+
+        for source in [
+            "use crate::reexport::Missing;",
+            "use crate::reexport::Missing::Inner;",
+        ] {
+            let mut scope = ModuleTree {
+                root: scope.root.clone(),
+                path: Vec::new(),
+            };
+            assert_eq!(
+                resolve(&mut scope, source),
+                Vec::<String>::new(),
+                "{source}"
+            );
         }
     }
 
@@ -491,7 +626,7 @@ mod transactional_use_tests {
             ModuleName::from_str_unchecked("Good"),
             (ModuleScope::default(), Visibility::Public),
         );
-        resolve(&mut scope, "pub use crate::source::Good as Renamed;").unwrap();
+        assert!(resolve(&mut scope, "pub use crate::source::Good as Renamed;").is_empty());
 
         assert_eq!(
             scope

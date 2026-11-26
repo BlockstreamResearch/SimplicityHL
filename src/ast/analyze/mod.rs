@@ -41,7 +41,7 @@ mod span_tests {
 
         Function::analyze(&parsed, &ResolvedType::unit(), &mut scope).expect("function analyzes");
         let function = scope
-            .get_function(parsed.name())
+            .get_function(parsed.name(), &parsed)
             .expect("function is registered in scope");
 
         assert_eq!(function.span().to_slice(source), Some(source));

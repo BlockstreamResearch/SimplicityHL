@@ -118,7 +118,7 @@ impl AbstractSyntaxTree for Item {
                 Function::analyze(function, ty, scope).map(Self::Function)
             }
             parse::Item::Use(use_decl) => {
-                scope.resolve_use(use_decl).with_span(use_decl)?;
+                scope.resolve_use(use_decl);
                 Ok(Self::Use)
             }
             parse::Item::EnumDeclaration(decl) => {
