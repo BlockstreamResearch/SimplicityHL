@@ -61,7 +61,7 @@ items.
 | IR-2   | Canonical CMR                         | Simplicity expression that computes the CMR for other expressions  | IR-1          | Needs design | -   |
 | IR-3   | "Object file" format                  | Format for "templated Simplicity", metadata, "compiled crates"     | IR-2          | Needs design | -   |
 | DIAG   | [Compiler diganostics](DIAG.md)       | Better error messages, continuing after initial errors, etc        | -             | -            | -   |
-| DIAG-1 | Structured error types                | One error type per phase; no `String` errors in the public API     | -             | Needs design | -   |
+| DIAG-1 | Structured error types                | One error type per phase; no `String` errors in the public API     | -             | Proposed     | -   |
 | OPT    | [Optimizations](OPT.md)               | Compiler optimizations                                             | —             | -            | -   |
 | OPT-1  | "Post-hoc optimizer"                  | Optimizer that takes an object file, improves code, outputs proofs | IR-3          | -            | -   |
 | OPT-2  | Static analyzer                       | Static analysis of Simplicity code                                 | IR-3          | -            | -   |
