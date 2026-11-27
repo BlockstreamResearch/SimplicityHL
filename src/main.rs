@@ -2,7 +2,7 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Arg, ArgAction, Command};
 
-use simplicityhl::ast::{CoreJetHinter, ElementsJetHinter, JetHinter};
+use simplicityhl::ast::{BitcoinJetHinter, CoreJetHinter, ElementsJetHinter, JetHinter};
 use simplicityhl::error::should_color;
 use simplicityhl::version::SimcDirective;
 use simplicityhl::{
@@ -53,6 +53,7 @@ impl fmt::Display for Output {
 #[derive(Clone, Debug)]
 enum Target {
     Elements,
+    Bitcoin,
     Core,
 }
 
@@ -72,12 +73,13 @@ impl fmt::Display for TargetParseError {
 
 impl std::error::Error for TargetParseError {}
 
-const TARGET_HELP: &str = "Target platform for compilation: elements, or core";
+const TARGET_HELP: &str = "Target platform for compilation: elements, bitcoin, or core";
 
 impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Target::Elements => f.write_str("elements"),
+            Target::Bitcoin => f.write_str("bitcoin"),
             Target::Core => f.write_str("core"),
         }
     }
@@ -88,6 +90,7 @@ impl Target {
     fn jet_hinter(&self) -> Box<dyn JetHinter> {
         match self {
             Target::Elements => Box::new(ElementsJetHinter::new()),
+            Target::Bitcoin => Box::new(BitcoinJetHinter::new()),
             Target::Core => Box::new(CoreJetHinter::new()),
         }
     }
@@ -99,9 +102,10 @@ impl FromStr for Target {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "elements" => Ok(Target::Elements),
+            "bitcoin" => Ok(Target::Bitcoin),
             "core" => Ok(Target::Core),
             _ => Err(TargetParseError(format!(
-                "Unknown target: {}. Use one of: elements or core",
+                "Unknown target: {}. Use one of: elements, bitcoin or core",
                 s
             ))),
         }

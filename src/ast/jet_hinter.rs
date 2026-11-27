@@ -1,4 +1,4 @@
-use simplicity::jet::{Core, Elements, Jet};
+use simplicity::jet::{Bitcoin, Core, Elements, Jet};
 
 use crate::jet::JetHL;
 
@@ -133,4 +133,5 @@ macro_rules! impl_jet_hinter {
 }
 
 impl_jet_hinter!(ElementsJetHinter, Elements);
+impl_jet_hinter!(BitcoinJetHinter, Bitcoin);
 impl_jet_hinter!(CoreJetHinter, Core);
