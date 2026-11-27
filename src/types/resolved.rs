@@ -1,6 +1,6 @@
 use core::fmt;
 use core::hash::{Hash, Hasher};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use miniscript::iter::{Tree, TreeLike};
@@ -395,8 +395,44 @@ impl crate::ArbitraryRec for ResolvedType {
 impl From<&ResolvedType> for StructuralType {
     fn from(value: &ResolvedType) -> Self {
         let mut output = vec![];
-        for data in value.post_order_iter() {
-            match &data.node.inner {
+        // Keep the traversal iterative, but visit shared subtypes only once.
+        // Structural hashing would itself expand aliases, so key by address.
+        // Every key points into `value`, which stays alive for this conversion.
+        let mut lowered = HashMap::<*const ResolvedType, StructuralType>::new();
+        let mut stack = vec![(value, false)];
+        while let Some((ty, children_visited)) = stack.pop() {
+            let key = std::ptr::from_ref(ty);
+            if !children_visited {
+                if let Some(structural) = lowered.get(&key) {
+                    output.push(structural.clone());
+                    continue;
+                }
+
+                stack.push((ty, true));
+                match &ty.inner {
+                    TypeInner::Either(left, right) => {
+                        stack.extend([(right.as_ref(), false), (left.as_ref(), false)]);
+                    }
+                    TypeInner::Option(inner)
+                    | TypeInner::Array(inner, _)
+                    | TypeInner::List(inner, _) => stack.push((inner.as_ref(), false)),
+                    TypeInner::Tuple(elements) => {
+                        stack.extend(elements.iter().rev().map(|el| (el.as_ref(), false)));
+                    }
+                    TypeInner::Enum(info) => {
+                        stack.extend(
+                            info.variants()
+                                .iter()
+                                .rev()
+                                .map(|variant| (variant.payload_type(), false)),
+                        );
+                    }
+                    TypeInner::Boolean | TypeInner::UInt(_) | TypeInner::Never => {}
+                }
+                continue;
+            }
+
+            match &ty.inner {
                 TypeInner::Either(_, _) => {
                     let right = output.pop().unwrap();
                     let left = output.pop().unwrap();
@@ -408,8 +444,8 @@ impl From<&ResolvedType> for StructuralType {
                 }
                 TypeInner::Boolean => output.push(StructuralType::boolean()),
                 TypeInner::UInt(integer) => output.push(StructuralType::from(*integer)),
-                TypeInner::Tuple(_) => {
-                    let size = data.node.n_children();
+                TypeInner::Tuple(elements) => {
+                    let size = elements.len();
                     let elements = output.split_off(output.len() - size);
                     debug_assert_eq!(elements.len(), size);
                     output.push(StructuralType::tuple(elements));
@@ -423,7 +459,9 @@ impl From<&ResolvedType> for StructuralType {
                     output.push(StructuralType::list(element, *bound));
                 }
                 TypeInner::Enum(info) => {
-                    output.push(StructuralType::balanced_sum(info.structural_variants()));
+                    // Reuse payloads lowered through this traversal's shared cache.
+                    let variants = output.split_off(output.len() - info.variants().len());
+                    output.push(StructuralType::balanced_sum(variants));
                 }
                 TypeInner::Never => {
                     panic!(
@@ -431,6 +469,8 @@ impl From<&ResolvedType> for StructuralType {
                     )
                 }
             }
+            // Cache the completed result for later visits to the same node.
+            lowered.insert(key, output.last().unwrap().clone());
         }
         debug_assert_eq!(output.len(), 1);
         output.pop().unwrap()
