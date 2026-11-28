@@ -11,10 +11,10 @@ use crate::str::{FunctionName, Identifier, ModuleName, SymbolName};
 use crate::types::AliasedType;
 
 use super::super::{
-    EnumDeclaration, Expression, Function, FunctionParam, Item, Module, Program, TypeAlias,
-    UseDecl, UseItems, Visibility,
+    ConstDecl, EnumDeclaration, Expression, Function, FunctionParam, Item, Module, Program,
+    TypeAlias, UseDecl, UseItems, Visibility,
 };
-use super::{delimited_with_recovery, ChumskyParse, ParseError};
+use super::{delimited_with_recovery, parse_token_with_recovery, ChumskyParse, ParseError};
 
 impl ChumskyParse for Program {
     /// Parses a sequence of top-level [`Item`]s into a complete [`Program`].
@@ -39,6 +39,7 @@ impl ChumskyParse for Program {
                                 | Token::Type
                                 | Token::Mod
                                 | Token::Enum
+                                | Token::Const
                         )
                     })
                     .repeated(),
@@ -66,6 +67,7 @@ impl ChumskyParse for Item {
             let type_parser = TypeAlias::parser().map(Item::TypeAlias);
             let use_parser = UseDecl::parser().map(Item::Use);
             let enum_parser = EnumDeclaration::parser().map(Item::EnumDeclaration);
+            let const_parser = ConstDecl::parser().map(Item::Const);
 
             // Lazy item here
             let mod_parser = Module::parser_with_items(item).map(Item::Module);
@@ -75,6 +77,7 @@ impl ChumskyParse for Item {
                 use_parser,
                 type_parser,
                 enum_parser,
+                const_parser,
                 mod_parser,
             ))
         })
@@ -197,6 +200,34 @@ impl ChumskyParse for UseDecl {
                 visibility,
                 path,
                 items,
+                span: e.span(),
+            })
+    }
+}
+
+impl ChumskyParse for ConstDecl {
+    fn parser<'tokens, 'src: 'tokens, I>() -> impl Parser<'tokens, I, Self, ParseError<'src>> + Clone
+    where
+        I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,
+    {
+        let visibility = just(Token::Pub)
+            .to(Visibility::Public)
+            .or_not()
+            .map(Option::unwrap_or_default);
+
+        visibility
+            .then_ignore(just(Token::Const))
+            .then(Identifier::parser())
+            .then_ignore(just(Token::Colon))
+            .then(AliasedType::parser())
+            .then_ignore(parse_token_with_recovery(Token::Eq))
+            .then(Expression::parser())
+            .then_ignore(just(Token::Semi))
+            .map_with(|(((visibility, name), ty), expr), e| Self {
+                visibility,
+                name,
+                ty,
+                expr,
                 span: e.span(),
             })
     }

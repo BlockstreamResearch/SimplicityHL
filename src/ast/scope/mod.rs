@@ -11,6 +11,7 @@ use crate::error::{Diagnostic, DiagnosticManager, Error, Span};
 use crate::parse::{self, UseDecl, Visibility};
 use crate::str::{AliasName, FunctionName, Identifier, ModuleName};
 use crate::types::{AliasedType, EnumVariantInfo, ResolvedType};
+use crate::value::Value;
 use crate::TemplateProgramWitness;
 
 use self::locals::Locals;
@@ -109,6 +110,21 @@ impl Scope {
         } else {
             Ok(results)
         }
+    }
+
+    /// Analyze, failing if any error was reported, to prevent a panic during evaluation.
+    pub(super) fn analyze_strict<T>(
+        &mut self,
+        analyze: impl FnOnce(&mut Self) -> Result<T, Failure>,
+    ) -> Result<T, Failure> {
+        let reported = self.diagnostics.len();
+        let result = analyze(self)?;
+
+        if self.diagnostics.len() > reported {
+            return Err(Failure::Reported);
+        }
+
+        Ok(result)
     }
 
     /// Scope for parsing values from witness and argument files: empty,
@@ -292,6 +308,19 @@ impl Scope {
         self.modules.get_function(name)
     }
 
+    pub(super) fn insert_constant(
+        &mut self,
+        name: Identifier,
+        visibility: Visibility,
+        value: Value,
+    ) -> Result<(), Error> {
+        self.modules.insert_constant(name, visibility, value)
+    }
+
+    pub(super) fn get_constant(&self, name: &Identifier) -> Option<&Value> {
+        self.modules.get_constant(name)
+    }
+
     /// Insert a variable into the current block.
     ///
     /// ## Panics
@@ -299,6 +328,24 @@ impl Scope {
     /// - No active block.
     pub(super) fn insert_variable(&mut self, identifier: Identifier, ty: ResolvedType) {
         self.locals.insert(identifier, ty);
+    }
+
+    /// Bind a new variable, reporting it if its name hides a constant.
+    pub(super) fn bind_variable(
+        &mut self,
+        identifier: Identifier,
+        ty: ResolvedType,
+        span: impl Into<Span>,
+    ) {
+        if self.get_constant(&identifier).is_some() {
+            self.report(
+                Error::ConstantShadowed {
+                    name: identifier.clone(),
+                }
+                .with_span(span.into()),
+            );
+        }
+        self.insert_variable(identifier, ty);
     }
 
     /// Get the type of the variable.

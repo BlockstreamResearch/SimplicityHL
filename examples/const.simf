@@ -1,0 +1,23 @@
+mod fees {
+    pub const BASE_FEE: u32 = 1_000;
+    const TAX: u32 = 50;
+
+    pub fn total(amount: u32) -> u32 {
+        let (_, with_fee): (bool, u32) = jet::add_32(amount, BASE_FEE);
+        let (_, res): (bool, u32) = jet::add_32(with_fee, TAX);
+        res
+    }
+}
+
+use crate::fees::{total, BASE_FEE as MIN_PAYMENT};
+
+const LIMITS: (u32, u32) = (MIN_PAYMENT, 10_000);
+
+fn main() {
+    let (min, max): (u32, u32) = LIMITS;
+    let paid: u32 = total(2_000);
+
+    assert!(jet::eq_32(paid, 3_050));
+    assert!(jet::lt_32(min, paid));
+    assert!(jet::lt_32(paid, max));
+}

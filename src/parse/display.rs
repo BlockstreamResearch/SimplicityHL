@@ -4,9 +4,9 @@ use either::Either;
 use miniscript::iter::TreeLike;
 
 use super::{
-    Assignment, Call, CallName, EnumDeclaration, EnumMatch, EnumMatchArm, ExprTree, Expression,
-    Function, FunctionParam, Item, Match, MatchPattern, Module, Program, SingleExpression,
-    SingleExpressionInner, Statement, TypeAlias, UseDecl, UseItems, Visibility,
+    Assignment, Call, CallName, ConstDecl, EnumDeclaration, EnumMatch, EnumMatchArm, ExprTree,
+    Expression, Function, FunctionParam, Item, Match, MatchPattern, Module, Program,
+    SingleExpression, SingleExpressionInner, Statement, TypeAlias, UseDecl, UseItems, Visibility,
 };
 
 impl fmt::Display for EnumDeclaration {
@@ -66,6 +66,7 @@ impl fmt::Display for Item {
             Self::Function(function) => write!(f, "{function}"),
             Self::Use(use_declaration) => write!(f, "{use_declaration}"),
             Self::EnumDeclaration(decl) => write!(f, "{decl}"),
+            Self::Const(decl) => write!(f, "{decl}"),
             Self::Module(module) => write!(f, "{module}"),
             Self::Ignored => Ok(()),
         }
@@ -89,6 +90,19 @@ impl fmt::Display for TypeAlias {
             self.visibility(),
             self.name(),
             self.ty()
+        )
+    }
+}
+
+impl fmt::Display for ConstDecl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}const {}: {} = {};",
+            self.visibility(),
+            self.name(),
+            self.ty(),
+            self.expr()
         )
     }
 }

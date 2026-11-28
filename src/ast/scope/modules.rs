@@ -6,14 +6,16 @@ use crate::ast::CustomFunction;
 use crate::driver::{CRATE_STR, MAIN_STR};
 use crate::error::Error;
 use crate::parse::{self, UseDecl, Visibility};
-use crate::str::{AliasName, FunctionName, ModuleName, SymbolName};
+use crate::str::{AliasName, FunctionName, Identifier, ModuleName, SymbolName};
 use crate::types::{AliasedType, EnumInfo, EnumVariantInfo, ResolvedType};
+use crate::value::Value;
 
 /// A single module namespace. Handles arbitrary nesting via `submodules`.
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 struct ModuleScope {
     aliases: HashMap<AliasName, (ResolvedType, Visibility)>,
     functions: HashMap<FunctionName, (CustomFunction, Visibility)>,
+    constants: HashMap<Identifier, (Value, Visibility)>,
     /// Nested inling `mod` blocks, each becoming a child scope.
     submodules: HashMap<ModuleName, (ModuleScope, Visibility)>,
 }
@@ -187,6 +189,31 @@ impl ModuleTree {
             .map(|(func, _)| func.clone())
             .ok_or_else(|| Error::FunctionUndefined { name: name.clone() })
     }
+
+    /// Insert a constant into the current module scope.
+    ///
+    /// ## Errors
+    ///
+    /// * [`Error::ConstantRedefined`] The constant has already been defined.
+    pub(super) fn insert_constant(
+        &mut self,
+        name: Identifier,
+        visibility: Visibility,
+        value: Value,
+    ) -> Result<(), Error> {
+        if self.current().constants.contains_key(&name) {
+            return Err(Error::ConstantRedefined { name });
+        }
+
+        self.current_mut()
+            .constants
+            .insert(name, (value, visibility));
+        Ok(())
+    }
+
+    pub(super) fn get_constant(&self, name: &Identifier) -> Option<&Value> {
+        self.current().constants.get(name).map(|(value, _)| value)
+    }
 }
 
 impl ModuleTree {
@@ -214,7 +241,7 @@ impl ModuleTree {
         };
 
         // Phase 1: navigate to target and collect items. Immutable borrow, dropped at end of block
-        // Vec<(ProcessedAlias, ProcessedFunction, ProcessedModule)>
+        // Vec<(ProcessedAlias, ProcessedFunction, ProcessedConstant, ProcessedModule)>
         // where each is Result<(Key, (Value, Visibility)), Error>
         let collected: Vec<_> = {
             // TODO: Part, that can be optimized
@@ -255,10 +282,12 @@ impl ModuleTree {
                     Self::try_collect_item(name, local_name, &target_scope.aliases, &use_vis);
                 let func_res =
                     Self::try_collect_item(name, local_name, &target_scope.functions, &use_vis);
+                let const_res =
+                    Self::try_collect_item(name, local_name, &target_scope.constants, &use_vis);
                 let mod_res =
                     Self::try_collect_item(name, local_name, &target_scope.submodules, &use_vis);
 
-                collected.push((alias_res, func_res, mod_res));
+                collected.push((alias_res, func_res, const_res, mod_res));
             }
             collected
         };
@@ -267,10 +296,11 @@ impl ModuleTree {
         // Failed declarations discard these maps without changing the module tree.
         let current = self.current();
         let mut pending = ModuleScope::default();
-        for (alias_res, func_res, mod_res) in collected {
+        for (alias_res, func_res, const_res, mod_res) in collected {
             Self::resolve_processing_use_items_error(&[
                 Self::stage_collected(alias_res, &current.aliases, &mut pending.aliases),
                 Self::stage_collected(func_res, &current.functions, &mut pending.functions),
+                Self::stage_collected(const_res, &current.constants, &mut pending.constants),
                 Self::stage_collected(mod_res, &current.submodules, &mut pending.submodules),
             ])?;
         }
@@ -279,6 +309,7 @@ impl ModuleTree {
         let current = self.current_mut();
         current.aliases.extend(pending.aliases);
         current.functions.extend(pending.functions);
+        current.constants.extend(pending.constants);
         current.submodules.extend(pending.submodules);
 
         Ok(())
@@ -353,7 +384,7 @@ impl ModuleTree {
 
     // TODO: Consider to use better error handling
     /// Evaluates the results of attempting to collect an item from multiple namespaces
-    /// (aliases, functions, submodules) and resolves the final error state.
+    /// (aliases, functions, constants, submodules) and resolves the final error state.
     ///
     /// ## Errors
     ///
